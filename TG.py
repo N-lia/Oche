@@ -1,10 +1,3 @@
-"""Telegram entrypoint for OYI.
-
-The bot is intentionally small, but it still handles the operational basics:
-configuration validation, structured logging, per-user rate limiting, safe
-Telegram message edits, and bounded document ingestion.
-"""
-
 from __future__ import annotations
 
 import asyncio
