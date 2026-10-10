@@ -5,6 +5,8 @@ from langgraph.checkpoint.memory import MemorySaver
 from dotenv import load_dotenv
 import os
 
+from tool import TAVILY_TOOLS
+
 load_dotenv(override=True)
 
 # Nebius is OpenAI-compatible — use ChatOpenAI with Nebius base URL.
@@ -34,10 +36,23 @@ File-writing policy:
 - Before using write_file or edit_file for an ambiguous request, ask one concise
   clarification question.
 - When you do create or edit a file, mention the path briefly in your final reply.
+
+Web access (Tavily tools):
+- Use tavily_search whenever information may be current or you do not already
+  know the answer; then tavily_extract the most relevant source before quoting
+  it. Always cite the URLs you relied on in your reply.
+- Use tavily_map to list a site's pages, and tavily_crawl only when many pages
+  of one site are needed — keep `limit` small, since every page costs credits.
+- Use tavily_research only when the user explicitly asks for deep, long-form
+  research. If it times out, resume with the returned request_id instead of
+  starting a new task.
+- If a tool reports a Tavily rate or usage limit, tell the user plainly instead
+  of retrying immediately.
 """
 
 agent = create_deep_agent(
     model=nebius_model,
+    tools=TAVILY_TOOLS,
     system_prompt=SYSTEM_PROMPT,
     checkpointer=checkpointer,
 )

@@ -12,4 +12,5 @@ dependencies = [
     "langchain-openrouter>=0.2.9",
     "liteparse>=2.15.1",
     "python-telegram-bot>=22.8",
+    "tavily-python>=0.8.5",
 ]
