@@ -27,6 +27,11 @@ openshell sandbox create \
 	-- python TG.py
 ```
 
+Mem0 uses Nebius for both memory extraction and embeddings. Persistent Mem0
+data is stored under `/data/oyi-memory`, so mount an OCI block volume at
+`/data` when deploying the container. The volume must survive container
+recreation; the container filesystem alone is not durable.
+
 The values above must already be exported in the shell. The `--env` form makes
 them available to the sandbox process; OpenShell warns when an environment
 variable looks like a credential. For stronger credential isolation, replace
