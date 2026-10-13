@@ -1,0 +1,10 @@
+"""Output limits for Tavily response parsing."""
+
+from __future__ import annotations
+
+SEARCH_RESULT_LIMIT = 8
+SEARCH_SNIPPET_CHARS = 420
+PAGE_CONTENT_CHARS = 1_200
+RESEARCH_CONTENT_CHARS = 8_000
+RECOMMENDATION_LIMIT = 3
+RECOMMENDATION_SIGNAL_LIMIT = 3
