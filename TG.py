@@ -6,6 +6,7 @@ import os
 import tempfile
 import time
 from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Final
 
@@ -24,6 +25,7 @@ from telegram.ext import (
 
 from config import format_agent_response
 from main import astream_chat_agent
+from memory import reconcile_preferences
 
 load_dotenv()
 
@@ -421,8 +423,39 @@ async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> N
     LOGGER.exception("Unhandled Telegram application error update=%s", update, exc_info=context.error)
 
 
+async def _nightly_reconciliation_loop(application: Application) -> None:
+    settings = application.bot_data["settings"]
+    while True:
+        now = datetime.now(timezone.utc)
+        next_run = now.replace(hour=3, minute=0, second=0, microsecond=0)
+        if next_run <= now:
+            next_run += timedelta(days=1)
+        await asyncio.sleep((next_run - now).total_seconds())
+        await asyncio.to_thread(reconcile_preferences, str(settings.allowed_user_id))
+
+
+async def _start_nightly_reconciliation(application: Application) -> None:
+    application.bot_data["reconciliation_task"] = application.create_task(
+        _nightly_reconciliation_loop(application),
+        name="oyi-nightly-preference-reconciliation",
+    )
+
+
+async def _stop_nightly_reconciliation(application: Application) -> None:
+    task = application.bot_data.get("reconciliation_task")
+    if task:
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+
+
 def build_application(settings: Settings) -> Application:
-    app = ApplicationBuilder().token(settings.telegram_bot_token).build()
+    app = (
+        ApplicationBuilder()
+        .token(settings.telegram_bot_token)
+        .post_init(_start_nightly_reconciliation)
+        .post_shutdown(_stop_nightly_reconciliation)
+        .build()
+    )
     app.bot_data["settings"] = settings
     app.bot_data["rate_limiter"] = TokenBucketRateLimiter(
         rate_per_minute=settings.requests_per_minute,
