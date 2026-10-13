@@ -24,6 +24,8 @@ from pydantic import BaseModel, Field
 from tavily import AsyncTavilyClient
 from tavily import errors as tavily_errors
 
+from tavily_response import parse_tavily_pages, parse_tavily_research, parse_tavily_search
+
 LOGGER = logging.getLogger("oyi.tavily")
 
 # Tavily API limits documented at:
@@ -326,31 +328,11 @@ def _clip(text: str, limit: int) -> str:
 
 
 def _format_search(data: dict) -> str:
-    results = data.get("results") or []
-    if not results:
-        return f"No web results found for: {data.get('query', '')!r}"
-    blocks = []
-    for index, item in enumerate(results, start=1):
-        score = item.get("score")
-        header = f"{index}. {item.get('title') or item.get('url')}"
-        if isinstance(score, (int, float)):
-            header += f" (relevance {score:.2f})"
-        content = (item.get("content") or "").strip()
-        blocks.append(f"{header}\n{item.get('url')}\n{content}".rstrip())
-    return "\n\n".join(blocks)
+    return parse_tavily_search(data, query=str(data.get("query") or ""))
 
 
 def _format_pages(data: dict, per_page_chars: int) -> str:
-    """Format Extract and Crawl responses, including failed URL results."""
-    sections = [
-        f"{item.get('url')}\n{_clip((item.get('raw_content') or '').strip(), per_page_chars)}"
-        for item in data.get("results") or []
-    ]
-    sections += [
-        f"FAILED {item.get('url')}: {item.get('error') or 'unknown error'}"
-        for item in data.get("failed_results") or []
-    ]
-    return "\n\n".join(section for section in sections if section) or "No content was returned."
+    return parse_tavily_pages(data, per_page_chars=per_page_chars)
 
 
 def _format_map(data: dict) -> str:
@@ -361,15 +343,7 @@ def _format_map(data: dict) -> str:
 
 
 def _format_research(data: dict) -> str:
-    content = str(data.get("content") or "").strip()
-    report = _clip(content, _RESEARCH_CHARS) if content else "Research completed but returned no content."
-    sources = data.get("sources") or []
-    if sources:
-        listing = "\n".join(
-            f"- {item.get('title') or item.get('url')}: {item.get('url')}" for item in sources
-        )
-        report += f"\n\nSources:\n{listing}"
-    return report
+    return parse_tavily_research(data)
 
 
 async def _run_research(
