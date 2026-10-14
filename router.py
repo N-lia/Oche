@@ -10,6 +10,8 @@ from typing import Literal
 from langchain_openai import ChatOpenAI
 from pydantic import BaseModel, Field
 
+from privacy import PrivacyVault
+
 NEBIUS_BASE_URL = "https://api.tokenfactory.nebius.com/v1/"
 FAST_MODEL = os.getenv("OYI_FAST_MODEL", "nvidia/Nemotron-3-Nano-30B-A3B")
 EVERYDAY_MODEL = os.getenv("OYI_EVERYDAY_MODEL", "nvidia/Nemotron-3-Super-120B-A12B")
@@ -49,6 +51,7 @@ def _classifier():
 
 def classify_request(user_input: str) -> RouteDecision:
     """Classify intent and extract useful entities with the fast model."""
+    user_input = PrivacyVault().scrub(user_input)
     prompt = (
         "Classify this user request for model routing and extract only entities useful "
         "for answering it. Choose serious only for multi-step reasoning, difficult "

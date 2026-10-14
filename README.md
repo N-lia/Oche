@@ -33,6 +33,20 @@ to Nemotron 3 Ultra. Override the defaults with `OYI_FAST_MODEL`,
 `OYI_EVERYDAY_MODEL`, and `OYI_REASONING_MODEL` when exporting the sandbox
 environment.
 
+External requests pass through a local privacy scrubber before reaching Tavily or
+Nebius. Set `OYI_PII_PROJECT_NAMES` to a comma-separated list of sensitive project
+names. Values are replaced with per-request aliases; use `prepare_mail()` from
+`privacy.py` only at a trusted local mail-delivery boundary to restore the original
+values. The scrubber never sends its alias vault to external services.
+
+## Module boundaries
+
+- `agent_service.py` owns model construction, routing, memory context, privacy, and streaming.
+- `main.py` is a compatibility facade for the agent service API.
+- `telegram_support.py` owns Telegram settings, rate limiting, and message formatting helpers.
+- `TG.py` owns Telegram handlers, document transport, and application lifecycle.
+- `memory.py`, `privacy.py`, `router.py`, and `tool.py` provide reusable domain services.
+
 Mem0 uses Nebius for both memory extraction and embeddings. Persistent Mem0
 data is stored under `/data/oyi-memory`, so mount an OCI block volume at
 `/data` when deploying the container. The volume must survive container

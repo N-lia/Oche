@@ -24,6 +24,7 @@ from pydantic import BaseModel, Field
 from tavily import AsyncTavilyClient
 from tavily import errors as tavily_errors
 
+from privacy import PrivacyVault, scrub_for_external
 from tavily_response import parse_tavily_pages, parse_tavily_research, parse_tavily_search
 
 LOGGER = logging.getLogger("oyi.tavily")
@@ -427,6 +428,7 @@ async def tavily_search(
     if time_range is not None:
         # Tavily does not accept relative and absolute date filters together.
         start_date = end_date = None
+    query, _ = scrub_for_external(query)
     client = _get_client()
     return await _respond(
         lambda: client.search(
@@ -469,6 +471,9 @@ async def tavily_extract(
         extract_depth: "basic" (default), or "advanced" for tables, JS-rendered
             pages, and embedded content (higher success, more latency).
     """
+    vault = PrivacyVault()
+    urls = [vault.scrub(url) for url in urls]
+    query = vault.scrub(query) if query else query
     client = _get_client()
     return await _respond(
         lambda: client.extract(
@@ -510,6 +515,9 @@ async def tavily_map(
         select_paths: Regex patterns URLs must match, e.g. ["/docs/.*"].
         exclude_paths: Regex patterns URLs must not match, e.g. ["/changelog/.*"].
     """
+    vault = PrivacyVault()
+    url = vault.scrub(url)
+    instructions = vault.scrub(instructions) if instructions else instructions
     client = _get_client()
     return await _respond(
         lambda: client.map(
@@ -556,6 +564,9 @@ async def tavily_crawl(
         select_paths: Regex patterns page URLs must match, e.g. ["/docs/.*"].
         exclude_paths: Regex patterns page URLs must not match.
     """
+    vault = PrivacyVault()
+    url = vault.scrub(url)
+    instructions = vault.scrub(instructions) if instructions else instructions
     client = _get_client()
     return await _respond(
         lambda: client.crawl(
@@ -596,6 +607,7 @@ async def tavily_research(
         request_id: Resume or poll an existing research task instead of creating one.
         timeout_seconds: How long to wait for completion, 30-600 (default 300).
     """
+    input = PrivacyVault().scrub(input) if input else input
     client = _get_client()
     return await _respond(
         lambda: _run_research(

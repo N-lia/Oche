@@ -5,7 +5,6 @@ import logging
 import os
 import tempfile
 import time
-from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Final
@@ -23,16 +22,20 @@ from telegram.ext import (
     filters,
 )
 
-from config import format_agent_response
 from main import astream_chat_agent
 from memory import reconcile_preferences
+from telegram_support import (
+    Settings,
+    TokenBucketRateLimiter,
+    clamp_prompt,
+    split_telegram_text,
+    telegram_preview,
+)
 
 load_dotenv()
 
 LOGGER = logging.getLogger("oyi.telegram")
 
-TELEGRAM_TEXT_LIMIT: Final[int] = 4096
-TELEGRAM_EDIT_MARGIN: Final[int] = 96
 SUPPORTED_EXTENSIONS: Final[set[str]] = {".pdf", ".docx", ".doc", ".pptx", ".xlsx", ".txt"}
 SUPPORTED_MIME_TYPES: Final[set[str]] = {
     "application/pdf",
@@ -42,114 +45,6 @@ SUPPORTED_MIME_TYPES: Final[set[str]] = {
     "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
     "text/plain",
 }
-
-
-@dataclass(frozen=True)
-class Settings:
-    telegram_bot_token: str
-    allowed_user_id: int
-    edit_interval_seconds: float = 1.0
-    min_edit_delta_chars: int = 24
-    max_prompt_chars: int = 45_000
-    max_document_bytes: int = 12 * 1024 * 1024
-    requests_per_minute: int = 12
-    burst_requests: int = 4
-    max_concurrent_requests: int = 2
-    polling_allowed_updates: tuple[str, ...] = ("message",)
-
-    def __post_init__(self) -> None:
-        if self.edit_interval_seconds <= 0:
-            raise ValueError("edit_interval_seconds must be greater than zero")
-        if self.min_edit_delta_chars <= 0:
-            raise ValueError("min_edit_delta_chars must be greater than zero")
-        if self.max_prompt_chars <= 0:
-            raise ValueError("max_prompt_chars must be greater than zero")
-        if self.max_document_bytes <= 0:
-            raise ValueError("max_document_bytes must be greater than zero")
-        if self.requests_per_minute <= 0:
-            raise ValueError("requests_per_minute must be greater than zero")
-        if self.burst_requests <= 0:
-            raise ValueError("burst_requests must be greater than zero")
-        if self.max_concurrent_requests <= 0:
-            raise ValueError("max_concurrent_requests must be greater than zero")
-
-    @classmethod
-    def from_env(cls) -> "Settings":
-        token = require_env("TELEGRAM_BOT_TOKEN")
-        allowed_user_raw = require_env("My_Telegram_ID")
-
-        try:
-            allowed_user_id = int(allowed_user_raw)
-        except ValueError as exc:
-            raise RuntimeError("My_Telegram_ID must be an integer Telegram user ID.") from exc
-
-        return cls(
-            telegram_bot_token=token,
-            allowed_user_id=allowed_user_id,
-            edit_interval_seconds=get_float_env("TELEGRAM_EDIT_INTERVAL_SECONDS", 1.0),
-            min_edit_delta_chars=get_int_env("TELEGRAM_MIN_EDIT_DELTA_CHARS", 24),
-            max_prompt_chars=get_int_env("TELEGRAM_MAX_PROMPT_CHARS", 45_000),
-            max_document_bytes=get_int_env("TELEGRAM_MAX_DOCUMENT_BYTES", 12 * 1024 * 1024),
-            requests_per_minute=get_int_env("TELEGRAM_REQUESTS_PER_MINUTE", 12),
-            burst_requests=get_int_env("TELEGRAM_BURST_REQUESTS", 4),
-            max_concurrent_requests=get_int_env("TELEGRAM_MAX_CONCURRENT_REQUESTS", 2),
-        )
-
-
-class TokenBucketRateLimiter:
-    """Simple async token bucket keyed by Telegram user ID."""
-
-    def __init__(self, rate_per_minute: int, burst: int) -> None:
-        if rate_per_minute <= 0:
-            raise ValueError("rate_per_minute must be greater than zero")
-        if burst <= 0:
-            raise ValueError("burst must be greater than zero")
-
-        self._capacity = float(burst)
-        self._refill_per_second = rate_per_minute / 60
-        self._buckets: dict[int, tuple[float, float]] = {}
-        self._lock = asyncio.Lock()
-
-    async def allow(self, user_id: int) -> tuple[bool, float]:
-        async with self._lock:
-            now = time.monotonic()
-            tokens, updated_at = self._buckets.get(user_id, (self._capacity, now))
-            tokens = min(self._capacity, tokens + (now - updated_at) * self._refill_per_second)
-
-            if tokens >= 1:
-                self._buckets[user_id] = (tokens - 1, now)
-                return True, 0
-
-            retry_after = (1 - tokens) / self._refill_per_second
-            self._buckets[user_id] = (tokens, now)
-            return False, retry_after
-
-
-def require_env(name: str) -> str:
-    value = os.getenv(name)
-    if not value:
-        raise RuntimeError(f"Missing required environment variable: {name}")
-    return value
-
-
-def get_int_env(name: str, default: int) -> int:
-    raw_value = os.getenv(name)
-    if raw_value is None:
-        return default
-    try:
-        return int(raw_value)
-    except ValueError as exc:
-        raise RuntimeError(f"{name} must be an integer.") from exc
-
-
-def get_float_env(name: str, default: float) -> float:
-    raw_value = os.getenv(name)
-    if raw_value is None:
-        return default
-    try:
-        return float(raw_value)
-    except ValueError as exc:
-        raise RuntimeError(f"{name} must be a number.") from exc
 
 
 def setup_logging() -> None:
@@ -226,41 +121,6 @@ def extract_document_text(data: bytes, filename: str) -> str:
     finally:
         if tmp_path and os.path.exists(tmp_path):
             os.remove(tmp_path)
-
-
-def clamp_prompt(text: str, max_chars: int) -> tuple[str, bool]:
-    if len(text) <= max_chars:
-        return text, False
-    return text[:max_chars], True
-
-
-def telegram_preview(text: str) -> str:
-    text = format_agent_response(text)
-    if len(text) <= TELEGRAM_TEXT_LIMIT:
-        return text
-    return text[: TELEGRAM_TEXT_LIMIT - TELEGRAM_EDIT_MARGIN].rstrip() + "\n\n[Response continues...]"
-
-
-def split_telegram_text(text: str) -> list[str]:
-    chunks: list[str] = []
-    remaining = format_agent_response(text)
-
-    while len(remaining) > TELEGRAM_TEXT_LIMIT:
-        split_at = remaining.rfind("\n", 0, TELEGRAM_TEXT_LIMIT)
-        if split_at < TELEGRAM_TEXT_LIMIT // 2:
-            split_at = remaining.rfind(" ", 0, TELEGRAM_TEXT_LIMIT)
-        if split_at < TELEGRAM_TEXT_LIMIT // 2:
-            split_at = TELEGRAM_TEXT_LIMIT
-
-        chunk = remaining[:split_at].strip()
-        if chunk:
-            chunks.append(chunk)
-        remaining = remaining[split_at:].strip()
-
-    if remaining:
-        chunks.append(remaining)
-
-    return chunks or [""]
 
 
 async def safe_edit_text(message, text: str) -> bool:
