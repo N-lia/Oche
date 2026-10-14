@@ -27,6 +27,12 @@ openshell sandbox create \
 	-- python TG.py
 ```
 
+Requests use a model cascade. The fast classifier extracts intent and entities,
+then routes routine work to Nano, standard work to Super, and serious reasoning
+to Nemotron 3 Ultra. Override the defaults with `OYI_FAST_MODEL`,
+`OYI_EVERYDAY_MODEL`, and `OYI_REASONING_MODEL` when exporting the sandbox
+environment.
+
 Mem0 uses Nebius for both memory extraction and embeddings. Persistent Mem0
 data is stored under `/data/oyi-memory`, so mount an OCI block volume at
 `/data` when deploying the container. The volume must survive container

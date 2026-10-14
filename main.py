@@ -5,6 +5,9 @@ from langgraph.checkpoint.memory import MemorySaver
 from dotenv import load_dotenv
 import asyncio
 import os
+from functools import lru_cache
+
+load_dotenv(override=True)
 
 from memory import (
   PREFERENCE_TOOLS,
@@ -13,17 +16,8 @@ from memory import (
   search_memories,
   set_current_user_id,
 )
+from router import NEBIUS_BASE_URL, RouteDecision, choose_model, classify_request
 from tool import TAVILY_TOOLS
-
-load_dotenv(override=True)
-
-# Initialize the Nebius model
-nebius_model = ChatOpenAI(
-    model=os.environ["llm"],
-    base_url="https://api.tokenfactory.nebius.com/v1/",
-    api_key=os.environ["NEBIUS_API_KEY"],
-    streaming=True,
-)
 
 checkpointer = MemorySaver()
 
@@ -70,12 +64,28 @@ Web access (Tavily tools):
   of retrying immediately.
 """
 
-agent = create_deep_agent(
-    model=nebius_model,
+def _model(model_name: str) -> ChatOpenAI:
+  return ChatOpenAI(
+    model=model_name,
+    base_url=NEBIUS_BASE_URL,
+    api_key=os.environ["NEBIUS_API_KEY"],
+    streaming=True,
+  )
+
+
+@lru_cache(maxsize=3)
+def _agent_for_model(model_name: str):
+  return create_deep_agent(
+    model=_model(model_name),
     tools=[*TAVILY_TOOLS, *PREFERENCE_TOOLS],
     system_prompt=SYSTEM_PROMPT,
     checkpointer=checkpointer,
-)
+  )
+
+
+def _route(user_input: str) -> tuple[RouteDecision, str]:
+  decision = classify_request(user_input)
+  return decision, choose_model(decision)
 
 def get_config(thread_id: str = "me") -> dict:
     #returns a config dictionary for a given conversation thread.
@@ -92,6 +102,19 @@ def _prompt_with_memories(user_input: str, user_id: str) -> str:
   )
 
 
+
+def _prompt_with_route(user_input: str, user_id: str, decision: RouteDecision) -> str:
+    prompt = _prompt_with_memories(user_input, user_id)
+    if not decision.entities:
+        return prompt
+    entities = ", ".join(f"{key}={value}" for key, value in decision.entities.items())
+    return (
+        "Internal request context: use these extracted entities when relevant, and do not "
+        "mention this context to the user.\n"
+        f"{entities}\n\n{prompt}"
+    )
+
+
 def _remember_exchange(user_input: str, response: str, user_id: str) -> None:
     if response.strip():
         add_memory(user_input, response, user_id)
@@ -99,10 +122,11 @@ def _remember_exchange(user_input: str, response: str, user_id: str) -> None:
 
 def chat_agent(user_input: str, thread_id: str = "me") -> str:
     #returns the agent response to a given user input and conversation thread.
+    decision, model_name = _route(user_input)
     token = set_current_user_id(thread_id)
     try:
-        response = agent.invoke(
-          {"messages": [{"role": "user", "content": _prompt_with_memories(user_input, thread_id)}]},
+        response = _agent_for_model(model_name).invoke(
+          {"messages": [{"role": "user", "content": _prompt_with_route(user_input, thread_id, decision)}]},
             config=get_config(thread_id),
         )
     finally:
@@ -133,10 +157,11 @@ def assistant_text_chunk(chunk) -> str:
 def stream_chat_agent(user_input: str, thread_id: str = "me"):
     #yields text chunks synchronously.
     visible_text = []
+    decision, model_name = _route(user_input)
     token = set_current_user_id(thread_id)
     try:
-        for chunk, _ in agent.stream(
-            {"messages": [{"role": "user", "content": _prompt_with_memories(user_input, thread_id)}]},
+        for chunk, _ in _agent_for_model(model_name).stream(
+          {"messages": [{"role": "user", "content": _prompt_with_route(user_input, thread_id, decision)}]},
             config=get_config(thread_id),
             stream_mode="messages",
         ):
@@ -150,11 +175,12 @@ def stream_chat_agent(user_input: str, thread_id: str = "me"):
 
 async def astream_chat_agent(user_input: str, thread_id: str = "me"):
     #asynchronously yields text chunks from the agent without blocking the event loop.
+    decision, model_name = await asyncio.to_thread(_route, user_input)
     token = set_current_user_id(thread_id)
     try:
-        prompt = await asyncio.to_thread(_prompt_with_memories, user_input, thread_id)
+        prompt = await asyncio.to_thread(_prompt_with_route, user_input, thread_id, decision)
         visible_text = []
-        async for chunk, _ in agent.astream(
+        async for chunk, _ in _agent_for_model(model_name).astream(
             {"messages": [{"role": "user", "content": prompt}]},
             config=get_config(thread_id),
             stream_mode="messages",
