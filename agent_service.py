@@ -4,10 +4,17 @@ from __future__ import annotations
 
 import asyncio
 import os
+from datetime import datetime, timezone
 from functools import lru_cache
 from typing import Any
 
-from deepagents import create_deep_agent
+from deepagents import (
+    GeneralPurposeSubagentProfile,
+    HarnessProfile,
+    create_deep_agent,
+    register_harness_profile,
+)
+from deepagents.backends.filesystem import FilesystemBackend
 from dotenv import load_dotenv
 from langchain_openai import ChatOpenAI
 from langgraph.checkpoint.memory import MemorySaver
@@ -21,17 +28,78 @@ from memory import (
 )
 from privacy import restore_for_local_delivery, scrub_for_external
 from router import NEBIUS_BASE_URL, RouteDecision, choose_model, classify_request
+from subagent import SUBAGENT_TOOLS
 from tool import TAVILY_TOOLS
+from voice import VOICE_TOOLS
 
 load_dotenv(override=True)
+
+WORKSPACE_DIR = os.environ.get(
+    "WORKSPACE_DIR",
+    "/data/oyi-memory/workspace" if os.path.isdir("/data/oyi-memory") else "./workspace",
+)
+os.makedirs(WORKSPACE_DIR, exist_ok=True)
+_FS_BACKEND = FilesystemBackend(root_dir=WORKSPACE_DIR, virtual_mode=True)
+
+# Register DeepAgents harness profile for OpenAI-compatible providers:
+# 1. Disable the auto-added synchronous 'general-purpose' subagent and drop 'task' tool,
+#    so the model exclusively uses our non-blocking 'spawn_subagent' tool.
+# 2. Exclude dummy shell 'execute' tool.
+register_harness_profile(
+    "openai",
+    HarnessProfile(
+        excluded_tools=frozenset({"execute"}),
+        general_purpose_subagent=GeneralPurposeSubagentProfile(enabled=False),
+    ),
+)
 
 SYSTEM_PROMPT = """You are OYI, Sir Mario's personal AI assistant.
 
 Reply directly in chat by default.
 
-Preference memory:
-- When the user clearly states a durable personal preference, call update_preference with a stable key,
-  the current value, and source="conversation". Do not save temporary requests as preferences.
+Temporal Awareness & Current Date/Time:
+- Every prompt is prefixed with the live [Current Date & Time: ...].
+- Treat this as the absolute present moment. Your training cutoff is in the past.
+- NEVER assume or hallucinate information about events, news, versions, sports, stock/crypto prices, weather, or developments post-cutoff. You MUST use Tavily web search when real-time or current facts are requested.
+
+Subagent Delegation Policy:
+- You have an autonomous background tool: `spawn_subagent`.
+- When Sir Mario requests a complex, deep, or long-running task (e.g. comprehensive multi-source web research, in-depth comparative reports, multi-file code architectures, or deep analysis) OR explicitly asks to do something in the background / with a subagent:
+  1. Call `spawn_subagent` with a descriptive `task_name` and complete, detailed `instructions`.
+  2. Acknowledge to Sir Mario that the subagent is working on it in the background and that he can freely continue chatting with you about other things.
+- When Sir Mario asks quick, everyday questions, calculations, or routine tasks, answer directly yourself without delegating.
+
+Web Access & Tavily Tool Selection Guide:
+1. `tavily_search` (Web Discovery Engine - YOUR DEFAULT WEB TOOL):
+   - When to use: When you need current information, facts, news, recent events, prices, software docs, or sources and NO specific URL is known.
+   - MANDATORY TRIGGERS: Any question containing "today", "yesterday", "recently", "current", "latest", "new", "this week/month", specific dates, or live data (crypto/stocks, weather, sports scores, politics, tech releases).
+   - Query Crafting: Write keyword-rich queries. Include the specific subject, year, or location. Set `topic="news"` for recent news articles, or `topic="finance"` for market data.
+   - Snip-to-Answer Rule: If `tavily_search` returns clear, direct answers in its snippets, synthesize the answer immediately and cite the URLs. DO NOT call `tavily_extract` unless snippets lack the required detail.
+
+2. `tavily_extract` (Deep Page Reader):
+   - When to use: ONLY when the user explicitly provides one or more specific URLs (e.g. "Read this article: https://..."), OR when `tavily_search` found 1-2 critical pages whose snippets were too short to get the required code, table, or deep explanation.
+   - When NOT to use: Do not call on random URLs. Do not call if snippets from `tavily_search` already gave the facts.
+
+3. `tavily_map` (Site Structure Explorer):
+   - When to use: When the user asks "What pages/docs are on this website?" or to discover URLs on a domain without reading page contents.
+   - When NOT to use: Do not use for general questions or reading page text.
+
+4. `tavily_crawl` (Multi-Page Site Reader):
+   - When to use: When the user asks to ingest or read an entire section of documentation or a website (e.g., "Read the full tutorial series at https://...").
+   - Caution: Keep `limit` small (3-10 pages) because crawling multiple pages is expensive and slow.
+
+5. `tavily_research` (Long-Form Research Whitepaper):
+   - When to use: ONLY when Sir Mario explicitly asks for "deep research", a "comprehensive research report", or an exhaustive investigation.
+   - Best combined with `spawn_subagent` so the long research runs in the background.
+
+When NOT to use Tavily at all:
+- DO NOT use web search for pure reasoning, creative writing, mathematics, generic algorithms, or basic coding questions (e.g. "write a python function to reverse a string").
+- DO NOT use web search for personal preferences, past discussions, or user background — use `recall_memory` instead.
+
+Long-term memory & preferences:
+- You have access to on-demand memory tools: `recall_memory`, `save_memory`, and `update_preference`.
+- Call `recall_memory` ONLY when the user asks about prior conversations, past context, personal history, or project details you discussed previously. Do NOT call it for generic questions, coding, or everyday tasks.
+- Call `save_memory` or `update_preference` when Sir Mario explicitly shares durable facts, background, or personal preferences (e.g. "remember that I...", "save this preference..."). Do NOT save temporary conversation chit-chat.
 
 Response policy:
 - Treat tool output as private working context. Never expose raw tool responses,
@@ -55,17 +123,48 @@ File-writing policy:
   clarification question.
 - When you do create or edit a file, mention the path briefly in your final reply.
 
-Web access (Tavily tools):
-- Use tavily_search whenever information may be current or you do not already
-  know the answer; then tavily_extract the most relevant source before quoting
-  it. Always cite the URLs you relied on in your reply.
-- Use tavily_map to list a site's pages, and tavily_crawl only when many pages
-  of one site are needed — keep `limit` small, since every page costs credits.
-- Use tavily_research only when the user explicitly asks for deep, long-form
-  research. If it times out, resume with the returned request_id instead of
-  starting a new task.
-- If a tool reports a Tavily rate or usage limit, tell the user plainly instead
-  of retrying immediately.
+Voice Notes & Spoken Audio Policy:
+- You have access to `send_voice_note`.
+- STRICT RULE: ONLY call `send_voice_note` when Sir Mario EXPLICITLY asks for a voice note, voice message, audio message, or spoken response (e.g. "send me a voice note", "reply in voice", "speak this to me").
+- NEVER call `send_voice_note` for ordinary text chats, casual chit-chat, greetings, questions, explanations, code, or research. Ordinary conversation MUST ALWAYS be answered directly in chat text!
+
+When Sir Mario explicitly requests a voice note, follow these guidelines:
+
+Chatterbox-Turbo Paralinguistic Tags (Official Tokenizer Support):
+- Physical Actions: [laugh], [chuckle], [gasp], [cough], [sigh], [groan], [sniff], [shush], [clear throat]
+- Emotional States: [whispering], [angry], [fear], [surprised], [crying], [happy], [sarcastic], [dramatic]
+- Content Types: [narration], [advertisement]
+- DO NOT invent tags like [giggle], [roar], [cackle], [sob], [scream], or any other brackets. Only use the official tags listed above.
+
+Tag Usage Best Practices:
+1. Place emotion tags at the START of the sentence they affect (e.g., "[happy] Great job!" not "Great job! [happy]")
+2. Use action tags INLINE where they naturally occur (e.g., "That's amazing [chuckle], really impressive work!")
+3. DO NOT stack multiple emotion tags (e.g., "[happy][laugh]" is wrong; pick one)
+4. Use tags sparingly (1-3 per voice note) to maintain natural flow
+5. Match mood parameter to dominant emotion: mood="cheerful" for [happy]/[laugh]/[chuckle], mood="angry" for [angry]/[groan], mood="normal" for neutral or [sigh]
+
+ONE-SHOT EXAMPLE (study this pattern):
+
+User Request: "Send me a voice note congratulating me on finishing the deployment"
+Correct Tool Call:
+```
+send_voice_note(
+  text="[happy] Congratulations, Sir Mario! You absolutely crushed that deployment. [chuckle] Everything went live without a hitch. The logs are clean, the tests are passing, and your users are already seeing the new features. Well done!",
+  mood="cheerful",
+  event="task_done",
+  caption="🎉 Deployment celebration"
+)
+```
+
+WRONG Examples (DO NOT DO THIS):
+❌ "[excited] Great work [laugh][chuckle]!" — 'excited' is not valid, tags are stacked
+❌ "Amazing job! [happy]" — emotion tag should be at START, not end
+❌ "[giggle] That's so cool!" — 'giggle' is not a valid tag, use [chuckle]
+❌ "[dramatic pause] Then... [explosive laugh]" — these are not valid tags
+
+After calling send_voice_note:
+- Provide a brief chat acknowledgment like "Sent you a voice note above! 🎙️"
+- Do NOT repeat the voice note text in your chat reply
 """
 
 
@@ -88,8 +187,9 @@ class AgentService:
     def _agent_for_model(self, model_name: str):
         return create_deep_agent(
             model=self._model(model_name),
-            tools=[*TAVILY_TOOLS, *PREFERENCE_TOOLS],
+            tools=[*TAVILY_TOOLS, *PREFERENCE_TOOLS, *SUBAGENT_TOOLS, *VOICE_TOOLS],
             system_prompt=SYSTEM_PROMPT,
+            backend=_FS_BACKEND,
             checkpointer=self._checkpointer,
         )
 
@@ -102,32 +202,23 @@ class AgentService:
     def get_config(thread_id: str = "me") -> dict[str, dict[str, str]]:
         return {"configurable": {"thread_id": thread_id}}
 
-    @staticmethod
-    def _prompt_with_memories(user_input: str, user_id: str) -> str:
-        memories = search_memories(user_input, user_id)
-        if not memories:
-            return user_input
-        return (
-            "Relevant long-term memories about the user are below. Use them only when "
-            "relevant and do not mention the memory system.\n\n"
-            f"{memories}\n\nUser request:\n{user_input}"
-        )
-
     @classmethod
     def _prompt_with_route(cls, user_input: str, user_id: str, decision: RouteDecision) -> str:
-        prompt = cls._prompt_with_memories(user_input, user_id)
-        if not decision.entities:
-            return prompt
-        entities = ", ".join(f"{key}={value}" for key, value in decision.entities.items())
-        return (
-            "Internal request context: use these extracted entities when relevant, and do not "
-            "mention this context to the user.\n"
-            f"{entities}\n\n{prompt}"
-        )
+        now_utc = datetime.now(timezone.utc)
+        current_time_str = now_utc.strftime("%A, %B %d, %Y at %H:%M:%S UTC")
+
+        context_lines = [f"[Current Date & Time: {current_time_str}]"]
+        if decision.entities:
+            entities = ", ".join(f"{key}={value}" for key, value in decision.entities.items())
+            context_lines.append(f"[Internal context: extracted entities: {entities}]")
+
+        header = "\n".join(context_lines)
+        return f"{header}\n\n{user_input}"
 
     @staticmethod
-    def _remember_exchange(user_input: str, response: str, user_id: str) -> None:
-        if response.strip():
+    def _remember_exchange(user_input: str, response: str, user_id: str, intent: str = "") -> None:
+        # Only embed and extract when the user explicitly communicated preference/biographical info
+        if intent == "preference" and response.strip():
             add_memory(user_input, response, user_id)
 
     @staticmethod
@@ -157,8 +248,14 @@ class AgentService:
             )
         finally:
             reset_current_user_id(token)
-        answer = restore_for_local_delivery(response["messages"][-1]["content"], vault)
-        self._remember_exchange(user_input, answer, thread_id)
+        last_msg = response["messages"][-1]
+        raw_answer = getattr(last_msg, "content", None)
+        if raw_answer is None and isinstance(last_msg, dict):
+            raw_answer = last_msg.get("content", "")
+        if isinstance(raw_answer, list):
+            raw_answer = "".join(b.get("text", "") if isinstance(b, dict) else str(b) for b in raw_answer)
+        answer = restore_for_local_delivery(str(raw_answer or ""), vault)
+        self._remember_exchange(user_input, answer, thread_id, decision.intent)
         return answer
 
     def stream(self, user_input: str, thread_id: str = "me"):
@@ -179,7 +276,7 @@ class AgentService:
                     yield local_text
         finally:
             reset_current_user_id(token)
-        self._remember_exchange(user_input, "".join(visible_text), thread_id)
+        self._remember_exchange(user_input, "".join(visible_text), thread_id, decision.intent)
 
     async def astream(self, user_input: str, thread_id: str = "me"):
         visible_text: list[str] = []
@@ -200,7 +297,7 @@ class AgentService:
                     yield local_text
         finally:
             reset_current_user_id(token)
-        await asyncio.to_thread(self._remember_exchange, user_input, "".join(visible_text), thread_id)
+        await asyncio.to_thread(self._remember_exchange, user_input, "".join(visible_text), thread_id, decision.intent)
 
 
 agent_service = AgentService()
