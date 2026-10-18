@@ -27,3 +27,10 @@ network_policies:
         port: 443
     binaries:
       - path: /usr/local/bin/python3.12
+
+  modal:
+    endpoints:
+      - host: "*.modal.run"
+        port: 443
+    binaries:
+      - path: /usr/local/bin/python3.12

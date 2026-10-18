@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+import base64
+import io
 import logging
 import os
 import tempfile
@@ -9,8 +11,15 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Final
 
+import httpx
 from dotenv import load_dotenv
-from telegram import Update
+from telegram import (
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    MenuButtonWebApp,
+    Update,
+    WebAppInfo,
+)
 from telegram.constants import ChatAction
 from telegram.error import BadRequest, NetworkError, RetryAfter, TelegramError, TimedOut
 from telegram.ext import (
@@ -24,6 +33,8 @@ from telegram.ext import (
 
 from main import astream_chat_agent
 from memory import reconcile_preferences
+from subagent import register_telegram_notifier
+from voice import register_telegram_voice_sender
 from telegram_support import (
     Settings,
     TokenBucketRateLimiter,
@@ -179,8 +190,15 @@ async def stream_reply(
 
                 accumulated += chunk
                 now = time.monotonic()
-                edit_due = now - last_edit_time >= settings.edit_interval_seconds
-                content_changed = len(accumulated) - len(last_edit_text) >= settings.min_edit_delta_chars
+
+                # Eager first edit: show the very first words immediately (>= 6 chars)
+                # Subsequent edits: throttled by edit_interval_seconds to stay well within Telegram limits
+                if not last_edit_text:
+                    edit_due = len(accumulated.strip()) >= 6
+                    content_changed = True
+                else:
+                    edit_due = now - last_edit_time >= settings.edit_interval_seconds
+                    content_changed = len(accumulated) - len(last_edit_text) >= settings.min_edit_delta_chars
 
                 if edit_due and content_changed:
                     preview = telegram_preview(accumulated)
@@ -199,10 +217,50 @@ async def stream_reply(
             await safe_edit_text(sent_message, "Sorry, something went wrong while generating a response.")
 
 
+def get_webapp_url() -> str:
+    return os.getenv("TELEGRAM_WEBAPP_URL", "").strip()
+
+
+async def voice_app(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not await enforce_access_and_rate_limit(update, context):
+        return
+
+    webapp_url = get_webapp_url()
+    if not webapp_url:
+        await update.effective_message.reply_text(
+            "⚠️ Voice Lab WebApp URL is not configured yet.\n\n"
+            "Please set `TELEGRAM_WEBAPP_URL` in your `.env` to launch the voice tester!"
+        )
+        return
+
+    keyboard = InlineKeyboardMarkup([
+        [InlineKeyboardButton("🎙️ Open Voice Lab WebApp", web_app=WebAppInfo(url=webapp_url))]
+    ])
+    await update.effective_message.reply_text(
+        "🎙️ **OYI Conversational Voice Lab**\n\n"
+        "Powered by **NVIDIA Parakeet Real-Time EOU** & **Chatterbox-Turbo**.\n"
+        "Tap below to launch the voice interface:",
+        reply_markup=keyboard,
+    )
+
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not await enforce_access_and_rate_limit(update, context):
         return
-    await update.effective_message.reply_text("Hello! I am OYI, your personal AI assistant. How can I help you today?")
+    webapp_url = get_webapp_url()
+    if webapp_url:
+        keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton("🎙️ Open Voice Lab WebApp", web_app=WebAppInfo(url=webapp_url))]
+        ])
+        await update.effective_message.reply_text(
+            "Hello Sir Mario! I am OYI, your personal AI assistant.\n\n"
+            "You can chat with me here, or tap below to open the real-time voice interface!",
+            reply_markup=keyboard,
+        )
+    else:
+        await update.effective_message.reply_text(
+            "Hello! I am OYI, your personal AI assistant. How can I help you today?"
+        )
 
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -220,6 +278,58 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         await message.reply_text("Your message was long, so I processed the first allowed portion.")
 
     await stream_reply(update, context, user_input, conversation_thread_id(chat.id))
+
+
+async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not await enforce_access_and_rate_limit(update, context):
+        return
+
+    message = update.effective_message
+    chat = update.effective_chat
+    if message is None or chat is None:
+        return
+
+    media = message.voice or message.audio
+    if media is None:
+        return
+
+    await safe_send_chat_action(context, chat.id, ChatAction.RECORD_VOICE)
+    status_msg = await message.reply_text("🎙️ Transcribing voice note...")
+
+    endpoint = os.getenv("PARAKEET_MODAL_URL", "").strip().rstrip("/")
+    if not endpoint:
+        await safe_edit_text(status_msg, "⚠️ PARAKEET_MODAL_URL is not configured in .env.")
+        return
+
+    parakeet_target = endpoint if "modal.run" in endpoint else f"{endpoint}/transcribe"
+
+    try:
+        media_file = await context.bot.get_file(media.file_id)
+        voice_bytes = await media_file.download_as_bytearray()
+        voice_b64 = base64.b64encode(voice_bytes).decode("utf-8")
+
+        async with httpx.AsyncClient(timeout=45.0) as client:
+            res = await client.post(parakeet_target, json={"audio_base64": voice_b64})
+            if res.status_code != 200:
+                await safe_edit_text(status_msg, f"⚠️ Parakeet ASR error: {res.text}")
+                return
+            data = res.json()
+            user_text = data.get("text", "").strip()
+            eou = data.get("eou_detected", False)
+
+        if not user_text:
+            await safe_edit_text(status_msg, "⚠️ Could not transcribe any speech from this voice note.")
+            return
+
+        eou_tag = " [EOU detected]" if eou else ""
+        await safe_edit_text(status_msg, f"🎙️ *\"{user_text}\"*{eou_tag}")
+
+        # Stream agent reply to the transcribed text
+        await stream_reply(update, context, user_text, conversation_thread_id(chat.id))
+
+    except Exception as exc:
+        LOGGER.exception("Voice handling failed")
+        await safe_edit_text(status_msg, f"⚠️ Failed to process voice note: {exc}")
 
 
 async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -294,7 +404,44 @@ async def _nightly_reconciliation_loop(application: Application) -> None:
         await asyncio.to_thread(reconcile_preferences, str(settings.allowed_user_id))
 
 
-async def _start_nightly_reconciliation(application: Application) -> None:
+async def _on_post_init(application: Application) -> None:
+    async def deliver_subagent_message(chat_id: int | str, task_name: str, result: str) -> None:
+        header = f"🔔 **Subagent Task Completed: {task_name}**\n\n"
+        full_text = header + result
+        chunks = split_telegram_text(full_text)
+        target_chat_id = int(chat_id) if str(chat_id).lstrip("-").isdigit() else chat_id
+        for chunk in chunks:
+            try:
+                await application.bot.send_message(chat_id=target_chat_id, text=chunk)
+            except Exception:
+                LOGGER.exception("Failed to deliver subagent result chunk to chat_id=%s", chat_id)
+
+    register_telegram_notifier(deliver_subagent_message)
+
+    async def deliver_voice_message(chat_id: int | str, audio_bytes: bytes, caption: str = "") -> None:
+        target_chat_id = int(chat_id) if str(chat_id).lstrip("-").isdigit() else chat_id
+        try:
+            await application.bot.send_voice(
+                chat_id=target_chat_id,
+                voice=io.BytesIO(audio_bytes),
+                caption=caption or None,
+            )
+        except Exception:
+            LOGGER.exception("Failed to deliver voice note to chat_id=%s", chat_id)
+            raise
+
+    register_telegram_voice_sender(deliver_voice_message)
+
+    webapp_url = get_webapp_url()
+    if webapp_url:
+        try:
+            await application.bot.set_chat_menu_button(
+                menu_button=MenuButtonWebApp(text="🎙️ Voice Lab", web_app=WebAppInfo(url=webapp_url))
+            )
+            LOGGER.info("Configured Telegram Bot Menu Button for Voice Lab: %s", webapp_url)
+        except Exception:
+            LOGGER.exception("Failed to set chat menu button for WebApp")
+
     application.bot_data["reconciliation_task"] = application.create_task(
         _nightly_reconciliation_loop(application),
         name="oyi-nightly-preference-reconciliation",
@@ -312,7 +459,7 @@ def build_application(settings: Settings) -> Application:
     app = (
         ApplicationBuilder()
         .token(settings.telegram_bot_token)
-        .post_init(_start_nightly_reconciliation)
+        .post_init(_on_post_init)
         .post_shutdown(_stop_nightly_reconciliation)
         .build()
     )
@@ -324,6 +471,8 @@ def build_application(settings: Settings) -> Application:
     app.bot_data["request_semaphore"] = asyncio.Semaphore(settings.max_concurrent_requests)
 
     app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("voice", voice_app))
+    app.add_handler(MessageHandler(filters.VOICE | filters.AUDIO, handle_voice))
     app.add_handler(MessageHandler(filters.Document.ALL, handle_document))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     app.add_error_handler(error_handler)
