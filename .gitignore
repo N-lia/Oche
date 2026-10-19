@@ -9,7 +9,8 @@ wheels/
 # Virtual environments
 .venv
 .env
-
-
-
-.env
+# Local database and media
+data/
+*.wav
+*.mp3
+*.log

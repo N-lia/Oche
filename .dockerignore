@@ -5,4 +5,13 @@
 __pycache__
 *.pyc
 Dockerfile
+Dockerfile.asr
 openshell-policy.yaml
+compose.yaml
+data
+out
+*.log
+*.wav
+*.mp3
+*.md
+test_*.py
