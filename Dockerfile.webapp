@@ -1,0 +1,47 @@
+# OYI Live WebApp image: the real-time voice + text agent UI.
+#
+# Runs the same agent stack as the Telegram bot plus FastAPI/Uvicorn, and is
+# served publicly behind Caddy (see compose.yaml + Caddyfile).
+#
+#   docker compose up -d --build webapp
+FROM python:3.12-slim
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    UV_COMPILE_BYTECODE=1 \
+    UV_LINK_MODE=copy \
+    UV_HTTP_TIMEOUT=120 \
+    HOME=/data/oyi-memory \
+    MEM0_DATA_DIR=/data/oyi-memory \
+    MEM0_DIR=/data/oyi-memory/.mem0 \
+    PATH="/app/.venv/bin:/usr/local/bin:${PATH}" \
+    WEBAPP_PORT=8000
+
+WORKDIR /app
+
+COPY --from=ghcr.io/astral-sh/uv:0.8.17 /uv /uvx /usr/local/bin/
+
+# Agent runtime (same lockfile as the bot).
+COPY pyproject.toml uv.lock ./
+RUN --mount=type=cache,target=/root/.cache/uv \
+    uv sync --locked --no-dev --no-install-project
+
+# Web framework extras, kept out of the bot image.
+COPY requirements-webapp.txt ./
+RUN --mount=type=cache,target=/root/.cache/uv \
+    uv pip install --python /app/.venv/bin/python -r requirements-webapp.txt
+
+COPY config.py main.py agent_service.py memory.py privacy.py router.py \
+     telegram_support.py TG.py voice.py subagent.py tool.py \
+     asr_client.py oyi_asr_pb2.py oyi_asr_pb2_grpc.py \
+     webapp_server.py voice_session.py backchannel.py ./
+COPY webapp/ ./webapp/
+COPY tavily_response/ ./tavily_response/
+
+RUN mkdir -p /data/oyi-memory/workspace \
+    && chown -R 65532:65532 /app /data
+
+USER 65532:65532
+
+EXPOSE 8000
+CMD ["python", "webapp_server.py"]

@@ -1,0 +1,53 @@
+# OYI Live WebApp + Caddy (TLS) on the Oracle Cloud VM.
+#
+#   docker compose up -d --build
+#   docker compose logs -f caddy      # watch certificate issuance
+#
+# Requires:
+#   - WEBAPP_DOMAIN in .env resolving to this VM's public IP
+#   - inbound TCP 80 + 443 open in the OCI VCN security list
+#   - the parakeet-asr service reachable on the host at :50051
+
+services:
+  webapp:
+    build:
+      context: .
+      dockerfile: Dockerfile.webapp
+    image: oyi-webapp:local
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      WEBAPP_PORT: "8000"
+      # Reach the on-host gRPC ASR (same as the Telegram bot).
+      PARAKEET_GRPC_TARGET: "host.docker.internal:50051"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      # The WebApp keeps its own memory store (Qdrant local mode locks its dir,
+      # so it cannot share the bot's volume safely).
+      - oyi-webapp-memory:/data/oyi-memory
+      - backchannel-cache:/app/data/backchannels
+    expose:
+      - "8000"
+
+  caddy:
+    image: caddy:2
+    restart: unless-stopped
+    depends_on:
+      - webapp
+    environment:
+      WEBAPP_DOMAIN: "${WEBAPP_DOMAIN:?set WEBAPP_DOMAIN in .env}"
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+
+volumes:
+  oyi-webapp-memory:
+  backchannel-cache:
+  caddy-data:
+  caddy-config:

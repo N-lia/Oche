@@ -1,0 +1,12 @@
+# Caddy reverse proxy for the OYI Live WebApp.
+# Automatic HTTPS via Let's Encrypt (HTTP-01 on :80, TLS on :443).
+#
+# WEBAPP_DOMAIN comes from the environment (see compose.yaml / .env).
+
+{$WEBAPP_DOMAIN} {
+	encode zstd gzip
+	reverse_proxy webapp:8000 {
+		# Preserve the real client IP for logs.
+		header_up X-Real-IP {remote_host}
+	}
+}
