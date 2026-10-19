@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import base64
 import io
 import logging
 import os
@@ -11,9 +10,9 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Final
 
-import httpx
 from dotenv import load_dotenv
 from telegram import (
+    BotCommand,
     InlineKeyboardButton,
     InlineKeyboardMarkup,
     MenuButtonWebApp,
@@ -31,6 +30,7 @@ from telegram.ext import (
     filters,
 )
 
+from asr_client import atranscribe
 from main import astream_chat_agent
 from memory import reconcile_preferences
 from subagent import register_telegram_notifier
@@ -221,27 +221,33 @@ def get_webapp_url() -> str:
     return os.getenv("TELEGRAM_WEBAPP_URL", "").strip()
 
 
-async def voice_app(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+async def live_chat(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Open the real-time OYI Live WebApp (voice + text)."""
     if not await enforce_access_and_rate_limit(update, context):
         return
 
     webapp_url = get_webapp_url()
     if not webapp_url:
         await update.effective_message.reply_text(
-            "⚠️ Voice Lab WebApp URL is not configured yet.\n\n"
-            "Please set `TELEGRAM_WEBAPP_URL` in your `.env` to launch the voice tester!"
+            "⚠️ The Live Chat WebApp URL is not configured yet.\n\n"
+            "Set `TELEGRAM_WEBAPP_URL` in the bot `.env` to enable /livechat."
         )
         return
 
     keyboard = InlineKeyboardMarkup([
-        [InlineKeyboardButton("🎙️ Open Voice Lab WebApp", web_app=WebAppInfo(url=webapp_url))]
+        [InlineKeyboardButton("🎧 Open OYI Live", web_app=WebAppInfo(url=webapp_url))]
     ])
     await update.effective_message.reply_text(
-        "🎙️ **OYI Conversational Voice Lab**\n\n"
-        "Powered by **NVIDIA Parakeet Real-Time EOU** & **Chatterbox-Turbo**.\n"
-        "Tap below to launch the voice interface:",
+        "*🎧 OYI Live* — real-time two-way voice.\n\n"
+        "Tap to open the WebApp. Talk naturally; I backchannel while you speak, "
+        "and you can cut me off mid-sentence — I'll stop and listen.",
         reply_markup=keyboard,
     )
+
+
+async def voice_app(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Alias for /live-chat (kept for backwards compatibility)."""
+    await live_chat(update, context)
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -250,11 +256,12 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     webapp_url = get_webapp_url()
     if webapp_url:
         keyboard = InlineKeyboardMarkup([
-            [InlineKeyboardButton("🎙️ Open Voice Lab WebApp", web_app=WebAppInfo(url=webapp_url))]
+            [InlineKeyboardButton("🎧 Open OYI Live", web_app=WebAppInfo(url=webapp_url))]
         ])
         await update.effective_message.reply_text(
             "Hello Sir Mario! I am OYI, your personal AI assistant.\n\n"
-            "You can chat with me here, or tap below to open the real-time voice interface!",
+            "Chat with me here, or tap below for the real-time live voice interface "
+            "(or send /livechat).",
             reply_markup=keyboard,
         )
     else:
@@ -296,26 +303,17 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     await safe_send_chat_action(context, chat.id, ChatAction.RECORD_VOICE)
     status_msg = await message.reply_text("🎙️ Transcribing voice note...")
 
-    endpoint = os.getenv("PARAKEET_MODAL_URL", "").strip().rstrip("/")
-    if not endpoint:
-        await safe_edit_text(status_msg, "⚠️ PARAKEET_MODAL_URL is not configured in .env.")
-        return
-
-    parakeet_target = endpoint if "modal.run" in endpoint else f"{endpoint}/transcribe"
-
     try:
         media_file = await context.bot.get_file(media.file_id)
-        voice_bytes = await media_file.download_as_bytearray()
-        voice_b64 = base64.b64encode(voice_bytes).decode("utf-8")
+        voice_bytes = bytes(await media_file.download_as_bytearray())
 
-        async with httpx.AsyncClient(timeout=45.0) as client:
-            res = await client.post(parakeet_target, json={"audio_base64": voice_b64})
-            if res.status_code != 200:
-                await safe_edit_text(status_msg, f"⚠️ Parakeet ASR error: {res.text}")
-                return
-            data = res.json()
-            user_text = data.get("text", "").strip()
-            eou = data.get("eou_detected", False)
+        result = await atranscribe(voice_bytes)
+        if result.error:
+            await safe_edit_text(status_msg, f"⚠️ Parakeet ASR error: {result.error}")
+            return
+
+        user_text = result.text.strip()
+        eou = result.eou_detected
 
         if not user_text:
             await safe_edit_text(status_msg, "⚠️ Could not transcribe any speech from this voice note.")
@@ -436,11 +434,22 @@ async def _on_post_init(application: Application) -> None:
     if webapp_url:
         try:
             await application.bot.set_chat_menu_button(
-                menu_button=MenuButtonWebApp(text="🎙️ Voice Lab", web_app=WebAppInfo(url=webapp_url))
+                menu_button=MenuButtonWebApp(text="🎧 Live Chat", web_app=WebAppInfo(url=webapp_url))
             )
-            LOGGER.info("Configured Telegram Bot Menu Button for Voice Lab: %s", webapp_url)
+            LOGGER.info("Configured Telegram Bot Menu Button for OYI Live: %s", webapp_url)
         except Exception:
             LOGGER.exception("Failed to set chat menu button for WebApp")
+
+    try:
+        await application.bot.set_my_commands(
+            [
+                BotCommand("livechat", "🎧 Real-time voice chat (WebApp)"),
+                BotCommand("voice", "🎧 Real-time voice chat (WebApp)"),
+                BotCommand("start", "Show the welcome message"),
+            ]
+        )
+    except Exception:
+        LOGGER.exception("Failed to set bot commands")
 
     application.bot_data["reconciliation_task"] = application.create_task(
         _nightly_reconciliation_loop(application),
@@ -471,7 +480,11 @@ def build_application(settings: Settings) -> Application:
     app.bot_data["request_semaphore"] = asyncio.Semaphore(settings.max_concurrent_requests)
 
     app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("livechat", live_chat))
     app.add_handler(CommandHandler("voice", voice_app))
+    # Telegram only permits [a-z0-9_] in command names; also accept a typed
+    # "/live-chat" so the natural spelling works.
+    app.add_handler(MessageHandler(filters.Regex(r"^/live-?chat(?:@\w+)?\b"), live_chat))
     app.add_handler(MessageHandler(filters.VOICE | filters.AUDIO, handle_voice))
     app.add_handler(MessageHandler(filters.Document.ALL, handle_document))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
