@@ -179,6 +179,9 @@ class VoiceSession:
         # FINALIZING / RESPONDING: ignored until the client barges in.
 
     async def _begin_turn(self, now: float, seed_pcm: bytes = b"") -> None:
+        # Never orphan a previous stream: each open gRPC stream pins a worker
+        # thread inside the ASR server until it is terminated.
+        await self._stop_listening()
         self.turn_counter += 1
         self.turn_id = self.turn_counter
         self.state = SESSION_LISTENING
@@ -243,12 +246,7 @@ class VoiceSession:
         now = time.monotonic()
         await self._cancel_response()
         # A text turn supersedes any in-flight voice turn too.
-        if self.consumer and not self.consumer.done():
-            if self.stream is not None:
-                self.stream.close()
-            self.consumer.cancel()
-        self.stream = None
-        self.consumer = None
+        await self._stop_listening()
 
         self.turn_counter += 1
         self.turn_id = self.turn_counter
@@ -319,6 +317,29 @@ class VoiceSession:
             raise
         except Exception:
             LOGGER.exception("Voice session consumer failed")
+        finally:
+            # Always terminate the RPC, whatever ended the turn (EOU, barge-in,
+            # client disconnect). A stream left open keeps a server worker busy
+            # forever, and two of them take the whole ASR service down.
+            stream.close()
+            if self.stream is stream:
+                self.stream = None
+
+    async def _stop_listening(self) -> None:
+        """Close the current ASR stream and stop its consumer task."""
+        stream, consumer = self.stream, self.consumer
+        self.stream = None
+        self.consumer = None
+        if stream is not None:
+            stream.close()
+        if consumer is not None and not consumer.done():
+            consumer.cancel()
+            await asyncio.gather(consumer, return_exceptions=True)
+
+    async def aclose(self) -> None:
+        """Release every resource; called when the transport disconnects."""
+        await self._stop_listening()
+        await self._cancel_response()
 
     async def _finish_turn(self, event: dict, turn_id: int) -> None:
         if turn_id != self.turn_id:
@@ -379,18 +400,13 @@ class VoiceSession:
 
     async def _interrupt(self, now: float, preroll_b64: str) -> None:
         """Cancel the pending reply and start a new turn with the user's audio."""
-        if self.state == SESSION_IDLE and not self.response_task:
+        if self.state == SESSION_IDLE and not self.response_task and self.stream is None:
             return
 
         await self._cancel_response()
 
         # Tear down the previous ASR stream (a no-op if it already finished).
-        if self.consumer and not self.consumer.done():
-            if self.stream is not None:
-                self.stream.close()
-            self.consumer.cancel()
-        self.stream = None
-        self.consumer = None
+        await self._stop_listening()
 
         await self.send({"type": "interrupted", "turn_id": self.turn_id})
 

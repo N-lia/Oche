@@ -295,13 +295,10 @@ async def voice_ws(websocket: WebSocket):
         LOGGER.exception("Voice websocket failed")
     finally:
         await out.put(None)
-        if session.consumer:
-            session.consumer.cancel()
-        if session.response_task and not session.response_task.done():
-            session.response_task.cancel()
-        if session.stream:
-            session.stream.close()
         sender.cancel()
+        await asyncio.gather(sender, return_exceptions=True)
+        # Releases the ASR stream even if the client vanished mid-turn.
+        await session.aclose()
 
 
 if __name__ == "__main__":
