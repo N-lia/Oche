@@ -195,6 +195,62 @@ async def test_barge_in_while_idle_is_noop() -> None:
     assert _drain(queue) == []
 
 
+async def test_model_eou_closes_the_stream() -> None:
+    """A turn ending on model <EOU> (no client flush) must close its stream.
+
+    Regression: it used to stay open, pinning a thread in the ASR server's
+    worker pool. Two leaked streams wedged the whole ASR service.
+    """
+    streams: list[FakeStream] = []
+
+    async def agent(text, turn_id):
+        yield "ok"
+
+    async def tts(text, mood):
+        return b""
+
+    session, queue = _make_session(streams, agent, tts, {})
+    await session.on_control({"type": "start"})
+    await session.on_audio(b"\x00\x00" * 160)
+    assert session.stream is streams[0]
+
+    # <EOU> arrives straight from the model, without a client flush.
+    await streams[0].events.put({"type": "eou", "text": "hi", "model_eou": True})
+    await asyncio.sleep(0.1)
+
+    assert streams[0].closed, "stream must be closed when the turn ends on <EOU>"
+    assert session.stream is None, "no stream may be left dangling"
+
+    # A following turn must not orphan the previous stream.
+    await session.on_audio(b"\x00\x00" * 160)
+    assert len(streams) == 2, "a fresh stream must be opened for the new turn"
+    assert session.stream is streams[1]
+    await session.aclose()
+    assert streams[1].closed
+
+
+async def test_aclose_releases_a_listening_stream() -> None:
+    """Disconnecting mid-turn must terminate the stream (no worker leak)."""
+    streams: list[FakeStream] = []
+
+    async def agent(text, turn_id):
+        yield "unused"
+
+    async def tts(text, mood):
+        return b""
+
+    session, queue = _make_session(streams, agent, tts, {})
+    await session.on_control({"type": "start"})
+    await session.on_audio(b"\x00\x00" * 160)
+    assert session.stream is streams[0] and not streams[0].closed
+
+    await session.aclose()
+
+    assert streams[0].closed, "aclose must terminate the listening stream"
+    assert session.stream is None
+    assert session.consumer is None
+
+
 def main() -> int:
     tests = [value for name, value in sorted(globals().items()) if name.startswith("test_")]
     failures = 0
