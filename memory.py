@@ -14,8 +14,12 @@ from langchain_core.tools import BaseTool, tool
 from langchain_openai import ChatOpenAI
 from pydantic import BaseModel, Field, SecretStr
 
+from router import DAILY_MODEL
+
 LOGGER = logging.getLogger("oyi.memory")
 DEFAULT_DATA_DIR = "./data/oyi-memory"
+DEFAULT_MEMORY_COLLECTION = "oyi_memories"
+DEFAULT_EMBEDDING_DIMENSIONS = 4096
 PREFERENCE_SOURCE = "agent"
 _CURRENT_USER_ID: ContextVar[str | None] = ContextVar("oyi_current_user_id", default=None)
 
@@ -49,15 +53,19 @@ def reset_current_user_id(token: Any) -> None:
 
 @lru_cache(maxsize=1)
 def _get_memory():
-    from mem0 import Memory
-
     data_dir = os.getenv("MEM0_DATA_DIR", DEFAULT_DATA_DIR)
     os.makedirs(data_dir, exist_ok=True)
+    mem0_dir = os.environ.get("MEM0_DIR") or os.path.join(data_dir, ".mem0")
+    os.environ["MEM0_DIR"] = mem0_dir
+    os.makedirs(mem0_dir, exist_ok=True)
+
+    from mem0 import Memory
+
     config = {
         "llm": {
             "provider": "openai",
             "config": {
-                "model": os.environ["llm"],
+                "model": DAILY_MODEL,
                 "api_key": os.environ["NEBIUS_API_KEY"],
                 "openai_base_url": "https://api.tokenfactory.nebius.com/v1/",
                 "temperature": 0.1,
@@ -69,13 +77,15 @@ def _get_memory():
                 "model": "Qwen/Qwen3-Embedding-8B",
                 "api_key": os.environ["NEBIUS_API_KEY"],
                 "openai_base_url": "https://api.tokenfactory.nebius.com/v1/",
+                "embedding_dims": DEFAULT_EMBEDDING_DIMENSIONS,
             },
         },
         "vector_store": {
             "provider": "qdrant",
             "config": {
                 "path": os.path.join(data_dir, "qdrant"),
-                "collection_name": "oyi_memories",
+                "collection_name": DEFAULT_MEMORY_COLLECTION,
+                "embedding_model_dims": DEFAULT_EMBEDDING_DIMENSIONS,
             },
         },
         "history_db_path": os.path.join(data_dir, "history.db"),
@@ -155,6 +165,42 @@ def add_memory(user_input: str, assistant_response: str, user_id: str) -> None:
         LOGGER.exception("Long-term memory update failed")
 
 
+class SearchMemoryInput(BaseModel):
+    query: str = Field(..., min_length=1, description="Keywords or topic to search for in user's long-term memory.")
+
+
+class SaveMemoryInput(BaseModel):
+    fact: str = Field(..., min_length=1, description="Durable personal fact or detail about the user to remember.")
+
+
+@tool(args_schema=SearchMemoryInput)
+def recall_memory(query: str) -> str:
+    """Search long-term memory for previously recorded facts, preferences, personal details, or projects."""
+    user_id = _CURRENT_USER_ID.get()
+    if not user_id:
+        return "Memory scope is unavailable."
+    memories = search_memories(query, user_id, limit=5)
+    return memories if memories else "No relevant memories found in long-term storage."
+
+
+@tool(args_schema=SaveMemoryInput)
+def save_memory(fact: str) -> str:
+    """Save a durable fact, project detail, or background context about Sir Mario to long-term memory. Do not call this for temporary conversational chit-chat."""
+    user_id = _CURRENT_USER_ID.get()
+    if not user_id:
+        return "Memory scope is unavailable."
+    try:
+        _get_memory().add(
+            [{"role": "user", "content": fact.strip()}],
+            user_id=user_id,
+            infer=False,
+        )
+        return f"Saved to memory: '{fact.strip()}'"
+    except Exception:
+        LOGGER.exception("Failed to save memory fact=%s user_id=%s", fact, user_id)
+        return "Could not save that memory."
+
+
 @tool(args_schema=UpdatePreferenceInput)
 def update_preference(key: str, value: str, source: str = PREFERENCE_SOURCE) -> str:
     """Create or replace one preference identified by its stable key."""
@@ -185,13 +231,14 @@ def update_preference(key: str, value: str, source: str = PREFERENCE_SOURCE) -> 
         return "Could not update that preference."
 
 
-PREFERENCE_TOOLS: list[BaseTool] = [update_preference]
+MEMORY_TOOLS: list[BaseTool] = [recall_memory, save_memory, update_preference]
+PREFERENCE_TOOLS: list[BaseTool] = MEMORY_TOOLS
 
 
 @lru_cache(maxsize=1)
 def _get_reconciliation_model():
     return ChatOpenAI(
-        model=os.environ["llm"],
+        model=DAILY_MODEL,
         base_url="https://api.tokenfactory.nebius.com/v1/",
         api_key=SecretStr(os.environ["NEBIUS_API_KEY"]),
         temperature=0,
