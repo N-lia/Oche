@@ -10,30 +10,42 @@ Run locally:
     python webapp_server.py
 """
 
+import asyncio
 import base64
+import json
 import logging
 import os
+import time
 from pathlib import Path
 
-import httpx
 import uvicorn
 from dotenv import load_dotenv
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from agent_service import agent_service
+from asr_client import atranscribe, health as asr_health
+from backchannel import (
+    CATEGORIES,
+    all_phrases,
+    cached_clips,
+    clip_key,
+    clip_path,
+    prewarm,
+)
 from main import astream_chat_agent
 from voice import synthesize_speech
+from voice_session import VoiceSession
 
 load_dotenv()
 
 logging.basicConfig(level=logging.INFO)
 LOGGER = logging.getLogger("oyi.webapp")
 
-app = FastAPI(title="OYI Voice Lab WebApp", version="1.0.0")
+app = FastAPI(title="OYI Live Chat", version="2.0.0")
 
 # CORS middleware for WebApp access
 app.add_middleware(
@@ -48,11 +60,11 @@ STATIC_DIR = Path(__file__).parent / "webapp"
 app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 
 
-def get_parakeet_url() -> str:
-    url = os.getenv("PARAKEET_MODAL_URL", "").strip().rstrip("/")
-    if not url:
-        return ""
-    return url if "modal.run" in url else f"{url}/transcribe"
+def decode_audio_base64(audio_base64: str) -> bytes:
+    try:
+        return base64.b64decode(audio_base64, validate=False)
+    except Exception as exc:  # noqa: BLE001 - reported to the client
+        raise HTTPException(status_code=400, detail=f"Invalid base64 audio: {exc}") from exc
 
 
 class TranscribeRequest(BaseModel):
@@ -81,22 +93,39 @@ async def serve_index():
 
 @app.post("/api/transcribe")
 async def api_transcribe(req: TranscribeRequest):
-    """Transcribe audio chunk and detect End-of-Utterance with Parakeet Real-Time EOU."""
-    endpoint = get_parakeet_url()
-    if not endpoint:
-        raise HTTPException(
-            status_code=500,
-            detail="PARAKEET_MODAL_URL is not configured in .env. Deploy modal_parakeet.py and add its URL to .env.",
-        )
+    """Transcribe audio and detect End-of-Utterance via the local Parakeet gRPC service."""
+    LOGGER.info("Calling Parakeet EOU over gRPC")
+    result = await atranscribe(decode_audio_base64(req.audio_base64))
+    if result.error:
+        LOGGER.error("Parakeet ASR error: %s", result.error)
+        raise HTTPException(status_code=502, detail=f"Parakeet ASR error: {result.error}")
+    return {
+        "text": result.text,
+        "eou_detected": result.eou_detected,
+        "raw": result.raw,
+        "duration_s": result.duration_s,
+    }
 
-    LOGGER.info("Calling Parakeet EOU at %s", endpoint)
 
-    async with httpx.AsyncClient(timeout=30.0) as client:
-        res = await client.post(endpoint, json={"audio_base64": req.audio_base64})
-        if res.status_code != 200:
-            LOGGER.error("Parakeet ASR error: %s", res.text)
-            raise HTTPException(status_code=res.status_code, detail=f"Parakeet ASR error: {res.text}")
-        return res.json()
+@app.get("/api/health")
+async def api_health():
+    """Service status for the WebApp header (ASR reachability, TTS config)."""
+    asr_ok = False
+    asr_detail = ""
+    try:
+        status = await asyncio.to_thread(asr_health)
+        asr_ok = bool(getattr(status, "ready", False))
+        asr_detail = getattr(status, "model", "") or getattr(status, "detail", "")
+    except Exception as exc:  # noqa: BLE001 - reported to the UI
+        asr_detail = str(exc)
+
+    return {
+        "ok": True,
+        "version": app.version,
+        "asr": {"ready": asr_ok, "detail": asr_detail},
+        "tts": {"configured": bool(os.getenv("CHATTERBOX_MODAL_URL"))},
+        "backchannels": {"cached": len(cached_clips())},
+    }
 
 
 @app.post("/api/chat")
@@ -105,7 +134,7 @@ async def api_chat(req: ChatRequest):
     if not req.prompt.strip():
         return {"response": ""}
     try:
-        reply = await agent_service.achat(req.prompt, thread_id=req.thread_id)
+        reply = await asyncio.to_thread(agent_service.chat, req.prompt, req.thread_id)
         return {"response": reply}
     except Exception as exc:
         LOGGER.exception("Agent chat failed")
@@ -116,30 +145,18 @@ async def api_chat(req: ChatRequest):
 async def api_voice_turn(req: VoiceTurnRequest):
     """
     Unified Voice Turn Endpoint:
-    1. Audio -> Parakeet Real-Time EOU (Transcribe + Detect <EOU>)
+    1. Audio -> Parakeet Real-Time EOU (Transcribe + Detect <EOU>) over gRPC
     2. Prompt -> OYI Agent LLM (or echo if in echo mode)
-    3. Response -> Chatterbox-Turbo (Synthesize Cloned Voice)
+    3. Response -> Chatterbox-Turbo (Synthesize Cloned Voice on Modal)
     """
-    endpoint = get_parakeet_url()
-    if not endpoint:
-        raise HTTPException(
-            status_code=500,
-            detail="PARAKEET_MODAL_URL is not configured. Please deploy modal_parakeet.py first.",
-        )
-
     # 1. Transcribe with Parakeet EOU
-    async with httpx.AsyncClient(timeout=30.0) as client:
-        asr_res = await client.post(
-            endpoint,
-            json={"audio_base64": req.audio_base64},
-        )
-        if asr_res.status_code != 200:
-            LOGGER.error("Parakeet failed: %s", asr_res.text)
-            raise HTTPException(status_code=500, detail=f"Parakeet EOU error: {asr_res.text}")
+    result = await atranscribe(decode_audio_base64(req.audio_base64))
+    if result.error:
+        LOGGER.error("Parakeet failed: %s", result.error)
+        raise HTTPException(status_code=502, detail=f"Parakeet EOU error: {result.error}")
 
-        asr_data = asr_res.json()
-        user_text = asr_data.get("text", "").strip()
-        eou_detected = asr_data.get("eou_detected", False)
+    user_text = result.text.strip()
+    eou_detected = result.eou_detected
 
     if not user_text:
         return {
@@ -181,8 +198,122 @@ async def api_voice_turn(req: VoiceTurnRequest):
     }
 
 
+# ---------------------------------------------------------------------------
+# Backchannel clip library
+# ---------------------------------------------------------------------------
+
+def _clip_url(phrase: str) -> str:
+    return f"/api/backchannels/{clip_key(phrase)}.mp3"
+
+
+@app.get("/api/backchannels")
+async def api_backchannels():
+    """Manifest of backchannel phrases and any clips already cached."""
+    cached = {phrase: _clip_url(phrase) for phrase in cached_clips()}
+    return {
+        "phrases": all_phrases(),
+        "categories": CATEGORIES,
+        "cached": cached,
+    }
+
+
+@app.post("/api/backchannels/prewarm")
+async def api_backchannels_prewarm():
+    """Synthesize any missing backchannel clips (can be slow on first run)."""
+    status = await prewarm()
+    return {"status": status}
+
+
+_PREWARM_STARTED = False
+
+
+def _schedule_prewarm() -> None:
+    """Kick off background clip synthesis once per process."""
+    global _PREWARM_STARTED
+    if _PREWARM_STARTED:
+        return
+    _PREWARM_STARTED = True
+
+    async def _run() -> None:
+        try:
+            await prewarm()
+        except Exception:
+            LOGGER.exception("Backchannel prewarm failed")
+
+    asyncio.create_task(_run())
+
+
+@app.get("/api/backchannels/{clip_id}.mp3")
+async def api_backchannel_clip(clip_id: str):
+    for phrase in all_phrases():
+        if clip_key(phrase) == clip_id and clip_path(phrase).exists():
+            return Response(content=clip_path(phrase).read_bytes(), media_type="audio/mpeg")
+    raise HTTPException(status_code=404, detail="Backchannel clip not found")
+
+
+# ---------------------------------------------------------------------------
+# Live voice session (WebSocket)
+# ---------------------------------------------------------------------------
+
+
+async def _drain(websocket: WebSocket, out: "asyncio.Queue[dict | None]") -> None:
+    try:
+        while True:
+            message = await out.get()
+            if message is None:
+                return
+            await websocket.send_json(message)
+    except Exception:
+        return
+
+
+@app.websocket("/ws/voice")
+async def voice_ws(websocket: WebSocket):
+    """Live streaming voice loop with backchannels and thinking fillers."""
+    await websocket.accept()
+    out: asyncio.Queue[dict | None] = asyncio.Queue()
+    session = VoiceSession(out, clip_url=_clip_url)
+    sender = asyncio.create_task(_drain(websocket, out))
+    _schedule_prewarm()  # warm clip cache in the background
+
+    try:
+        while True:
+            message = await websocket.receive()
+            if message.get("type") == "websocket.disconnect":
+                break
+            if (data := message.get("bytes")) is not None:
+                await session.on_audio(data)
+            elif (text := message.get("text")) is not None:
+                try:
+                    payload = json.loads(text)
+                except json.JSONDecodeError:
+                    continue
+                await session.on_control(payload)
+    except WebSocketDisconnect:
+        pass
+    except Exception:
+        LOGGER.exception("Voice websocket failed")
+    finally:
+        await out.put(None)
+        if session.consumer:
+            session.consumer.cancel()
+        if session.response_task and not session.response_task.done():
+            session.response_task.cancel()
+        if session.stream:
+            session.stream.close()
+        sender.cancel()
+
+
 if __name__ == "__main__":
     port = int(os.getenv("WEBAPP_PORT", "8000"))
-    LOGGER.info("Starting OYI Voice WebApp on http://0.0.0.0:%d", port)
-    uvicorn.run("webapp_server:app", host="0.0.0.0", port=port, reload=True)
+    reload = os.getenv("WEBAPP_RELOAD", "0") == "1"
+    LOGGER.info("Starting OYI Live Chat on http://0.0.0.0:%d (reload=%s)", port, reload)
+    uvicorn.run(
+        "webapp_server:app",
+        host="0.0.0.0",
+        port=port,
+        reload=reload,
+        proxy_headers=True,
+        forwarded_allow_ips="*",
+    )
 

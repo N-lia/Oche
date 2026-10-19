@@ -1,0 +1,447 @@
+"""Live voice session orchestration: audio -> ASR -> backchannels -> agent -> TTS.
+
+Transport-agnostic (no web-framework imports) so the turn-taking and
+interruption logic can be unit-tested directly. ``webapp_server.py`` wires the
+defaults to the real ASR client, agent and Chatterbox TTS.
+
+Interruption model
+------------------
+Every user turn gets a monotonically increasing ``turn_id`` and carries it on
+outgoing messages. When the user talks over the assistant, the client sends a
+``barge_in`` control frame; the session cancels the in-flight reply task, tears
+down the previous ASR stream and opens a new turn seeded with a short preroll of
+audio the client buffered, so the first word is not clipped. Stragglers from the
+abandoned turn are dropped by comparing ``turn_id``.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import base64
+import logging
+import time
+from collections.abc import AsyncIterator, Awaitable, Callable
+
+import numpy as np
+
+from asr_client import AsyncTranscribeStream
+from backchannel import BackchannelController, clip_path
+
+LOGGER = logging.getLogger("oyi.voice.session")
+
+SPEECH_RMS_THRESHOLD = 0.012
+
+# Voice session states.
+SESSION_IDLE = "idle"            # waiting for the user to start a turn
+SESSION_LISTENING = "listening"  # transcribing the current user turn
+SESSION_FINALIZING = "finalizing"  # flush sent; waiting for <EOU>
+SESSION_RESPONDING = "responding"  # agent/TTS running for the last turn
+
+AgentStreamer = Callable[[str, int], AsyncIterator[str]]
+EventStreamer = Callable[[str, int], AsyncIterator[dict]]
+Tts = Callable[[str, str], Awaitable[bytes]]
+StreamFactory = Callable[[int], AsyncTranscribeStream]
+
+
+def audio_rms(pcm16: bytes) -> float:
+    """Root-mean-square level of little-endian 16-bit mono PCM, in [0, 1]."""
+    if not pcm16:
+        return 0.0
+    samples = np.frombuffer(pcm16, dtype="<i2").astype(np.float32) / 32768.0
+    if not len(samples):
+        return 0.0
+    return float(np.sqrt(np.mean(samples * samples)))
+
+
+async def _default_agent_streamer(text: str, turn_id: int) -> AsyncIterator[str]:
+    from main import astream_chat_agent
+
+    async for chunk in astream_chat_agent(text, thread_id="webapp"):
+        yield chunk
+
+
+async def _default_tts(text: str, mood: str) -> bytes:
+    from voice import synthesize_speech
+
+    return await synthesize_speech(text, mood=mood, event="chat")
+
+
+def _default_stream_factory(sample_rate: int) -> AsyncTranscribeStream:
+    loop = asyncio.get_running_loop()
+    return AsyncTranscribeStream(loop, sample_rate=sample_rate).start()
+
+
+def _default_clip_exists(phrase: str) -> bool:
+    return clip_path(phrase).exists()
+
+
+class VoiceSession:
+    """Orchestrates one live conversation over a message queue."""
+
+    def __init__(
+        self,
+        out: "asyncio.Queue[dict | None]",
+        *,
+        agent_streamer: AgentStreamer = _default_agent_streamer,
+        event_streamer: EventStreamer | None = None,
+        tts: Tts = _default_tts,
+        stream_factory: StreamFactory = _default_stream_factory,
+        clip_exists: Callable[[str], bool] = _default_clip_exists,
+        clip_url: Callable[[str], str] | None = None,
+    ) -> None:
+        self.out = out
+        self.controller = BackchannelController()
+        self.sample_rate = 16000
+        self.mode = "agent"
+        self.mood = "normal"
+        self.thread_id = "webapp"
+        self.speak_text_replies = True
+        self.state = SESSION_IDLE
+        self.text = ""
+        # Monotonic turn counter. Every message carries the id of the turn it
+        # belongs to so a new turn can safely ignore stragglers from an
+        # interrupted one.
+        self.turn_counter = 0
+        self.turn_id = 0
+        self.stream: AsyncTranscribeStream | None = None
+        self.consumer: asyncio.Task | None = None
+        self.response_task: asyncio.Task | None = None
+        self.bot_speaking = False
+
+        self._agent_streamer = agent_streamer
+        self._event_streamer = event_streamer or self._default_event_streamer
+        self._tts = tts
+        self._stream_factory = stream_factory
+        self._clip_exists = clip_exists
+        self._clip_url = clip_url or (lambda phrase: "")
+
+    async def send(self, message: dict) -> None:
+        await self.out.put(message)
+
+    # ------------------------------------------------------------- control
+    async def on_control(self, data: dict) -> None:
+        kind = data.get("type")
+        now = time.monotonic()
+        if kind == "start":
+            self.sample_rate = int(data.get("sample_rate") or 16000)
+            self.mode = data.get("mode", "agent")
+            self.mood = data.get("mood", "normal")
+            self.thread_id = str(data.get("thread_id") or self.thread_id)
+            self.speak_text_replies = bool(data.get("speak_text_replies", self.speak_text_replies))
+            await self.send(
+                {
+                    "type": "ready",
+                    "sample_rate": self.sample_rate,
+                    "thread_id": self.thread_id,
+                    "mode": self.mode,
+                    "mood": self.mood,
+                }
+            )
+        elif kind == "set":
+            # Live reconfiguration from the client (no turn restart).
+            if data.get("mode"):
+                self.mode = data["mode"]
+            if data.get("mood"):
+                self.mood = data["mood"]
+            if "speak_text_replies" in data:
+                self.speak_text_replies = bool(data["speak_text_replies"])
+            if data.get("thread_id"):
+                self.thread_id = str(data["thread_id"])
+        elif kind == "flush":
+            # Client VAD says the user stopped; flush so <EOU> can fire.
+            if self.state == SESSION_LISTENING and self.stream is not None:
+                self.state = SESSION_FINALIZING
+                self.controller.end_turn(now)
+                self.stream.finish()
+                self.stream = None
+        elif kind == "text":
+            # Typed message from the WebApp: run a text turn through the agent.
+            text = (data.get("text") or "").strip()
+            if text:
+                speak = bool(data.get("speak", self.speak_text_replies))
+                await self._start_text_turn(text, speak)
+        elif kind == "barge_in":
+            # User started talking over the bot: drop the pending reply and
+            # begin a fresh turn immediately, seeded with the client's preroll.
+            await self._interrupt(now, data.get("preroll", ""))
+        elif kind == "playback_end":
+            self.bot_speaking = False
+
+    # ------------------------------------------------------------- audio in
+    async def on_audio(self, pcm: bytes) -> None:
+        if not pcm:
+            return
+        now = time.monotonic()
+        if self.state == SESSION_LISTENING:
+            await self._feed(pcm, now)
+        elif self.state == SESSION_IDLE:
+            await self._begin_turn(now, seed_pcm=pcm)
+        # FINALIZING / RESPONDING: ignored until the client barges in.
+
+    async def _begin_turn(self, now: float, seed_pcm: bytes = b"") -> None:
+        self.turn_counter += 1
+        self.turn_id = self.turn_counter
+        self.state = SESSION_LISTENING
+        self.text = ""
+        self.controller.start_turn(now)
+        self.stream = self._stream_factory(self.sample_rate)
+        self.consumer = asyncio.create_task(self._consume(self.stream, self.turn_id))
+        if seed_pcm:
+            await self._feed(seed_pcm, now)
+
+    async def _feed(self, pcm: bytes, now: float) -> None:
+        is_speech = audio_rms(pcm) >= SPEECH_RMS_THRESHOLD
+        self.controller.update_activity(now, is_speech)
+        if self.stream is not None:
+            self.stream.feed(pcm)
+
+        decision = self.controller.tick(
+            now, transcript=self.text, turn_active=True, bot_speaking=self.bot_speaking
+        )
+        if decision and self._clip_exists(decision.phrase):
+            LOGGER.info("Backchannel %r (%s)", decision.phrase, decision.reason)
+            await self.send(
+                {
+                    "type": "backchannel",
+                    "phrase": decision.phrase,
+                    "category": decision.category,
+                    "reason": decision.reason,
+                    "url": self._clip_url(decision.phrase),
+                }
+            )
+        elif decision:
+            asyncio.create_task(self._warm_clip(decision.phrase))
+
+    async def _warm_clip(self, phrase: str) -> None:
+        try:
+            from backchannel import ensure_clip
+
+            await ensure_clip(phrase)
+        except Exception:
+            LOGGER.exception("Backchannel clip warm-up failed for %r", phrase)
+
+    # --------------------------------------------------------- structured text
+    async def _default_event_streamer(self, text: str, turn_id: int) -> AsyncIterator[dict]:
+        """Structured agent stream (status/tool/token events) for text turns."""
+        from agent_service import agent_service
+
+        streamer = getattr(agent_service, "astream_events", None)
+        if streamer is not None:
+            async for event in streamer(text, thread_id=self.thread_id):
+                yield event
+            return
+        # Fallback: adapt the plain token stream into token events.
+        from main import astream_chat_agent
+
+        async for chunk in astream_chat_agent(text, thread_id=self.thread_id):
+            if chunk:
+                yield {"type": "token", "text": chunk}
+        yield {"type": "done"}
+
+    async def _start_text_turn(self, text: str, speak: bool) -> None:
+        """Typed turn: supersede any pending reply and stream the agent answer."""
+        now = time.monotonic()
+        await self._cancel_response()
+        # A text turn supersedes any in-flight voice turn too.
+        if self.consumer and not self.consumer.done():
+            if self.stream is not None:
+                self.stream.close()
+            self.consumer.cancel()
+        self.stream = None
+        self.consumer = None
+
+        self.turn_counter += 1
+        self.turn_id = self.turn_counter
+        self.state = SESSION_RESPONDING
+        self.controller.end_turn(now)
+        await self.send({"type": "user_text", "text": text, "turn_id": self.turn_id})
+        self.response_task = asyncio.create_task(self._respond_text(text, self.turn_id, speak))
+
+    async def _respond_text(self, text: str, turn_id: int, speak: bool) -> None:
+        try:
+            chunks: list[str] = []
+            async for event in self._event_streamer(text, turn_id):
+                if turn_id != self.turn_id:
+                    return  # superseded by a newer turn
+                etype = event.get("type")
+                if etype == "token" and event.get("text"):
+                    chunks.append(event["text"])
+                    await self.send(
+                        {"type": "bot_text_delta", "text": event["text"], "turn_id": turn_id}
+                    )
+                elif etype in ("status", "tool"):
+                    await self.send({**event, "turn_id": turn_id})
+                elif etype == "done":
+                    break
+            if turn_id != self.turn_id:
+                return
+            reply = "".join(chunks).strip() or "I could not produce a response."
+            if speak and self.mode != "echo":
+                await self._speak(reply, turn_id)
+            if turn_id == self.turn_id:
+                self.state = SESSION_IDLE
+                await self.send({"type": "turn_end", "turn_id": turn_id})
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:  # noqa: BLE001 - surfaced to the client
+            LOGGER.exception("WebApp text turn failed")
+            if turn_id == self.turn_id:
+                await self.send({"type": "error", "message": f"Agent error: {exc}"})
+                self.state = SESSION_IDLE
+                await self.send({"type": "turn_end", "turn_id": turn_id})
+        finally:
+            self.bot_speaking = False
+            if self.response_task is asyncio.current_task():
+                self.response_task = None
+
+    # ------------------------------------------------------------- ASR out
+    async def _consume(self, stream: AsyncTranscribeStream, turn_id: int) -> None:
+        try:
+            async for event in stream:
+                if turn_id != self.turn_id:
+                    return  # Superseded by a barge-in; drop stragglers.
+                if event["type"] == "partial":
+                    self.text = event["text"]
+                    await self.send(
+                        {
+                            "type": "partial",
+                            "text": event["text"],
+                            "delta": event["delta"],
+                            "turn_id": turn_id,
+                        }
+                    )
+                elif event["type"] == "eou":
+                    await self._finish_turn(event, turn_id)
+                    return
+                elif event["type"] == "error":
+                    await self.send({"type": "error", "message": event["message"]})
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            LOGGER.exception("Voice session consumer failed")
+
+    async def _finish_turn(self, event: dict, turn_id: int) -> None:
+        if turn_id != self.turn_id:
+            return
+        self.controller.end_turn(time.monotonic())
+        user_text = (event.get("text") or self.text).strip()
+        await self.send(
+            {
+                "type": "eou",
+                "text": user_text,
+                "model_eou": event.get("model_eou", False),
+                "turn_id": turn_id,
+            }
+        )
+
+        if not user_text:
+            self.state = SESSION_IDLE
+            await self.send({"type": "turn_end", "turn_id": turn_id})
+            return
+
+        self.state = SESSION_RESPONDING
+        # Cover assistant latency with a brief stall, if we have a clip ready.
+        filler = self.controller.thinking_filler(time.monotonic())
+        if filler and self._clip_exists(filler):
+            await self.send({"type": "filler", "phrase": filler, "url": self._clip_url(filler)})
+        elif filler:
+            asyncio.create_task(self._warm_clip(filler))
+
+        # The reply runs in its own task so a barge-in can cancel it mid-flight.
+        self.response_task = asyncio.create_task(self._respond(user_text, turn_id))
+
+    async def _respond(self, user_text: str, turn_id: int) -> None:
+        try:
+            await self._run_agent(user_text, turn_id)
+            if turn_id == self.turn_id:
+                self.state = SESSION_IDLE
+                await self.send({"type": "turn_end", "turn_id": turn_id})
+        except asyncio.CancelledError:
+            raise
+        finally:
+            self.bot_speaking = False
+            if self.response_task is asyncio.current_task():
+                self.response_task = None
+
+    async def _cancel_response(self) -> None:
+        """Cancel an in-flight reply task (best effort)."""
+        task = self.response_task
+        if task and not task.done():
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+            except Exception:
+                LOGGER.exception("Response task raised during interruption")
+        self.response_task = None
+        self.bot_speaking = False
+
+    async def _interrupt(self, now: float, preroll_b64: str) -> None:
+        """Cancel the pending reply and start a new turn with the user's audio."""
+        if self.state == SESSION_IDLE and not self.response_task:
+            return
+
+        await self._cancel_response()
+
+        # Tear down the previous ASR stream (a no-op if it already finished).
+        if self.consumer and not self.consumer.done():
+            if self.stream is not None:
+                self.stream.close()
+            self.consumer.cancel()
+        self.stream = None
+        self.consumer = None
+
+        await self.send({"type": "interrupted", "turn_id": self.turn_id})
+
+        seed = b""
+        if preroll_b64:
+            try:
+                seed = base64.b64decode(preroll_b64)
+            except (ValueError, TypeError):
+                seed = b""
+        await self._begin_turn(now, seed_pcm=seed)
+
+    # ------------------------------------------------------------- reply
+    async def _run_agent(self, user_text: str, turn_id: int) -> None:
+        if self.mode == "echo":
+            await self.send({"type": "bot_text_delta", "text": f"You said: {user_text}", "turn_id": turn_id})
+            await self._speak(f"You said: {user_text}", turn_id)
+            return
+        await self.send(
+            {"type": "status", "phase": "thinking", "text": "Thinking…", "turn_id": turn_id}
+        )
+        try:
+            chunks: list[str] = []
+            async for chunk in self._agent_streamer(user_text, turn_id):
+                if chunk:
+                    chunks.append(chunk)
+                    await self.send({"type": "bot_text_delta", "text": chunk, "turn_id": turn_id})
+            reply = "".join(chunks).strip() or "I could not produce a response."
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            LOGGER.exception("Agent streaming failed")
+            reply = f"Agent error: {exc}"
+            await self.send({"type": "error", "message": reply})
+        await self._speak(reply, turn_id)
+
+    async def _speak(self, text: str, turn_id: int) -> None:
+        self.bot_speaking = True
+        try:
+            audio = await self._tts(text, self.mood)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            LOGGER.exception("Chatterbox TTS failed")
+            self.bot_speaking = False
+            await self.send({"type": "error", "message": f"TTS failed: {exc}"})
+            return
+        await self.send(
+            {
+                "type": "bot_audio",
+                "text": text,
+                "audio": base64.b64encode(audio).decode(),
+                "turn_id": turn_id,
+            }
+        )

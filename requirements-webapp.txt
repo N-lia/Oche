@@ -1,0 +1,4 @@
+# Runtime dependencies for the Voice Lab WebApp (webapp_server.py).
+# The WebApp is a separate process from the Telegram bot.
+fastapi
+uvicorn[standard]
