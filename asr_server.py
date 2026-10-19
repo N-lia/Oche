@@ -14,7 +14,11 @@ Configuration (environment):
     PARAKEET_GRPC_BIND   Address to bind. Default ``0.0.0.0:50051``.
     PARAKEET_MODEL_DIR   Directory holding the ONNX model files.
                          Default ``models/parakeet-eou-160ms``.
-    PARAKEET_MAX_WORKERS Concurrent request threads. Default ``2``.
+    PARAKEET_MAX_WORKERS Concurrent request threads. Default ``8``. Each live
+                         streaming turn occupies one, so this bounds concurrency.
+    PARAKEET_STREAM_IDLE_TIMEOUT
+                         Seconds of silence after which a streaming turn is
+                         finalized and its worker released. Default ``90``.
 """
 
 from __future__ import annotations
@@ -22,9 +26,11 @@ from __future__ import annotations
 import argparse
 import logging
 import os
+import queue
 import signal
 import subprocess
 import tempfile
+import threading
 from concurrent import futures
 
 import grpc
@@ -39,9 +45,12 @@ LOGGER = logging.getLogger("oyi.asr.server")
 MODEL_ID = "soniqo/Parakeet-EOU-120M-ONNX-INT8-160ms"
 DEFAULT_BIND = "0.0.0.0:50051"
 DEFAULT_MODEL_DIR = "models/parakeet-eou-160ms"
-DEFAULT_MAX_WORKERS = 2
+DEFAULT_MAX_WORKERS = 8
 DEFAULT_MAX_MESSAGE_BYTES = 32 * 1024 * 1024
 DEFAULT_STREAM_INTERVAL = 0.6
+# A streaming turn holds one worker thread for its whole lifetime. Reap a
+# stream that has gone silent so an abandoned client cannot exhaust the pool.
+DEFAULT_STREAM_IDLE_TIMEOUT = 90.0
 
 _SERVER_OPTIONS = (
     ("grpc.max_send_message_length", DEFAULT_MAX_MESSAGE_BYTES),
@@ -94,6 +103,43 @@ def _decode_audio(data: bytes, fmt: str = "") -> tuple[np.ndarray, int]:
     return audio, int(rate)
 
 
+def _iter_requests(request_iterator, idle_timeout: float):
+    """Yield client requests, ending the stream after ``idle_timeout`` of silence.
+
+    gRPC's sync request iterator blocks on a condition variable and only wakes
+    when the *RPC* terminates — so a client that stops sending audio without
+    closing the stream would otherwise pin this worker thread indefinitely.
+    Pumping through a queue lets the handler give up on a dead stream. The pump
+    thread unblocks on its own once the handler returns and gRPC ends the RPC.
+    """
+    if idle_timeout <= 0:
+        yield from request_iterator
+        return
+
+    items: "queue.Queue[object]" = queue.Queue()
+    sentinel = object()
+
+    def _pump() -> None:
+        try:
+            for request in request_iterator:
+                items.put(request)
+        except Exception:  # noqa: BLE001 - iterator ends on RPC termination
+            pass
+        finally:
+            items.put(sentinel)
+
+    threading.Thread(target=_pump, name="oyi-asr-recv", daemon=True).start()
+    while True:
+        try:
+            item = items.get(timeout=idle_timeout)
+        except queue.Empty:
+            LOGGER.warning("Streaming request idle for %.0fs; ending stream", idle_timeout)
+            return
+        if item is sentinel:
+            return
+        yield item
+
+
 class ParakeetASRServicer(pb_grpc.ParakeetASRServicer):
     """gRPC servicer backed by a single shared :class:`ParakeetEOU` model."""
 
@@ -132,9 +178,10 @@ class ParakeetASRServicer(pb_grpc.ParakeetASRServicer):
     def StreamTranscribe(self, request_iterator, context: grpc.ServicerContext):
         """Consume streaming PCM and emit partials plus the closing <EOU>."""
         interval = float(os.getenv("PARAKEET_STREAM_INTERVAL", DEFAULT_STREAM_INTERVAL))
+        idle_timeout = float(os.getenv("PARAKEET_STREAM_IDLE_TIMEOUT", DEFAULT_STREAM_IDLE_TIMEOUT))
         session = StreamingSession(self._model, decode_interval=interval)
         try:
-            for request in request_iterator:
+            for request in _iter_requests(request_iterator, idle_timeout):
                 payload = request.WhichOneof("payload")
                 if payload == "config":
                     sample_rate = request.config.sample_rate or 16000

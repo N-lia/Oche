@@ -216,6 +216,10 @@ class AsyncTranscribeStream:
         self._events: asyncio.Queue = asyncio.Queue()
         self._thread = threading.Thread(target=self._run, name="oyi-asr-stream", daemon=True)
         self._started = False
+        # The live RPC handle, so close() can cancel it even when the server is
+        # waiting for audio and would otherwise never notice the stream is dead.
+        self._call = None
+        self._closed = False
 
     def _request_iterator(self) -> Iterator[pb.StreamRequest]:
         yield pb.StreamRequest(config=pb.StreamConfig(sample_rate=self._sample_rate, format="pcm16"))
@@ -226,9 +230,18 @@ class AsyncTranscribeStream:
             yield pb.StreamRequest(audio=chunk)
 
     def _run(self) -> None:
+        stub = pb_grpc.ParakeetASRStub(get_channel())
         try:
-            for event in stream_transcribe(self._request_iterator()):
+            self._call = stub.StreamTranscribe(iter(self._request_iterator()))
+            for response in self._call:
+                event = _decode_stream_response(response)
                 self._loop.call_soon_threadsafe(self._events.put_nowait, event)
+        except grpc.RpcError as exc:
+            # A cancel we initiated is expected; only surface real failures.
+            if not self._closed:
+                self._loop.call_soon_threadsafe(
+                    self._events.put_nowait, {"type": "error", "message": _rpc_error_message(exc)}
+                )
         finally:
             # Unblock the gRPC request-consumer thread if it is still waiting.
             self._requests.put(None)
@@ -248,7 +261,18 @@ class AsyncTranscribeStream:
         self._requests.put(pb.AudioChunk(pcm=b"", last=True))
 
     def close(self) -> None:
+        """Terminate the stream, cancelling the RPC if it is still live.
+
+        Idempotent and safe to call from any path (EOU, barge-in, disconnect).
+        """
+        self._closed = True
         self._requests.put(None)
+        call = self._call
+        if call is not None:
+            try:
+                call.cancel()
+            except Exception:  # noqa: BLE001 - best effort teardown
+                LOGGER.debug("Could not cancel ASR stream", exc_info=True)
 
     async def events(self) -> AsyncIterator[dict]:
         while True:
