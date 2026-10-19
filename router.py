@@ -13,9 +13,11 @@ from pydantic import BaseModel, Field
 from privacy import PrivacyVault
 
 NEBIUS_BASE_URL = "https://api.tokenfactory.nebius.com/v1/"
-FAST_MODEL = os.getenv("OYI_FAST_MODEL", "nvidia/Nemotron-3-Nano-30B-A3B")
-EVERYDAY_MODEL = os.getenv("OYI_EVERYDAY_MODEL", "nvidia/Nemotron-3-Super-120B-A12B")
-REASONING_MODEL = os.getenv("OYI_REASONING_MODEL", "nvidia/Nemotron-3-Ultra")
+ROUTER_MODEL = "nvidia/Nemotron-3_5-Lightning"
+DAILY_MODEL = "nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B"
+BASE_MODEL = DAILY_MODEL  # alias for backward compatibility
+REASONING_MODEL = "nvidia/nemotron-3-super-120b-a12b"
+INTENSE_MODEL = "nvidia/Nemotron-3-Ultra-550b-a55b"
 LOGGER = logging.getLogger("oyi.router")
 
 
@@ -42,32 +44,74 @@ class RouteDecision(BaseModel):
 @lru_cache(maxsize=1)
 def _classifier():
     return ChatOpenAI(
-        model=FAST_MODEL,
+        model=ROUTER_MODEL,
         base_url=NEBIUS_BASE_URL,
         api_key=os.environ["NEBIUS_API_KEY"],
         temperature=0,
+        max_tokens=1000,
+        extra_body={
+            "chat_template_kwargs": {
+                "enable_thinking": False,
+            }
+        },
     ).with_structured_output(RouteDecision)
+
+
+GREETING_WORDS = {"hi", "hello", "hey", "good morning", "good afternoon", "good evening", "howdy", "sup", "yo", "oyi"}
+
+
+COMPLEX_INDICATORS = {
+    "research", "analyze", "analysis", "compare", "comparison",
+    "deep", "subagent", "background", "benchmark", "architect",
+    "refactor", "investigate", "audit", "comprehensive", "detailed",
+    "write a script", "write code", "code project", "implement", "paper",
+}
 
 
 def classify_request(user_input: str) -> RouteDecision:
     """Classify intent and extract useful entities with the fast model."""
+    cleaned = user_input.strip().lower()
+    words = cleaned.split()
+
+    # Fast-path 1: Greetings & casual openers (0ms)
+    first_clean = cleaned.rstrip("!.?,")
+    if first_clean in GREETING_WORDS or (len(words) <= 2 and any(w in GREETING_WORDS for w in words)):
+        return RouteDecision(
+            intent="conversation",
+            complexity="routine",
+            confidence=1.0,
+            reason="fast_path_greeting",
+        )
+
+    # Fast-path 2: Short everyday queries without complex indicators (0ms)
+    if len(words) <= 8 and not any(ind in cleaned for ind in COMPLEX_INDICATORS):
+        return RouteDecision(
+            intent="conversation",
+            complexity="routine",
+            confidence=0.9,
+            reason="fast_path_routine",
+        )
+
     user_input = PrivacyVault().scrub(user_input)
     prompt = (
-        "Classify this user request for model routing and extract only entities useful "
-        "for answering it. Choose serious only for multi-step reasoning, difficult "
-        "coding, high-stakes analysis, or explicit deep research. Choose routine for "
-        "greetings, short answers, simple transformations, and straightforward lookups. "
-        "Choose standard for normal explanations, coding help, planning, and web research.\n\n"
+        "You are an intent and complexity classifier. Immediately return the structured decision without explanation.\n"
+        "Rules:\n"
+        "- Choose 'serious' ONLY for complex multi-step reasoning, difficult code generation, or deep research.\n"
+        "- Choose 'routine' for greetings, short questions, casual chat, simple edits, or straightforward lookups.\n"
+        "- Choose 'standard' for normal questions, explanations, standard coding help, or web searches.\n\n"
         f"User request:\n{user_input}"
     )
     try:
-        return RouteDecision.model_validate(_classifier().invoke(prompt))
-    except Exception:
-        LOGGER.exception("Fast request classification failed; escalating to reasoning model")
+        raw_result = _classifier().invoke(prompt)
+        if isinstance(raw_result, RouteDecision):
+            return raw_result
+        return RouteDecision.model_validate(raw_result)
+    except Exception as exc:
+        LOGGER.warning("Fast request classification fallback to routine/base model: %s", exc)
         return RouteDecision(
-            intent="analysis",
-            complexity="serious",
-            confidence=0,
+            intent="conversation",
+            complexity="routine",
+            confidence=0.7,
             reason="classifier unavailable",
         )
 
@@ -75,7 +119,7 @@ def classify_request(user_input: str) -> RouteDecision:
 def choose_model(decision: RouteDecision) -> str:
     """Map a classification to the model tier that should answer it."""
     if decision.confidence < 0.65 or decision.complexity == "serious":
-        return REASONING_MODEL
+        return INTENSE_MODEL
     if decision.complexity == "standard":
-        return EVERYDAY_MODEL
-    return FAST_MODEL
+        return REASONING_MODEL
+    return BASE_MODEL
