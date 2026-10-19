@@ -29,7 +29,56 @@ EVENT_MOOD = {
     "task_done": "cheerful",
     "slop": "angry",
     "chat": "normal",
+    "backchannel": "backchannel",
 }
+
+# Dials and configuration parameters per mood
+PRESETS = {
+    "normal": {
+        "exaggeration": 0.5,
+        "cfg_weight": 0.5,
+        "temperature": 0.8,
+        "repetition_penalty": 1.2,
+        "min_p": 0.05,
+        "top_p": 1.0,
+    },
+    "cheerful": {
+        "exaggeration": 0.7,
+        "cfg_weight": 0.3,
+        "temperature": 0.8,
+        "repetition_penalty": 1.2,
+        "min_p": 0.05,
+        "top_p": 1.0,
+    },
+    "angry": {
+        "exaggeration": 0.8,
+        "cfg_weight": 0.3,
+        "temperature": 0.7,
+        "repetition_penalty": 1.3,
+        "min_p": 0.05,
+        "top_p": 1.0,
+    },
+    # Soft, brief listener signals ("mm-hmm", "right", "go on"). Low energy and
+    # lightly expressive so they sit under the user's voice without competing.
+    "backchannel": {
+        "exaggeration": 0.35,
+        "cfg_weight": 0.5,
+        "temperature": 0.7,
+        "repetition_penalty": 1.2,
+        "min_p": 0.05,
+        "top_p": 1.0,
+    },
+}
+
+def call_generate(model_inst, text: str, audio_prompt_path: str | None, **kwargs):
+    """Call model_inst.generate with only the keyword arguments supported by its signature."""
+    import inspect
+    sig = inspect.signature(model_inst.generate)
+    has_var_keyword = any(p.kind == inspect.Parameter.VAR_KEYWORD for p in sig.parameters.values())
+    if has_var_keyword:
+        return model_inst.generate(text, audio_prompt_path=audio_prompt_path, **kwargs)
+    valid_kwargs = {k: v for k, v in kwargs.items() if k in sig.parameters}
+    return model_inst.generate(text, audio_prompt_path=audio_prompt_path, **valid_kwargs)
 
 # Supported native paralinguistic tokens recognized by Chatterbox-Turbo tokenizer
 VALID_TAGS = {
@@ -159,10 +208,20 @@ class ChatterboxService:
 
         ref = ref_for(mood)
         shaped = sanitize_and_shape_text(text, mood)
-        print(f"[Chatterbox-Turbo] Generating mood='{mood}' ref='{ref}': \"{shaped}\"")
 
-        # Generate audio using 1-step mel decoding with paralinguistic action tags
-        wav = self.model.generate(shaped, audio_prompt_path=ref)
+        # Dial settings: load mood preset and allow request-level overrides
+        params = PRESETS.get(mood, PRESETS["normal"]).copy()
+        for k in ("exaggeration", "cfg_weight", "temperature", "top_p", "min_p", "repetition_penalty"):
+            if k in request and request[k] is not None:
+                try:
+                    params[k] = float(request[k])
+                except (ValueError, TypeError):
+                    pass
+
+        print(f"[Chatterbox-Turbo] Generating mood='{mood}' ref='{ref}' dials={params}: \"{shaped}\"")
+
+        # Generate audio using 1-step mel decoding with paralinguistic action tags and dials
+        wav = call_generate(self.model, shaped, audio_prompt_path=ref, **params)
         wav_np = wav.squeeze().cpu().numpy()
 
         buffer = io.BytesIO()
@@ -190,12 +249,20 @@ def model():
     return _model
 
 
-def speak(text: str, event: str = "chat", path: str | None = None, mood: str | None = None) -> str:
+def speak(
+    text: str,
+    event: str = "chat",
+    path: str | None = None,
+    mood: str | None = None,
+    **kwargs,
+) -> str:
     import torchaudio as ta
     mood = mood or EVENT_MOOD.get(event, "normal")
+    params = PRESETS.get(mood, PRESETS["normal"]).copy()
+    params.update({k: v for k, v in kwargs.items() if v is not None})
     ref = ref_for(mood)
     shaped = sanitize_and_shape_text(text, mood)
-    wav = model().generate(shaped, audio_prompt_path=ref)
+    wav = call_generate(model(), shaped, audio_prompt_path=ref, **params)
     os.makedirs(OUT_DIR, exist_ok=True)
     path = path or os.path.join(OUT_DIR, f"{event}_{mood}.wav")
     ta.save(path, wav, model().sr)

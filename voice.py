@@ -57,7 +57,26 @@ class VoiceNoteInput(BaseModel):
     )
 
 
-async def synthesize_speech(text: str, mood: str = "normal", event: str = "chat") -> bytes:
+_HTTP_CLIENT: httpx.AsyncClient | None = None
+
+
+def _get_http_client() -> httpx.AsyncClient:
+    """Return a shared persistent AsyncClient with connection pooling."""
+    global _HTTP_CLIENT
+    if _HTTP_CLIENT is None or _HTTP_CLIENT.is_closed:
+        _HTTP_CLIENT = httpx.AsyncClient(
+            timeout=90.0,
+            limits=httpx.Limits(max_keepalive_connections=5, keepalive_expiry=120),
+        )
+    return _HTTP_CLIENT
+
+
+async def synthesize_speech(
+    text: str,
+    mood: str = "normal",
+    event: str = "chat",
+    **dials,
+) -> bytes:
     """Call the Modal serverless endpoint to generate MP3 audio with Chatterbox."""
     url = get_chatterbox_url()
     if not url:
@@ -65,22 +84,37 @@ async def synthesize_speech(text: str, mood: str = "normal", event: str = "chat"
 
     # Ensure URL ends without trailing slash
     target_url = url.rstrip("/")
-    LOGGER.info("Calling Chatterbox TTS at %s (text_len=%d, mood=%s, event=%s)", target_url, len(text), mood, event)
+    LOGGER.info(
+        "Calling Chatterbox TTS at %s (text_len=%d, mood=%s, event=%s, dials=%s)",
+        target_url,
+        len(text),
+        mood,
+        event,
+        dials,
+    )
 
-    async with httpx.AsyncClient(timeout=90.0) as client:
-        response = await client.post(
-            target_url,
-            json={"text": text, "mood": mood, "event": event, "format": "mp3"},
-        )
-        if response.status_code != 200:
-            LOGGER.error("Chatterbox TTS failed with status %d: %s", response.status_code, response.text)
-            raise RuntimeError(f"Chatterbox TTS returned status {response.status_code}: {response.text}")
+    client = _get_http_client()
+    payload = {
+        "text": text,
+        "mood": mood,
+        "event": event,
+        "format": "mp3",
+    }
+    # Include any custom dial overrides (exaggeration, cfg_weight, temperature, etc.)
+    for k, v in dials.items():
+        if v is not None:
+            payload[k] = v
 
-        content = response.content
-        if not content:
-            raise RuntimeError("Chatterbox TTS returned empty audio payload")
+    response = await client.post(target_url, json=payload)
+    if response.status_code != 200:
+        LOGGER.error("Chatterbox TTS failed with status %d: %s", response.status_code, response.text)
+        raise RuntimeError(f"Chatterbox TTS returned status {response.status_code}: {response.text}")
 
-        return content
+    content = response.content
+    if not content:
+        raise RuntimeError("Chatterbox TTS returned empty audio payload")
+
+    return content
 
 
 @tool("send_voice_note", args_schema=VoiceNoteInput)
