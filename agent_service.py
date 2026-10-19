@@ -171,6 +171,17 @@ After calling send_voice_note:
 class AgentService:
     """Own the model cascade and the agent's request lifecycle."""
 
+    # Friendly labels for tool activity, shown in rich clients (WebApp).
+    TOOL_LABELS = {
+        "tavily_search": "Searching the web",
+        "tavily_search_results_json": "Searching the web",
+        "web_search": "Searching the web",
+        "recall_memory": "Recalling memory",
+        "save_memory": "Saving to memory",
+        "update_preference": "Updating preferences",
+        "spawn_subagent": "Spinning up a subagent",
+    }
+
     def __init__(self) -> None:
         self._checkpointer = MemorySaver()
 
@@ -298,6 +309,57 @@ class AgentService:
         finally:
             reset_current_user_id(token)
         await asyncio.to_thread(self._remember_exchange, user_input, "".join(visible_text), thread_id, decision.intent)
+
+    async def astream_events(self, user_input: str, thread_id: str = "me"):
+        """Structured stream for rich clients: status/tool/token events.
+
+        Yields dicts: ``{"type": "status"|"tool"|"token"}`` and a final
+        ``{"type": "done"}``. Tool detection is best-effort and never raises.
+        """
+        visible_text: list[str] = []
+        safe_input, vault = scrub_for_external(user_input)
+        decision, model_name = await asyncio.to_thread(self._route, safe_input)
+        token = set_current_user_id(thread_id)
+        announced: set[str] = set()
+        try:
+            prompt = await asyncio.to_thread(self._prompt_with_route, safe_input, thread_id, decision)
+            yield {"type": "status", "phase": "thinking", "text": "Thinking…"}
+            async for chunk, _meta in self._agent_for_model(model_name).astream(
+                {"messages": [{"role": "user", "content": prompt}]},
+                config=self.get_config(thread_id),
+                stream_mode="messages",
+            ):
+                try:
+                    if getattr(chunk, "type", "") == "tool":
+                        name = getattr(chunk, "name", None) or "tool"
+                        yield {
+                            "type": "tool",
+                            "name": name,
+                            "label": self.TOOL_LABELS.get(name, name),
+                            "state": "done",
+                        }
+                    else:
+                        for call in getattr(chunk, "tool_calls", None) or []:
+                            name = call.get("name") if isinstance(call, dict) else getattr(call, "name", None)
+                            if name and name not in announced:
+                                announced.add(name)
+                                yield {
+                                    "type": "tool",
+                                    "name": name,
+                                    "label": self.TOOL_LABELS.get(name, name),
+                                    "state": "start",
+                                }
+                except Exception:  # noqa: BLE001 - activity is best-effort
+                    pass
+                text = self.assistant_text_chunk(chunk)
+                if text:
+                    local_text = restore_for_local_delivery(text, vault)
+                    visible_text.append(local_text)
+                    yield {"type": "token", "text": local_text}
+        finally:
+            reset_current_user_id(token)
+        await asyncio.to_thread(self._remember_exchange, user_input, "".join(visible_text), thread_id, decision.intent)
+        yield {"type": "done"}
 
 
 agent_service = AgentService()
