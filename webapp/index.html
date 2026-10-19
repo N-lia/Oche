@@ -1,0 +1,125 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+  <meta name="color-scheme" content="dark light">
+  <title>OYI Live</title>
+  <script src="https://telegram.org/js/telegram-web-app.js"></script>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <div class="app" id="app">
+    <header class="topbar">
+      <div class="topbar__brand">
+        <div class="avatar" id="avatar">OY</div>
+        <div class="topbar__meta">
+          <div class="topbar__title">OYI <span class="live-tag">LIVE</span></div>
+          <div class="topbar__sub" id="connState">
+            <span class="conn-dot" id="connDot"></span>
+            <span id="connText">Connecting…</span>
+          </div>
+        </div>
+      </div>
+      <div class="topbar__actions">
+        <button class="icon-btn" id="btnSound" aria-label="Toggle spoken replies" title="Spoken replies">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M11 5 6 9H2v6h4l5 4V5Z"></path>
+            <path d="M15.54 8.46a5 5 0 0 1 0 7.07"></path>
+            <path d="M19.07 4.93a10 10 0 0 1 0 14.14"></path>
+          </svg>
+        </button>
+        <button class="icon-btn" id="btnSettings" aria-label="Settings" title="Settings">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <circle cx="12" cy="12" r="3"></circle>
+            <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1Z"></path>
+          </svg>
+        </button>
+      </div>
+    </header>
+
+    <main class="feed" id="feed" aria-live="polite"></main>
+
+    <div class="activity" id="activity" hidden>
+      <span class="activity__spinner" aria-hidden="true"></span>
+      <span class="activity__text" id="activityText">Thinking…</span>
+      <span class="activity__timer" id="activityTimer"></span>
+    </div>
+
+    <footer class="composer" id="composer">
+      <div class="voice-strip" id="voiceStrip" hidden>
+        <div class="wave" id="wave" aria-hidden="true">
+          <span></span><span></span><span></span><span></span><span></span>
+        </div>
+        <div class="voice-state" id="voiceState">Listening</div>
+        <button class="voice-stop" id="voiceStop" aria-label="End voice chat">End</button>
+      </div>
+      <form class="composer__row" id="chatForm" autocomplete="off">
+        <button type="button" class="mic-btn" id="micButton" aria-label="Start voice chat">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"></path>
+            <path d="M19 10v2a7 7 0 0 1-14 0v-2"></path>
+            <line x1="12" x2="12" y1="19" y2="22"></line>
+          </svg>
+        </button>
+        <div class="field">
+          <input id="chatInput" type="text" placeholder="Message OYI…" enterkeyhint="send" autocomplete="off">
+          <button type="submit" class="send-btn" id="sendButton" aria-label="Send" disabled>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="m22 2-7 20-4-9-9-4Z"></path>
+              <path d="M22 2 11 13"></path>
+            </svg>
+          </button>
+        </div>
+      </form>
+    </footer>
+  </div>
+
+  <div class="sheet-backdrop" id="sheetBackdrop" hidden></div>
+  <section class="sheet" id="sheet" hidden aria-label="Settings">
+    <div class="sheet__grab"></div>
+    <h2 class="sheet__title">Live Chat settings</h2>
+
+    <div class="setting">
+      <div class="setting__label">Mode</div>
+      <div class="segmented" id="modeSeg">
+        <button class="segment is-active" data-mode="agent">Agent</button>
+        <button class="segment" data-mode="echo">Echo test</button>
+      </div>
+    </div>
+
+    <div class="setting">
+      <div class="setting__label">Voice mood</div>
+      <select class="select" id="moodSelect">
+        <option value="normal">Normal</option>
+        <option value="cheerful">Cheerful</option>
+        <option value="angry">Stern</option>
+        <option value="calm">Calm</option>
+      </select>
+    </div>
+
+    <label class="toggle">
+      <span>Speak replies out loud</span>
+      <input type="checkbox" id="toggleSpeak" checked>
+      <span class="toggle__track"><span class="toggle__thumb"></span></span>
+    </label>
+
+    <label class="toggle">
+      <span>Backchannels ("mm-hmm", "go on")</span>
+      <input type="checkbox" id="toggleBackchannel" checked>
+      <span class="toggle__track"><span class="toggle__thumb"></span></span>
+    </label>
+
+    <button class="ghost-btn" id="btnClear">Clear conversation</button>
+
+    <div class="engine-info" id="engineInfo">Checking services…</div>
+  </section>
+
+  <div class="toast" id="toast" hidden></div>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>
