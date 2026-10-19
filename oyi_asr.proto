@@ -1,0 +1,135 @@
+// OYI speech-to-text service contract.
+//
+// Parakeet-EOU-120M (ONNX INT8 160ms) runs on the Oracle Cloud VM and is
+// reached by the Telegram bot and the Voice Lab WebApp over gRPC. Chatterbox
+// TTS is unrelated to this contract and stays on Modal.
+//
+// Regenerate the Python stubs after editing:
+//     python -m grpc_tools.protoc -I. --python_out=. --grpc_python_out=. oyi_asr.proto
+
+syntax = "proto3";
+
+package oyi.asr.v1;
+
+service ParakeetASR {
+  // Transcribe one complete audio segment and report end-of-utterance.
+  rpc Transcribe(TranscribeRequest) returns (TranscribeResponse);
+
+  // Liveness/readiness probe used by the bot before routing a voice note.
+  rpc Health(HealthRequest) returns (HealthResponse);
+
+  // Real-time bidirectional transcription for the live Voice Lab.
+  // The client streams PCM audio chunks; the server streams partial
+  // transcripts and an end-of-utterance event as they are recognized.
+  rpc StreamTranscribe(stream StreamRequest) returns (stream StreamResponse);
+}
+
+message TranscribeRequest {
+  // Raw audio bytes (wav, mp3, ogg, opus, ...). The server decodes with ffmpeg.
+  bytes audio = 1;
+
+  // Optional container hint such as "wav" or "ogg". Empty means auto-detect.
+  string format = 2;
+
+  // Optional sample rate in Hz. Zero means "let the decoder decide".
+  uint32 sample_rate = 3;
+}
+
+message TranscribeResponse {
+  // Recognized text with word-piece markers normalized to spaces.
+  string text = 1;
+
+  // True when the model emitted the End-Of-Utterance (<EOU>) token.
+  bool eou_detected = 2;
+
+  // Recognized text plus a trailing "<EOU>" marker when detected.
+  string raw = 3;
+
+  // Server-side inference time in seconds.
+  double duration_s = 4;
+
+  // Non-empty when the server could not produce a transcript.
+  string error = 5;
+}
+
+message HealthRequest {}
+
+message HealthResponse {
+  // True once the ONNX sessions are loaded and ready to serve.
+  bool ready = 1;
+
+  // Model identifier, e.g. "soniqo/Parakeet-EOU-120M-ONNX-INT8-160ms".
+  string model = 2;
+
+  // Free-form detail, such as the configured model directory.
+  string detail = 3;
+}
+
+// ---------------------------------------------------------------------------
+// Streaming transcription
+// ---------------------------------------------------------------------------
+
+message StreamRequest {
+  oneof payload {
+    // Sent once as the first message of the stream.
+    StreamConfig config = 1;
+
+    // A chunk of audio. PCM signed 16-bit little-endian mono is preferred.
+    AudioChunk audio = 2;
+  }
+}
+
+message StreamConfig {
+  // Sample rate of the PCM chunks. Defaults to 16000 when zero.
+  uint32 sample_rate = 1;
+
+  // "pcm16" (default) for raw little-endian 16-bit mono, or a container hint
+  // such as "wav"/"ogg" when sending whole encoded segments.
+  string format = 2;
+}
+
+message AudioChunk {
+  bytes pcm = 1;
+
+  // Marks the final chunk; the server flushes the utterance so <EOU> can fire.
+  bool last = 2;
+}
+
+message StreamResponse {
+  oneof event {
+    // Incremental, cumulative hypothesis for the current utterance.
+    PartialTranscript partial = 1;
+
+    // The utterance ended (model <EOU> or a client flush).
+    EouEvent eou = 2;
+
+    // Non-fatal stream error; the stream is terminated afterwards.
+    StreamError error = 3;
+  }
+}
+
+message PartialTranscript {
+  // Full hypothesis for the utterance so far.
+  string text = 1;
+
+  // Newly appended text since the previous partial.
+  string delta = 2;
+
+  // Heuristic: false when the tail word may still change, true when settled.
+  bool stable = 3;
+}
+
+message EouEvent {
+  // Final transcript for the completed utterance.
+  string text = 1;
+
+  // Recognized text plus a trailing "<EOU>" marker when the token fired.
+  string raw = 2;
+
+  // True when the model itself emitted the End-Of-Utterance token.
+  bool model_eou = 3;
+}
+
+message StreamError {
+  string message = 1;
+}

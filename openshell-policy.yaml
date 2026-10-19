@@ -34,3 +34,15 @@ network_policies:
         port: 443
     binaries:
       - path: /usr/local/bin/python3.12
+
+  # Parakeet-EOU ASR runs on the Oracle Cloud VM (gRPC, run by compose.yaml).
+  # Replace the host with the VM address reachable from inside the sandbox,
+  # for example the instance private IP (10.0.0.10) or the Docker host gateway
+  # (host.docker.internal). Then point the bot at it with:
+  #     PARAKEET_GRPC_TARGET=<host>:50051
+  parakeet_asr:
+    endpoints:
+      - host: "host.docker.internal"
+        port: 50051
+    binaries:
+      - path: /usr/local/bin/python3.12

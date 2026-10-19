@@ -1,0 +1,36 @@
+# OYI voice services on the Oracle Cloud VM.
+#
+# The Parakeet-EOU ASR service runs here and is reached over gRPC by the
+# Telegram bot (in the OpenShell sandbox) and the Voice Lab WebApp.
+# Chatterbox TTS stays on Modal and is not defined here.
+#
+#   docker compose up -d --build parakeet-asr
+#   docker compose logs -f parakeet-asr
+#
+services:
+  parakeet-asr:
+    build:
+      context: .
+      dockerfile: Dockerfile.asr
+    image: oyi-parakeet-asr:local
+    restart: unless-stopped
+    ports:
+      # Bind on all interfaces so the sandboxed bot can reach the VM host.
+      # Restrict to a private interface / firewall rule in production.
+      - "50051:50051"
+    environment:
+      PARAKEET_GRPC_BIND: "0.0.0.0:50051"
+      PARAKEET_MODEL_DIR: "/models/parakeet-eou-160ms"
+      PARAKEET_MAX_WORKERS: "2"
+    volumes:
+      # Persists downloaded ONNX weights across container restarts.
+      - parakeet-models:/models
+    healthcheck:
+      test: ["CMD", "python", "-c", "import grpc, oyi_asr_pb2, oyi_asr_pb2_grpc as g; g.ParakeetASRStub(grpc.insecure_channel('localhost:50051')).Health(oyi_asr_pb2.HealthRequest(), timeout=5)"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 120s
+
+volumes:
+  parakeet-models:

@@ -7,11 +7,13 @@ requires-python = ">=3.12"
 dependencies = [
     "deepagents>=0.7.19",
     "dotenv>=0.9.9",
+    "grpcio>=1.60",
     "httpx>=0.28.1",
     "langchain-openai>=1.6.7",
     "langchain-openrouter>=0.2.9",
     "liteparse>=2.15.1",
     "mem0ai>=0.1.118",
+    "protobuf>=6.31.1",
     "python-telegram-bot>=22.8",
     "tavily-python>=0.8.5",
 ]

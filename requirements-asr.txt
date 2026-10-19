@@ -1,0 +1,10 @@
+# Runtime dependencies for the Parakeet-EOU gRPC ASR service (asr_server.py).
+# This service runs on the Oracle Cloud VM, not inside the Telegram bot image.
+grpcio>=1.60
+protobuf>=6.31.1
+onnxruntime>=1.17
+numpy
+soundfile
+scipy
+librosa
+huggingface_hub

@@ -1,0 +1,33 @@
+# Parakeet-EOU gRPC ASR service image.
+#
+# Build/run via compose (recommended):
+#     docker compose up -d --build parakeet-asr
+#
+# Or directly:
+#     docker build -f Dockerfile.asr -t oyi-parakeet-asr:local .
+#     docker run --rm -p 50051:50051 -v parakeet-models:/models oyi-parakeet-asr:local
+FROM python:3.12-slim
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PARAKEET_GRPC_BIND=0.0.0.0:50051 \
+    PARAKEET_MODEL_DIR=/models/parakeet-eou-160ms \
+    HF_HOME=/models/huggingface
+
+# ffmpeg decodes incoming audio; libsndfile backs soundfile.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ffmpeg libsndfile1 \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+COPY requirements-asr.txt ./
+RUN pip install --no-cache-dir -r requirements-asr.txt
+
+COPY parakeet_eou_onnx.py asr_server.py oyi_asr.proto \
+     oyi_asr_pb2.py oyi_asr_pb2_grpc.py ./
+
+VOLUME ["/models"]
+EXPOSE 50051
+
+CMD ["python", "asr_server.py"]
