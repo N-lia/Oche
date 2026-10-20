@@ -204,6 +204,38 @@ async def test_barge_in_with_a_continuer_resumes_the_reply() -> None:
     assert state["cancelled"] is True, "aclose must still release the reply task"
 
 
+async def test_audio_held_during_a_barge_resumes_after_a_continuation() -> None:
+    """Audio that is ready mid-barge must wait, then play if it was only "hmm"."""
+    streams: list[FakeStream] = []
+
+    async def agent(text, turn_id):
+        yield "Sure thing"
+
+    async def tts(text, mood):
+        await asyncio.sleep(0.15)
+        return b"VOICE"
+
+    session, queue = _make_session(streams, agent, tts)
+    await session.on_control({"type": "start"})
+    await _user_turn(session, streams, "plan my day")
+    _drain(queue)
+
+    # TTS is still in flight when the user makes a noise.
+    await session.on_control({"type": "barge_in", "preroll": _b64(b"\x01\x02" * 8)})
+    await asyncio.sleep(0.25)
+    types = _types(_drain(queue))
+    assert "bot_audio" not in types, "must not talk over the user's utterance"
+
+    await streams[1].events.put({"type": "eou", "text": "hmm", "model_eou": True})
+    await asyncio.sleep(0.05)
+    messages = _drain(queue)
+    audio = [m for m in messages if m["type"] == "bot_audio"]
+    assert audio, "the held reply must play after a continuer"
+    assert audio[0]["turn_id"] == 1
+    assert base64.b64decode(audio[0]["audio"]) == b"VOICE"
+    await session.aclose()
+
+
 async def test_continuation_never_reaches_the_agent() -> None:
     streams: list[FakeStream] = []
     calls: list[str] = []

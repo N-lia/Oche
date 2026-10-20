@@ -113,6 +113,7 @@ class VoiceSession:
         self.soft_barge = False
         self.reply_turn_id = 0
         self.expecting_answer = False
+        self.pending_audio: tuple[str, bytes, int] | None = None
 
         self._agent_streamer = agent_streamer
         self._event_streamer = event_streamer or self._default_event_streamer
@@ -159,6 +160,10 @@ class VoiceSession:
             # ignored below.
             if self.state == SESSION_IDLE and self.stream is None:
                 await self._begin_turn(now, seed_pcm=self._decode_preroll(data.get("preroll")))
+            elif self.state == SESSION_RESPONDING and self._reply_active():
+                # The user started talking while the reply was still being
+                # generated: open a soft-barge turn so the transcript decides.
+                await self._interrupt(now, data.get("preroll", ""))
         elif kind in ("speech_end", "flush"):
             # Client VAD says the user stopped; flush so the ASR finalizes.
             if self.state == SESSION_LISTENING and self.stream is not None:
@@ -388,6 +393,7 @@ class VoiceSession:
         # the new bubble appears, so the client never flashes the old turn.
         if verdict == "turn" and self.soft_barge:
             self.soft_barge = False
+            self.pending_audio = None
             await self._cancel_response()
             await self.send({"type": "interrupted", "turn_id": self.reply_turn_id})
 
@@ -407,8 +413,10 @@ class VoiceSession:
                 self.soft_barge = False
                 self.state = SESSION_RESPONDING
                 await self.send({"type": "resume", "turn_id": turn_id})
+                await self._flush_pending_audio()
                 return
             self.soft_barge = False
+            self.pending_audio = None
             self.state = SESSION_IDLE
             await self.send({"type": "turn_end", "turn_id": turn_id})
             return
@@ -419,6 +427,7 @@ class VoiceSession:
             self.soft_barge = False
             if self._reply_active():
                 self.state = SESSION_RESPONDING  # the ducked reply resumes
+                await self._flush_pending_audio()
             else:
                 self.state = SESSION_IDLE
                 await self.send({"type": "turn_end", "turn_id": turn_id})
@@ -454,6 +463,7 @@ class VoiceSession:
 
     async def _cancel_response(self) -> None:
         """Cancel an in-flight reply task (best effort)."""
+        self.pending_audio = None
         task = self.response_task
         if task and not task.done():
             task.cancel()
@@ -525,6 +535,26 @@ class VoiceSession:
             self.bot_speaking = False
             await self.send({"type": "error", "message": f"TTS failed: {exc}"})
             return
+        if self.soft_barge and turn_id == self.reply_turn_id:
+            # The user is mid-utterance. Hold the audio: a continuer resumes it,
+            # a real turn discards it (see _finish_turn). Never talk over them.
+            self.pending_audio = (text, audio, turn_id)
+            return
+        await self.send(
+            {
+                "type": "bot_audio",
+                "text": text,
+                "audio": base64.b64encode(audio).decode(),
+                "turn_id": turn_id,
+            }
+        )
+
+    async def _flush_pending_audio(self) -> None:
+        pending, self.pending_audio = self.pending_audio, None
+        if pending is None:
+            return
+        text, audio, turn_id = pending
+        self.bot_speaking = True
         await self.send(
             {
                 "type": "bot_audio",
