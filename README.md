@@ -81,11 +81,24 @@ messages and shows a live **agent-activity** stream (thinking, tool use).
   partial transcripts, and runs the backchannel policy in `backchannel.py`.
 - `voice_session.py` holds the turn state machine: audio/text → ASR → backchannels
   → agent → TTS. It is web-framework free so the turn-taking logic is unit-tested.
-- **Interruptible turns.** Every turn carries a monotonic `turn_id`. When you
-  talk over the assistant the client sends a `barge_in` frame with a short
-  preroll; the session cancels the in-flight reply task, tears down the previous
-  ASR stream and opens a new turn seeded with the preroll, so the first word is
-  not clipped. Stragglers from the abandoned turn are dropped by `turn_id`.
+- **Turn-taking is local and acoustic.** `webapp/turn-taking.js` runs a
+  BargeKit-style state machine on the microphone level (`armed → user_speaking →
+  cooldown`, `agent_speaking → barge_pending → interrupted`). The client owns
+  turn boundaries: it sends `speech_start`/`speech_end` (with a preroll) and only
+  streams audio inside a turn, so noise and speaker echo can never open one.
+- **Continuers are not requests.** `turn_policy.py` classifies the final
+  transcript: "hmm", "ok", "right", "mm-hmm" are acknowledgements and never reach
+  the agent. A bare "ok" only counts as an answer when the previous reply ended
+  with a question. Genuine requests go to the agent as usual.
+- **Barge-in ducks, then decides.** Talking over the assistant ducks its audio
+  immediately but does not cancel the reply. If the transcript is a continuer,
+  playback resumes; if it is a real turn, the reply is cancelled and the new turn
+  runs. Sustained speech also cancels locally after ~900 ms, and the settings
+  sheet offers half-duplex mode (mic muted while the agent speaks).
+- **Interruptible turns.** Every turn carries a monotonic `turn_id`. A barge-in
+  tears down the previous ASR stream and opens a new turn seeded with the
+  preroll, so the first word is not clipped. Stragglers from the abandoned turn
+  are dropped by `turn_id`.
 - **Text turns** send `{"type": "text", …}`; the session streams
   `status`/`tool`/`bot_text_delta` events and optionally speaks the reply.
 - Backchannel clips are short phrases pre-synthesized in OYI's voice with the
@@ -131,8 +144,10 @@ Backchannel pacing is tunable via `BackchannelController` (`min_gap`,
 
 ```sh
 .venv/bin/python test_backchannel.py
+.venv/bin/python test_turn_policy.py
 .venv/bin/python test_voice_interrupt.py
 .venv/bin/python test_live_chat_text.py
+node test_turn_taking.js
 ```
 
 Requests use a model cascade. The fast classifier extracts intent and entities,
