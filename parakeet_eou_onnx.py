@@ -237,7 +237,10 @@ class StreamingSession:
         events: list[dict] = []
         if delta or final:
             events.append({"type": "partial", "text": text, "delta": delta, "stable": not final})
-        if final or self._eou:
+        # Endpointing belongs to the turn-taking layer (the client VAD), not to
+        # the ASR: a model EOU in the middle of an utterance must not end the
+        # user's turn. ``model_eou`` is still reported on the final event.
+        if final:
             events.append(
                 {
                     "type": "eou",
