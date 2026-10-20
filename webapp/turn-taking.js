@@ -71,6 +71,7 @@
     let bargeEmitted = false;
     let cancelEmitted = false;
     let noiseEmitted = false;
+    let holdEmitted = false;
 
     function emit(type, extra) {
       try {
@@ -102,7 +103,10 @@
 
       if (agentSpeaking) {
         if (config.halfDuplex.preventWhileAgentSpeaking) {
-          if (value >= config.noiseFloorThreshold) emit('input.duplex_hold', { level: value });
+          if (value >= config.noiseFloorThreshold && !holdEmitted) {
+            holdEmitted = true;  // once per output, not once per frame
+            emit('input.duplex_hold', { level: value });
+          }
           return;
         }
         if (!config.bargeIn.enabled || !config.bargeIn.whileAgentSpeaking) {
@@ -188,6 +192,7 @@
     function agentOutputStart() {
       agentSpeaking = true;
       agentStartedAt = clock();
+      holdEmitted = false;
       resetSpeech();
       if (!muted) setState('agent_speaking', 'output_start');
     }
@@ -195,6 +200,7 @@
     function agentOutputEnd() {
       const wasBarging = state === 'barge_pending' || state === 'interrupted';
       agentSpeaking = false;
+      holdEmitted = false;
       resetSpeech();
       if (wasBarging) {
         // The user is mid-utterance; keep the turn open until silence ends it.
