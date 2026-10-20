@@ -113,6 +113,12 @@
       <span class="toggle__track"><span class="toggle__thumb"></span></span>
     </label>
 
+    <label class="toggle">
+      <span>Half-duplex (mute mic while OYI speaks)</span>
+      <input type="checkbox" id="toggleHalfDuplex">
+      <span class="toggle__track"><span class="toggle__thumb"></span></span>
+    </label>
+
     <button class="ghost-btn" id="btnClear">Clear conversation</button>
 
     <div class="engine-info" id="engineInfo">Checking services…</div>
@@ -120,6 +126,7 @@
 
   <div class="toast" id="toast" hidden></div>
 
+  <script src="/static/turn-taking.js"></script>
   <script src="/static/app.js"></script>
 </body>
 </html>

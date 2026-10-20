@@ -72,6 +72,7 @@
   const moodSelect = $('moodSelect');
   const toggleSpeak = $('toggleSpeak');
   const toggleBackchannel = $('toggleBackchannel');
+  const toggleHalfDuplex = $('toggleHalfDuplex');
   const btnClear = $('btnClear');
   const engineInfo = $('engineInfo');
   const toastEl = $('toast');
@@ -92,8 +93,7 @@
     backchannels: true,
     threadId: 'webapp',
     busy: false,
-    speaking: false,
-    silenceStartedAt: 0,
+    duplex: 'full',
     userBubble: null,
     botBubble: null,
     voiceActive: false,
@@ -101,10 +101,9 @@
     activityInterval: null,
   };
 
-  const SPEECH_RMS = 0.012;
-  const SILENCE_MS = 900;
   const PREROLL_FRAMES = 16;
   const preroll = [];
+  let turnTaker = null;
 
   let audioContext = null;
   let micStream = null;
@@ -316,9 +315,48 @@
       case 'eou':
         if (msg.turn_id && msg.turn_id <= S.interruptedTurnId) break;
         if (msg.turn_id) S.turnId = msg.turn_id;
+        if (msg.verdict === 'continuation') {
+          // "mm-hmm"/"ok" are not requests: the continuation message removes
+          // the bubble and shows a chip instead.
+          break;
+        }
+        if (msg.verdict === 'empty') {
+          if (S.userBubble) { S.userBubble.remove(); S.userBubble = null; }
+          break;
+        }
         finalizeUserBubble(msg.text);
         S.busy = true;
         showActivity('Thinking…');
+        break;
+
+      case 'continuation':
+        // The transcript was an acknowledgement. Resume the ducked reply (if
+        // one is playing) instead of answering the acknowledgement itself.
+        unduckBotAudio();
+        if (S.userBubble) { S.userBubble.remove(); S.userBubble = null; }
+        addChip(msg.text || 'mm-hmm', true);
+        if (!botAudio) {
+          S.busy = false;
+          hideActivity();
+        }
+        if (S.voiceActive) {
+          setVoiceState(botAudio ? 'speaking' : 'listening', botAudio ? 'Speaking…' : 'Listening');
+        }
+        break;
+
+      case 'resume':
+        // The "barge-in" turned out to be noise; let the ducked reply resume.
+        unduckBotAudio();
+        if (S.userBubble) { S.userBubble.remove(); S.userBubble = null; }
+        if (!botAudio) { S.busy = false; hideActivity(); }
+        if (S.voiceActive) {
+          setVoiceState(botAudio ? 'speaking' : 'listening', botAudio ? 'Speaking…' : 'Listening');
+        }
+        break;
+
+      case 'barge_pending':
+        // Audio is already ducked locally; the transcript will decide whether
+        // this was a continuer or a real interruption.
         break;
 
       case 'status':
@@ -357,7 +395,8 @@
       case 'interrupted':
         hideActivity();
         stopOverlays();
-        if (botAudio) { botAudio.pause(); botAudio = null; }
+        stopBotAudio();
+        S.interruptedTurnId = msg.turn_id || S.turnId;
         finalizeUserBubble();
         S.busy = false;
         if (S.voiceActive) setVoiceState('listening', 'Go ahead…');
@@ -407,13 +446,19 @@
       return;
     }
     setVoiceState('speaking', 'Speaking…');
+    ensureTurnTaker().agentOutputStart();
+    wsSend({ type: 'playback_start' });
     botAudio = new Audio(`data:audio/mpeg;base64,${base64}`);
     botAudio.onended = () => {
       botAudio = null;
+      ensureTurnTaker().agentOutputEnd();
       wsSend({ type: 'playback_end' });
       if (S.voiceActive) setVoiceState('listening', 'Listening');
     };
-    botAudio.play().catch(() => { wsSend({ type: 'playback_end' }); });
+    botAudio.play().catch(() => {
+      ensureTurnTaker().agentOutputEnd();
+      wsSend({ type: 'playback_end' });
+    });
   }
 
   // ----------------------------------------------------------- audio utils
@@ -471,6 +516,55 @@
     return base64FromInt16(merged);
   }
 
+  // ---------------------------------------------------------- turn-taking
+  function onTurnEvent(event) {
+    switch (event.type) {
+      case 'user_speech.started':
+        if (S.voiceActive) {
+          setVoiceState('listening', 'Hearing you…');
+          wsSend({ type: 'speech_start', preroll: prerollBase64() });
+        }
+        break;
+
+      case 'user_speech.ended':
+        if (S.voiceActive) {
+          showActivity('Transcribing…');
+          setVoiceState('thinking', 'Thinking…');
+          wsSend({ type: 'speech_end' });
+        }
+        break;
+
+      case 'barge_in.requested':
+        onBargeIn();
+        break;
+
+      case 'output.duck_requested':
+        duckBotAudio();
+        break;
+
+      case 'output.cancel_requested':
+        stopBotAudio();
+        break;
+
+      case 'input.duplex_hold':
+        if (S.voiceActive) setVoiceState('holding', 'Mic held while OYI speaks');
+        break;
+
+      default:
+        break;
+    }
+  }
+
+  function ensureTurnTaker() {
+    if (!turnTaker) {
+      turnTaker = window.createTurnTaker({
+        config: { halfDuplex: { preventWhileAgentSpeaking: S.duplex === 'half' } },
+        onEvent: onTurnEvent,
+      });
+    }
+    return turnTaker;
+  }
+
   // --------------------------------------------------------------- voice
   function pushPreroll(pcm) {
     preroll.push(pcm);
@@ -482,37 +576,42 @@
     const pcm = toInt16(resampleTo16k(float32, audioContext.sampleRate));
     const level = rms(pcm);
     wave.style.setProperty('--level', level.toFixed(3));
-    const isSpeech = level >= SPEECH_RMS;
-    const now = performance.now();
     pushPreroll(pcm);
 
-    if (isSpeech && S.busy) bargeIn();
-
-    if (isSpeech) {
-      S.silenceStartedAt = 0;
-      if (!S.busy) setVoiceState('listening', 'Hearing you…');
-    } else if (S.speaking) {
-      if (!S.silenceStartedAt) S.silenceStartedAt = now;
-      else if (now - S.silenceStartedAt >= SILENCE_MS && !S.busy) {
-        S.busy = true;
-        wsSend({ type: 'flush' });
-        showActivity('Transcribing…');
-        setVoiceState('thinking', 'Thinking…');
-      }
-    }
-    S.speaking = isSpeech;
-
-    if (!S.busy || isSpeech) S.socket.send(pcm.buffer);
+    // Turn timing is decided locally from the level — not from transcripts and
+    // not with a server round-trip.
+    const turn = ensureTurnTaker();
+    turn.level(level);
+    if (turn.shouldSend(level)) S.socket.send(pcm.buffer);
   }
 
-  function bargeIn() {
-    haptic('medium');
-    if (botAudio) { botAudio.pause(); botAudio = null; }
+  function duckBotAudio() {
+    if (botAudio) botAudio.volume = 0.22;
+  }
+
+  function unduckBotAudio() {
+    if (botAudio) botAudio.volume = 1;
+  }
+
+  function stopBotAudio() {
+    if (botAudio) {
+      botAudio.pause();
+      botAudio = null;
+      // Tell the server playback actually stopped: bot_speaking gates
+      // turn-taking on the server side.
+      wsSend({ type: 'playback_end' });
+    }
+    if (turnTaker) turnTaker.agentOutputEnd();
     stopOverlays();
-    S.interruptedTurnId = S.turnId;
+  }
+
+  function onBargeIn() {
+    // Duck immediately, decide after the transcript: an "mm-hmm" must not kill
+    // the reply, a real interruption must.
+    haptic('light');
+    duckBotAudio();
+    stopOverlays();
     S.busy = false;
-    S.speaking = true;
-    S.silenceStartedAt = 0;
     finalizeUserBubble();
     hideActivity();
     setVoiceState('listening', 'Go ahead…');
@@ -544,9 +643,9 @@
 
       S.voiceActive = true;
       S.busy = false;
-      S.speaking = false;
       micButton.classList.add('is-active');
       voiceStrip.hidden = false;
+      ensureTurnTaker().start();
       setVoiceState('listening', 'Listening');
       if (tg && tg.enableClosingConfirmation) tg.enableClosingConfirmation();
       haptic('medium');
@@ -560,7 +659,7 @@
   async function stopVoice() {
     S.voiceActive = false;
     S.busy = false;
-    S.speaking = false;
+    if (turnTaker) turnTaker.stop();
     micButton.classList.remove('is-active');
     voiceStrip.hidden = true;
     hideActivity();
@@ -630,6 +729,14 @@
   });
 
   toggleBackchannel.addEventListener('change', () => { S.backchannels = toggleBackchannel.checked; });
+
+  toggleHalfDuplex.addEventListener('change', () => {
+    S.duplex = toggleHalfDuplex.checked ? 'half' : 'full';
+    if (turnTaker) {
+      turnTaker.updateConfig({ halfDuplex: { preventWhileAgentSpeaking: S.duplex === 'half' } });
+    }
+    toast(S.duplex === 'half' ? 'Mic muted while OYI speaks' : 'Full-duplex barge-in on');
+  });
 
   btnClear.addEventListener('click', () => {
     feed.innerHTML = '';
