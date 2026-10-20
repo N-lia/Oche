@@ -22,7 +22,7 @@
     speechThreshold: 0.022,
     noiseFloorThreshold: 0.008,
     minSpeechMs: 220,
-    silenceMs: 550,
+    silenceMs: 750,
     debounceMs: 100,
     cooldownMs: 180,
     // Ignore the first moments of agent playback: speaker -> mic echo.

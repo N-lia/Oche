@@ -49,7 +49,7 @@ function feed(h, level, ms, step) {
 
 test('silence never opens a turn', () => {
   const h = harness();
-  feed(h, QUIET, 600);
+  feed(h, QUIET, 800);
   if (h.types().includes('user_speech.started')) throw new Error('silence opened a turn');
   if (h.tt.state !== 'armed') throw new Error(`state ${h.tt.state}`);
 });
@@ -59,7 +59,7 @@ test('sustained speech starts and silence ends the turn', () => {
   feed(h, SPEECH, 240);
   if (!h.types().includes('user_speech.started')) throw new Error('no speech_start');
   if (h.tt.state !== 'user_speaking') throw new Error(`state ${h.tt.state}`);
-  feed(h, QUIET, 600);
+  feed(h, QUIET, 800);
   const ended = h.events.find((e) => e.type === 'user_speech.ended');
   if (!ended) throw new Error('no speech_end');
   if (ended.durationMs < 200) throw new Error(`duration ${ended.durationMs}`);
@@ -108,7 +108,7 @@ test('output ending mid-barge keeps the user turn open', () => {
   feed(h, SPEECH, 300);
   h.tt.agentOutputEnd();
   if (h.tt.state !== 'user_speaking') throw new Error(`state ${h.tt.state}`);
-  feed(h, QUIET, 600);
+  feed(h, QUIET, 800);
   if (!h.types().includes('user_speech.ended')) throw new Error('turn never closed');
 });
 
@@ -135,7 +135,7 @@ test('audio is only sent while a turn is open', () => {
   h.tt.level(SPEECH);
   feed(h, SPEECH, 240);
   if (!h.tt.shouldSend()) throw new Error('does not send during a turn');
-  feed(h, QUIET, 600);
+  feed(h, QUIET, 800);
   if (h.tt.shouldSend()) throw new Error('still sends after the turn');
 });
 
