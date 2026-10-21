@@ -56,6 +56,16 @@ class Transcript:
     error: str = ""
 
 
+@dataclass(frozen=True)
+class TurnScore:
+    """Semantic end-of-turn result from the Smart Turn model."""
+
+    probability: float = 0.0
+    complete: bool = False
+    duration_s: float = 0.0
+    error: str = ""
+
+
 def get_target() -> str:
     return os.getenv("PARAKEET_GRPC_TARGET", DEFAULT_TARGET).strip() or DEFAULT_TARGET
 
@@ -137,6 +147,60 @@ async def atranscribe(
     """Async wrapper around :func:`transcribe` for asyncio callers."""
     return await asyncio.to_thread(
         transcribe, audio, format=format, sample_rate=sample_rate, timeout=timeout
+    )
+
+
+def score_turn(
+    pcm: bytes,
+    *,
+    sample_rate: int = 16000,
+    format: str = "pcm16",
+    threshold: float = 0.0,
+    timeout: float | None = None,
+) -> TurnScore:
+    """Ask the service whether an utterance is semantically complete.
+
+    ``threshold`` of zero lets the server use its configured default. Errors
+    are returned in ``TurnScore.error`` so the caller can fall back to plain
+    silence endpointing when Smart Turn is unavailable.
+    """
+    if not pcm:
+        return TurnScore(error="empty audio payload")
+
+    stub = pb_grpc.ParakeetASRStub(get_channel())
+    request = pb.TurnScoreRequest(
+        audio=pcm, sample_rate=sample_rate, format=format, threshold=threshold
+    )
+    try:
+        response = stub.ScoreTurn(request, timeout=timeout or min(get_timeout(), 15.0))
+    except grpc.RpcError as exc:
+        LOGGER.warning("Smart Turn gRPC call failed: %s", exc)
+        return TurnScore(error=_rpc_error_message(exc))
+
+    return TurnScore(
+        probability=response.probability,
+        complete=response.complete,
+        duration_s=response.duration_s,
+        error=response.error,
+    )
+
+
+async def ascore_turn(
+    pcm: bytes,
+    *,
+    sample_rate: int = 16000,
+    format: str = "pcm16",
+    threshold: float = 0.0,
+    timeout: float | None = None,
+) -> TurnScore:
+    """Async wrapper around :func:`score_turn` for asyncio callers."""
+    return await asyncio.to_thread(
+        score_turn,
+        pcm,
+        sample_rate=sample_rate,
+        format=format,
+        threshold=threshold,
+        timeout=timeout,
     )
 
 

@@ -94,6 +94,7 @@
     threadId: 'webapp',
     busy: false,
     duplex: 'full',
+    smartTurn: false,
     userBubble: null,
     botBubble: null,
     voiceActive: false,
@@ -295,6 +296,8 @@
       case 'ready':
         S.turnId = 0;
         S.interruptedTurnId = -1;
+        S.smartTurn = Boolean(msg.smart_turn);
+        if (turnTaker) turnTaker.updateConfig({ silenceMs: S.smartTurn ? 500 : 750 });
         setConn('online', 'Online');
         break;
 
@@ -357,6 +360,19 @@
       case 'barge_pending':
         // Audio is already ducked locally; the transcript will decide whether
         // this was a continuer or a real interruption.
+        break;
+
+      case 'turn_hold':
+        // Smart Turn heard a pause that may be mid-thought: keep the turn
+        // open instead of answering a half sentence.
+        hideActivity();
+        if (S.voiceActive) setVoiceState('listening', 'Go on…');
+        break;
+
+      case 'turn_resumed':
+        // The user kept going after a held pause; same turn, no new bubble.
+        hideActivity();
+        if (S.voiceActive) setVoiceState('listening', 'Hearing you…');
         break;
 
       case 'status':
@@ -558,7 +574,10 @@
   function ensureTurnTaker() {
     if (!turnTaker) {
       turnTaker = window.createTurnTaker({
-        config: { halfDuplex: { preventWhileAgentSpeaking: S.duplex === 'half' } },
+        config: {
+          halfDuplex: { preventWhileAgentSpeaking: S.duplex === 'half' },
+          silenceMs: S.smartTurn ? 500 : 750,
+        },
         onEvent: onTurnEvent,
       });
     }

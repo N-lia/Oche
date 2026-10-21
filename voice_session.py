@@ -19,12 +19,13 @@ from __future__ import annotations
 import asyncio
 import base64
 import logging
+import os
 import time
 from collections.abc import AsyncIterator, Awaitable, Callable
 
 import numpy as np
 
-from asr_client import AsyncTranscribeStream
+from asr_client import AsyncTranscribeStream, ascore_turn
 from backchannel import BackchannelController, clip_path
 from turn_policy import classify_turn
 
@@ -35,13 +36,21 @@ SPEECH_RMS_THRESHOLD = 0.012
 # Voice session states.
 SESSION_IDLE = "idle"            # waiting for the user to start a turn
 SESSION_LISTENING = "listening"  # transcribing the current user turn
+SESSION_EVALUATING = "evaluating"  # silence heard; Smart Turn is scoring it
+SESSION_PAUSED = "paused"        # semantically incomplete; waiting for more
 SESSION_FINALIZING = "finalizing"  # flush sent; waiting for <EOU>
 SESSION_RESPONDING = "responding"  # agent/TTS running for the last turn
+
+# How much trailing audio to keep for Smart Turn (it scores the last 8 s).
+_TAIL_SECONDS = 12
+_TURN_AUDIO_MAX_BYTES = 16000 * 2 * _TAIL_SECONDS
 
 AgentStreamer = Callable[[str, int], AsyncIterator[str]]
 EventStreamer = Callable[[str, int], AsyncIterator[dict]]
 Tts = Callable[[str, str], Awaitable[bytes]]
 StreamFactory = Callable[[int], AsyncTranscribeStream]
+# Returns P(complete) in [0, 1], or None when Smart Turn is unavailable.
+TurnScorer = Callable[[bytes, int], Awaitable[float | None]]
 
 
 def audio_rms(pcm16: bytes) -> float:
@@ -76,6 +85,33 @@ def _default_clip_exists(phrase: str) -> bool:
     return clip_path(phrase).exists()
 
 
+def _env_float(name: str, default: float) -> float:
+    try:
+        return float(os.getenv(name, default))
+    except (TypeError, ValueError):
+        return default
+
+
+def _smart_turn_enabled() -> bool:
+    return os.getenv("SMART_TURN_ENABLED", "1").strip().lower() not in {
+        "0",
+        "false",
+        "no",
+        "off",
+    }
+
+
+async def _default_turn_scorer(pcm: bytes, sample_rate: int) -> float | None:
+    """Score end-of-turn over the VM's gRPC service; None means "unavailable"."""
+    if not _smart_turn_enabled():
+        return None
+    result = await ascore_turn(pcm, sample_rate=sample_rate)
+    if result.error:
+        LOGGER.info("Smart Turn unavailable: %s", result.error)
+        return None
+    return result.probability
+
+
 class VoiceSession:
     """Orchestrates one live conversation over a message queue."""
 
@@ -89,6 +125,8 @@ class VoiceSession:
         stream_factory: StreamFactory = _default_stream_factory,
         clip_exists: Callable[[str], bool] = _default_clip_exists,
         clip_url: Callable[[str], str] | None = None,
+        turn_scorer: TurnScorer | None = None,
+        smart_turn_available: bool = False,
     ) -> None:
         self.out = out
         self.controller = BackchannelController()
@@ -114,6 +152,13 @@ class VoiceSession:
         self.reply_turn_id = 0
         self.expecting_answer = False
         self.pending_audio: tuple[str, bytes, int] | None = None
+        # Semantic endpointing: the client VAD reports silence, Smart Turn
+        # decides whether the thought is finished or deserves more time.
+        self.smart_turn_available = smart_turn_available
+        self.smart_turn_threshold = _env_float("SMART_TURN_THRESHOLD", 0.5)
+        self.smart_turn_grace = _env_float("SMART_TURN_GRACE_MS", 1800.0) / 1000.0
+        self._turn_audio = bytearray()
+        self._grace_task: asyncio.Task | None = None
 
         self._agent_streamer = agent_streamer
         self._event_streamer = event_streamer or self._default_event_streamer
@@ -121,6 +166,7 @@ class VoiceSession:
         self._stream_factory = stream_factory
         self._clip_exists = clip_exists
         self._clip_url = clip_url or (lambda phrase: "")
+        self._turn_scorer = turn_scorer or _default_turn_scorer
 
     async def send(self, message: dict) -> None:
         await self.out.put(message)
@@ -142,6 +188,7 @@ class VoiceSession:
                     "thread_id": self.thread_id,
                     "mode": self.mode,
                     "mood": self.mood,
+                    "smart_turn": self.smart_turn_available,
                 }
             )
         elif kind == "set":
@@ -158,19 +205,26 @@ class VoiceSession:
             # Client VAD says speech began. It also carries the preroll, so the
             # first syllable is not lost even though audio outside a turn is
             # ignored below.
-            if self.state == SESSION_IDLE and self.stream is None:
+            if self.state == SESSION_PAUSED and self.stream is not None:
+                # Smart Turn said "not finished" and the user kept going: this
+                # is the same turn, not a new one. Keep the ASR stream alive.
+                self._cancel_grace()
+                self.state = SESSION_LISTENING
+                seed = self._decode_preroll(data.get("preroll"))
+                if seed:
+                    await self._feed(seed, now)
+                await self.send({"type": "turn_resumed", "turn_id": self.turn_id})
+            elif self.state == SESSION_IDLE and self.stream is None:
                 await self._begin_turn(now, seed_pcm=self._decode_preroll(data.get("preroll")))
             elif self.state == SESSION_RESPONDING and self._reply_active():
                 # The user started talking while the reply was still being
                 # generated: open a soft-barge turn so the transcript decides.
                 await self._interrupt(now, data.get("preroll", ""))
         elif kind in ("speech_end", "flush"):
-            # Client VAD says the user stopped; flush so the ASR finalizes.
+            # Client VAD says the user stopped. Smart Turn decides whether to
+            # dispatch the turn now or hold it open for a beat.
             if self.state == SESSION_LISTENING and self.stream is not None:
-                self.state = SESSION_FINALIZING
-                self.controller.end_turn(now)
-                self.stream.finish()
-                self.stream = None
+                await self._end_speech(now)
         elif kind == "text":
             # Typed message from the WebApp: run a text turn through the agent.
             text = (data.get("text") or "").strip()
@@ -211,7 +265,14 @@ class VoiceSession:
         # a turn is pre-speech, noise or speaker echo, and must not open one.
         if self.state == SESSION_LISTENING:
             await self._feed(pcm, time.monotonic())
-        # IDLE / FINALIZING / RESPONDING: ignored until the VAD opens a turn.
+        elif self.state == SESSION_PAUSED:
+            # A few frames can still be in flight while Smart Turn evaluates.
+            # Keep them with the same turn so a resumed thought is contiguous.
+            self._remember_audio(pcm)
+            if self.stream is not None:
+                self.stream.feed(pcm)
+        # IDLE / EVALUATING / FINALIZING / RESPONDING: ignored until the VAD
+        # opens or resumes a turn.
 
     async def _begin_turn(self, now: float, seed_pcm: bytes = b"") -> None:
         # Never orphan a previous stream: each open gRPC stream pins a worker
@@ -221,13 +282,21 @@ class VoiceSession:
         self.turn_id = self.turn_counter
         self.state = SESSION_LISTENING
         self.text = ""
+        self._turn_audio = bytearray()
         self.controller.start_turn(now)
         self.stream = self._stream_factory(self.sample_rate)
         self.consumer = asyncio.create_task(self._consume(self.stream, self.turn_id))
         if seed_pcm:
             await self._feed(seed_pcm, now)
 
+    def _remember_audio(self, pcm: bytes) -> None:
+        self._turn_audio.extend(pcm)
+        excess = len(self._turn_audio) - _TURN_AUDIO_MAX_BYTES
+        if excess > 0:
+            del self._turn_audio[:excess]
+
     async def _feed(self, pcm: bytes, now: float) -> None:
+        self._remember_audio(pcm)
         is_speech = audio_rms(pcm) >= SPEECH_RMS_THRESHOLD
         self.controller.update_activity(now, is_speech)
         if self.stream is not None:
@@ -364,6 +433,7 @@ class VoiceSession:
 
     async def _stop_listening(self) -> None:
         """Close the current ASR stream and stop its consumer task."""
+        self._cancel_grace()
         stream, consumer = self.stream, self.consumer
         self.stream = None
         self.consumer = None
@@ -373,8 +443,82 @@ class VoiceSession:
             consumer.cancel()
             await asyncio.gather(consumer, return_exceptions=True)
 
+    # ------------------------------------------------------ semantic endpoint
+    async def _end_speech(self, now: float) -> None:
+        """Silence heard: dispatch a finished thought or hold an unfinished one.
+
+        The client VAD can only hear pauses. Smart Turn looks at the waveform
+        and answers "did they finish?"; low confidence buys the speaker a
+        short grace window in which the same turn can resume.
+        """
+        if self.state != SESSION_LISTENING or self.stream is None:
+            return
+
+        self.state = SESSION_EVALUATING
+        probability: float | None = None
+        min_bytes = 16000 * 2 // 4  # 250 ms is too little to judge
+        if self.smart_turn_available and len(self._turn_audio) >= min_bytes:
+            pcm = bytes(self._turn_audio[-(16000 * 2 * 8):])
+            try:
+                probability = await self._turn_scorer(pcm, self.sample_rate)
+            except Exception:  # noqa: BLE001 - endpointing must never break
+                LOGGER.exception("Smart Turn scoring failed")
+
+        if probability is None or probability >= self.smart_turn_threshold:
+            await self._finalize_turn(now)
+            return
+
+        LOGGER.info(
+            "Smart Turn %.3f < %.2f: holding turn %d open for %.1fs",
+            probability,
+            self.smart_turn_threshold,
+            self.turn_id,
+            self.smart_turn_grace,
+        )
+        self.state = SESSION_PAUSED
+        await self.send(
+            {"type": "turn_hold", "turn_id": self.turn_id, "probability": probability}
+        )
+        self._grace_task = asyncio.create_task(self._grace_timer(self.turn_id))
+
+    async def _finalize_turn(self, now: float) -> None:
+        """Flush the ASR stream; the consumer will deliver the final <EOU>."""
+        self._cancel_grace()
+        stream = self.stream
+        if stream is None or self.state == SESSION_FINALIZING:
+            return
+        if not self._turn_audio:
+            # Nothing was ever said (VAD misfire): close without an ASR flush,
+            # otherwise the session would wait forever for an <EOU>.
+            self.state = SESSION_IDLE
+            self.controller.end_turn(now)
+            self.stream = None
+            stream.close()
+            await self.send({"type": "turn_end", "turn_id": self.turn_id})
+            return
+        self.state = SESSION_FINALIZING
+        self.controller.end_turn(now)
+        self.stream = None
+        stream.finish()
+
+    async def _grace_timer(self, turn_id: int) -> None:
+        try:
+            await asyncio.sleep(self.smart_turn_grace)
+        except asyncio.CancelledError:
+            return
+        if self.state == SESSION_PAUSED and self.turn_id == turn_id:
+            LOGGER.info("Smart Turn grace elapsed; finalizing turn %d", turn_id)
+            self._grace_task = None
+            await self._finalize_turn(time.monotonic())
+
+    def _cancel_grace(self) -> None:
+        task, self._grace_task = self._grace_task, None
+        if task is not None and not task.done():
+            task.cancel()
+
     async def aclose(self) -> None:
         """Release every resource; called when the transport disconnects."""
+        self._cancel_grace()
         await self._stop_listening()
         await self._cancel_response()
 

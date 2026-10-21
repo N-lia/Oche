@@ -24,7 +24,7 @@ _sym_db = _symbol_database.Default()
 
 
 
-DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n\royi_asr.proto\x12\noyi.asr.v1\"G\n\x11TranscribeRequest\x12\r\n\x05\x61udio\x18\x01 \x01(\x0c\x12\x0e\n\x06\x66ormat\x18\x02 \x01(\t\x12\x13\n\x0bsample_rate\x18\x03 \x01(\r\"h\n\x12TranscribeResponse\x12\x0c\n\x04text\x18\x01 \x01(\t\x12\x14\n\x0c\x65ou_detected\x18\x02 \x01(\x08\x12\x0b\n\x03raw\x18\x03 \x01(\t\x12\x12\n\nduration_s\x18\x04 \x01(\x01\x12\r\n\x05\x65rror\x18\x05 \x01(\t\"\x0f\n\rHealthRequest\">\n\x0eHealthResponse\x12\r\n\x05ready\x18\x01 \x01(\x08\x12\r\n\x05model\x18\x02 \x01(\t\x12\x0e\n\x06\x64\x65tail\x18\x03 \x01(\t\"o\n\rStreamRequest\x12*\n\x06\x63onfig\x18\x01 \x01(\x0b\x32\x18.oyi.asr.v1.StreamConfigH\x00\x12\'\n\x05\x61udio\x18\x02 \x01(\x0b\x32\x16.oyi.asr.v1.AudioChunkH\x00\x42\t\n\x07payload\"3\n\x0cStreamConfig\x12\x13\n\x0bsample_rate\x18\x01 \x01(\r\x12\x0e\n\x06\x66ormat\x18\x02 \x01(\t\"\'\n\nAudioChunk\x12\x0b\n\x03pcm\x18\x01 \x01(\x0c\x12\x0c\n\x04last\x18\x02 \x01(\x08\"\x9a\x01\n\x0eStreamResponse\x12\x30\n\x07partial\x18\x01 \x01(\x0b\x32\x1d.oyi.asr.v1.PartialTranscriptH\x00\x12#\n\x03\x65ou\x18\x02 \x01(\x0b\x32\x14.oyi.asr.v1.EouEventH\x00\x12(\n\x05\x65rror\x18\x03 \x01(\x0b\x32\x17.oyi.asr.v1.StreamErrorH\x00\x42\x07\n\x05\x65vent\"@\n\x11PartialTranscript\x12\x0c\n\x04text\x18\x01 \x01(\t\x12\r\n\x05\x64\x65lta\x18\x02 \x01(\t\x12\x0e\n\x06stable\x18\x03 \x01(\x08\"8\n\x08\x45ouEvent\x12\x0c\n\x04text\x18\x01 \x01(\t\x12\x0b\n\x03raw\x18\x02 \x01(\t\x12\x11\n\tmodel_eou\x18\x03 \x01(\x08\"\x1e\n\x0bStreamError\x12\x0f\n\x07message\x18\x01 \x01(\t2\xea\x01\n\x0bParakeetASR\x12K\n\nTranscribe\x12\x1d.oyi.asr.v1.TranscribeRequest\x1a\x1e.oyi.asr.v1.TranscribeResponse\x12?\n\x06Health\x12\x19.oyi.asr.v1.HealthRequest\x1a\x1a.oyi.asr.v1.HealthResponse\x12M\n\x10StreamTranscribe\x12\x19.oyi.asr.v1.StreamRequest\x1a\x1a.oyi.asr.v1.StreamResponse(\x01\x30\x01\x62\x06proto3')
+DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n\royi_asr.proto\x12\noyi.asr.v1\"G\n\x11TranscribeRequest\x12\r\n\x05\x61udio\x18\x01 \x01(\x0c\x12\x0e\n\x06\x66ormat\x18\x02 \x01(\t\x12\x13\n\x0bsample_rate\x18\x03 \x01(\r\"h\n\x12TranscribeResponse\x12\x0c\n\x04text\x18\x01 \x01(\t\x12\x14\n\x0c\x65ou_detected\x18\x02 \x01(\x08\x12\x0b\n\x03raw\x18\x03 \x01(\t\x12\x12\n\nduration_s\x18\x04 \x01(\x01\x12\r\n\x05\x65rror\x18\x05 \x01(\t\"\x0f\n\rHealthRequest\"r\n\x0eHealthResponse\x12\r\n\x05ready\x18\x01 \x01(\x08\x12\r\n\x05model\x18\x02 \x01(\t\x12\x0e\n\x06\x64\x65tail\x18\x03 \x01(\t\x12\x18\n\x10smart_turn_ready\x18\x04 \x01(\x08\x12\x18\n\x10smart_turn_model\x18\x05 \x01(\t\"Y\n\x10TurnScoreRequest\x12\r\n\x05\x61udio\x18\x01 \x01(\x0c\x12\x13\n\x0bsample_rate\x18\x02 \x01(\r\x12\x0e\n\x06\x66ormat\x18\x03 \x01(\t\x12\x11\n\tthreshold\x18\x04 \x01(\x02\"]\n\x11TurnScoreResponse\x12\x13\n\x0bprobability\x18\x01 \x01(\x02\x12\x10\n\x08\x63omplete\x18\x02 \x01(\x08\x12\r\n\x05\x65rror\x18\x03 \x01(\t\x12\x12\n\nduration_s\x18\x04 \x01(\x01\"o\n\rStreamRequest\x12*\n\x06\x63onfig\x18\x01 \x01(\x0b\x32\x18.oyi.asr.v1.StreamConfigH\x00\x12\'\n\x05\x61udio\x18\x02 \x01(\x0b\x32\x16.oyi.asr.v1.AudioChunkH\x00\x42\t\n\x07payload\"3\n\x0cStreamConfig\x12\x13\n\x0bsample_rate\x18\x01 \x01(\r\x12\x0e\n\x06\x66ormat\x18\x02 \x01(\t\"\'\n\nAudioChunk\x12\x0b\n\x03pcm\x18\x01 \x01(\x0c\x12\x0c\n\x04last\x18\x02 \x01(\x08\"\x9a\x01\n\x0eStreamResponse\x12\x30\n\x07partial\x18\x01 \x01(\x0b\x32\x1d.oyi.asr.v1.PartialTranscriptH\x00\x12#\n\x03\x65ou\x18\x02 \x01(\x0b\x32\x14.oyi.asr.v1.EouEventH\x00\x12(\n\x05\x65rror\x18\x03 \x01(\x0b\x32\x17.oyi.asr.v1.StreamErrorH\x00\x42\x07\n\x05\x65vent\"@\n\x11PartialTranscript\x12\x0c\n\x04text\x18\x01 \x01(\t\x12\r\n\x05\x64\x65lta\x18\x02 \x01(\t\x12\x0e\n\x06stable\x18\x03 \x01(\x08\"8\n\x08\x45ouEvent\x12\x0c\n\x04text\x18\x01 \x01(\t\x12\x0b\n\x03raw\x18\x02 \x01(\t\x12\x11\n\tmodel_eou\x18\x03 \x01(\x08\"\x1e\n\x0bStreamError\x12\x0f\n\x07message\x18\x01 \x01(\t2\xb4\x02\n\x0bParakeetASR\x12K\n\nTranscribe\x12\x1d.oyi.asr.v1.TranscribeRequest\x1a\x1e.oyi.asr.v1.TranscribeResponse\x12?\n\x06Health\x12\x19.oyi.asr.v1.HealthRequest\x1a\x1a.oyi.asr.v1.HealthResponse\x12M\n\x10StreamTranscribe\x12\x19.oyi.asr.v1.StreamRequest\x1a\x1a.oyi.asr.v1.StreamResponse(\x01\x30\x01\x12H\n\tScoreTurn\x12\x1c.oyi.asr.v1.TurnScoreRequest\x1a\x1d.oyi.asr.v1.TurnScoreResponseb\x06proto3')
 
 _globals = globals()
 _builder.BuildMessageAndEnumDescriptors(DESCRIPTOR, _globals)
@@ -38,21 +38,25 @@ if not _descriptor._USE_C_DESCRIPTORS:
   _globals['_HEALTHREQUEST']._serialized_start=208
   _globals['_HEALTHREQUEST']._serialized_end=223
   _globals['_HEALTHRESPONSE']._serialized_start=225
-  _globals['_HEALTHRESPONSE']._serialized_end=287
-  _globals['_STREAMREQUEST']._serialized_start=289
-  _globals['_STREAMREQUEST']._serialized_end=400
-  _globals['_STREAMCONFIG']._serialized_start=402
-  _globals['_STREAMCONFIG']._serialized_end=453
-  _globals['_AUDIOCHUNK']._serialized_start=455
-  _globals['_AUDIOCHUNK']._serialized_end=494
-  _globals['_STREAMRESPONSE']._serialized_start=497
-  _globals['_STREAMRESPONSE']._serialized_end=651
-  _globals['_PARTIALTRANSCRIPT']._serialized_start=653
-  _globals['_PARTIALTRANSCRIPT']._serialized_end=717
-  _globals['_EOUEVENT']._serialized_start=719
-  _globals['_EOUEVENT']._serialized_end=775
-  _globals['_STREAMERROR']._serialized_start=777
-  _globals['_STREAMERROR']._serialized_end=807
-  _globals['_PARAKEETASR']._serialized_start=810
-  _globals['_PARAKEETASR']._serialized_end=1044
+  _globals['_HEALTHRESPONSE']._serialized_end=339
+  _globals['_TURNSCOREREQUEST']._serialized_start=341
+  _globals['_TURNSCOREREQUEST']._serialized_end=430
+  _globals['_TURNSCORERESPONSE']._serialized_start=432
+  _globals['_TURNSCORERESPONSE']._serialized_end=525
+  _globals['_STREAMREQUEST']._serialized_start=527
+  _globals['_STREAMREQUEST']._serialized_end=638
+  _globals['_STREAMCONFIG']._serialized_start=640
+  _globals['_STREAMCONFIG']._serialized_end=691
+  _globals['_AUDIOCHUNK']._serialized_start=693
+  _globals['_AUDIOCHUNK']._serialized_end=732
+  _globals['_STREAMRESPONSE']._serialized_start=735
+  _globals['_STREAMRESPONSE']._serialized_end=889
+  _globals['_PARTIALTRANSCRIPT']._serialized_start=891
+  _globals['_PARTIALTRANSCRIPT']._serialized_end=955
+  _globals['_EOUEVENT']._serialized_start=957
+  _globals['_EOUEVENT']._serialized_end=1013
+  _globals['_STREAMERROR']._serialized_start=1015
+  _globals['_STREAMERROR']._serialized_end=1045
+  _globals['_PARAKEETASR']._serialized_start=1048
+  _globals['_PARAKEETASR']._serialized_end=1356
 # @@protoc_insertion_point(module_scope)

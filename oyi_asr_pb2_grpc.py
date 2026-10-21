@@ -49,6 +49,11 @@ class ParakeetASRStub(object):
                 request_serializer=oyi__asr__pb2.StreamRequest.SerializeToString,
                 response_deserializer=oyi__asr__pb2.StreamResponse.FromString,
                 _registered_method=True)
+        self.ScoreTurn = channel.unary_unary(
+                '/oyi.asr.v1.ParakeetASR/ScoreTurn',
+                request_serializer=oyi__asr__pb2.TurnScoreRequest.SerializeToString,
+                response_deserializer=oyi__asr__pb2.TurnScoreResponse.FromString,
+                _registered_method=True)
 
 
 class ParakeetASRServicer(object):
@@ -77,6 +82,15 @@ class ParakeetASRServicer(object):
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
+    def ScoreTurn(self, request, context):
+        """Semantic end-of-turn score (Pipecat Smart Turn v3). Called when the
+        client VAD hears silence: a high probability means the thought is
+        finished, a low one means "hold the turn open, they are still talking".
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
 
 def add_ParakeetASRServicer_to_server(servicer, server):
     rpc_method_handlers = {
@@ -94,6 +108,11 @@ def add_ParakeetASRServicer_to_server(servicer, server):
                     servicer.StreamTranscribe,
                     request_deserializer=oyi__asr__pb2.StreamRequest.FromString,
                     response_serializer=oyi__asr__pb2.StreamResponse.SerializeToString,
+            ),
+            'ScoreTurn': grpc.unary_unary_rpc_method_handler(
+                    servicer.ScoreTurn,
+                    request_deserializer=oyi__asr__pb2.TurnScoreRequest.FromString,
+                    response_serializer=oyi__asr__pb2.TurnScoreResponse.SerializeToString,
             ),
     }
     generic_handler = grpc.method_handlers_generic_handler(
@@ -177,6 +196,33 @@ class ParakeetASR(object):
             '/oyi.asr.v1.ParakeetASR/StreamTranscribe',
             oyi__asr__pb2.StreamRequest.SerializeToString,
             oyi__asr__pb2.StreamResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def ScoreTurn(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/oyi.asr.v1.ParakeetASR/ScoreTurn',
+            oyi__asr__pb2.TurnScoreRequest.SerializeToString,
+            oyi__asr__pb2.TurnScoreResponse.FromString,
             options,
             channel_credentials,
             insecure,

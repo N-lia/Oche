@@ -14,9 +14,17 @@ import asyncio
 import base64
 import sys
 
-from voice_session import SESSION_IDLE, SESSION_LISTENING, SESSION_RESPONDING, VoiceSession
+from voice_session import (
+    SESSION_IDLE,
+    SESSION_LISTENING,
+    SESSION_PAUSED,
+    SESSION_RESPONDING,
+    VoiceSession,
+)
 
 AUDIO = b"\x00\x00" * 160
+# 250 ms of quiet speech: enough for Smart Turn's minimum segment.
+SPEECH = b"\x10\x00" * 4000
 
 
 class FakeStream:
@@ -63,7 +71,9 @@ def _types(messages: list[dict]) -> list[str]:
     return [m.get("type") for m in messages]
 
 
-def _make_session(streams: list[FakeStream], agent, tts) -> tuple[VoiceSession, asyncio.Queue]:
+def _make_session(
+    streams: list[FakeStream], agent, tts, **kwargs
+) -> tuple[VoiceSession, asyncio.Queue]:
     queue: asyncio.Queue = asyncio.Queue()
 
     def factory(_sample_rate: int) -> FakeStream:
@@ -78,6 +88,7 @@ def _make_session(streams: list[FakeStream], agent, tts) -> tuple[VoiceSession, 
         stream_factory=factory,
         clip_exists=lambda _p: True,   # never trigger real clip synthesis
         clip_url=lambda p: f"/api/backchannels/{p}.mp3",
+        **kwargs,
     )
     return session, queue
 
@@ -414,6 +425,133 @@ async def test_aclose_releases_a_listening_stream() -> None:
     assert streams[0].closed, "aclose must terminate the listening stream"
     assert session.stream is None
     assert session.consumer is None
+
+
+async def test_complete_turn_with_smart_turn_finalizes_immediately() -> None:
+    """A confident Smart Turn score dispatches the turn without extra wait."""
+    streams: list[FakeStream] = []
+    scores: list[float] = []
+
+    async def agent(text, turn_id):
+        yield "ok"
+
+    async def tts(text, mood):
+        return b""
+
+    async def scorer(pcm, sample_rate):
+        scores.append(len(pcm))
+        return 0.92
+
+    session, queue = _make_session(
+        streams, agent, tts, smart_turn_available=True, turn_scorer=scorer
+    )
+    await session.on_control({"type": "start"})
+    await session.on_control({"type": "speech_start"})
+    await session.on_audio(SPEECH)
+    await session.on_control({"type": "speech_end"})
+
+    assert scores and scores[0] >= 8000, "Smart Turn must see the utterance"
+    assert streams[0].finished, "a complete turn flushes immediately"
+    assert session.state == "finalizing"
+    await session.aclose()
+
+
+async def test_incomplete_turn_is_held_then_resumed() -> None:
+    """Smart Turn's low score keeps the SAME turn and stream open."""
+    streams: list[FakeStream] = []
+
+    async def agent(text, turn_id):
+        yield "here is the plan"
+        await asyncio.sleep(3600)
+
+    async def tts(text, mood):
+        return b""
+
+    async def scorer(pcm, sample_rate):
+        return 0.18
+
+    session, queue = _make_session(
+        streams, agent, tts, smart_turn_available=True, turn_scorer=scorer
+    )
+    await session.on_control({"type": "start"})
+    await session.on_control({"type": "speech_start"})
+    await session.on_audio(SPEECH)
+    await session.on_control({"type": "speech_end"})
+
+    assert session.state == SESSION_PAUSED, session.state
+    assert not streams[0].finished, "an unfinished thought must not be flushed"
+    hold = [m for m in _drain(queue) if m["type"] == "turn_hold"]
+    assert hold and hold[0]["turn_id"] == 1
+
+    # The user continues the same thought.
+    await session.on_control({"type": "speech_start", "preroll": _b64(SPEECH)})
+    assert session.state == SESSION_LISTENING
+    assert session.turn_id == 1, "resuming must not start a new turn"
+    assert not streams[0].finished
+    assert len(streams) == 1, "the ASR stream is reused"
+    assert "turn_resumed" in _types(_drain(queue))
+
+    # Now they really finish; the turn is dispatched once.
+    await session.on_control({"type": "speech_end"})
+    await streams[0].events.put({"type": "eou", "text": "so the plan is", "model_eou": True})
+    await asyncio.sleep(0.05)
+    assert session.state == SESSION_RESPONDING
+    await session.aclose()
+
+
+async def test_smart_turn_grace_elapsed_finalizes() -> None:
+    """If no more speech arrives, the held turn is flushed after the grace."""
+    streams: list[FakeStream] = []
+
+    async def agent(text, turn_id):
+        yield "ok"
+
+    async def tts(text, mood):
+        return b""
+
+    async def scorer(pcm, sample_rate):
+        return 0.2
+
+    session, queue = _make_session(
+        streams, agent, tts, smart_turn_available=True, turn_scorer=scorer
+    )
+    session.smart_turn_grace = 0.05
+    await session.on_control({"type": "start"})
+    await session.on_control({"type": "speech_start"})
+    await session.on_audio(SPEECH)
+    await session.on_control({"type": "speech_end"})
+    assert session.state == SESSION_PAUSED
+
+    await asyncio.sleep(0.12)
+    assert streams[0].finished, "the grace timer must flush the turn"
+    assert session.state == "finalizing"
+    await session.aclose()
+
+
+async def test_smart_turn_failure_falls_back_to_silence() -> None:
+    """A scorer error must never strand a turn; flush it like old behaviour."""
+    streams: list[FakeStream] = []
+
+    async def agent(text, turn_id):
+        yield "ok"
+
+    async def tts(text, mood):
+        return b""
+
+    async def scorer(pcm, sample_rate):
+        raise RuntimeError("model exploded")
+
+    session, queue = _make_session(
+        streams, agent, tts, smart_turn_available=True, turn_scorer=scorer
+    )
+    await session.on_control({"type": "start"})
+    await session.on_control({"type": "speech_start"})
+    await session.on_audio(SPEECH)
+    await session.on_control({"type": "speech_end"})
+
+    assert streams[0].finished
+    assert session.state == "finalizing"
+    await session.aclose()
 
 
 def main() -> int:

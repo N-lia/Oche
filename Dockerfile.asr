@@ -24,7 +24,7 @@ WORKDIR /app
 COPY requirements-asr.txt ./
 RUN pip install --no-cache-dir -r requirements-asr.txt
 
-COPY parakeet_eou_onnx.py asr_server.py oyi_asr.proto \
+COPY parakeet_eou_onnx.py smart_turn.py asr_server.py oyi_asr.proto \
      oyi_asr_pb2.py oyi_asr_pb2_grpc.py ./
 
 VOLUME ["/models"]

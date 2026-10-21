@@ -112,17 +112,19 @@ async def api_health():
     """Service status for the WebApp header (ASR reachability, TTS config)."""
     asr_ok = False
     asr_detail = ""
+    smart_turn = False
     try:
         status = await asyncio.to_thread(asr_health)
         asr_ok = bool(getattr(status, "ready", False))
         asr_detail = getattr(status, "model", "") or getattr(status, "detail", "")
+        smart_turn = bool(getattr(status, "smart_turn_ready", False))
     except Exception as exc:  # noqa: BLE001 - reported to the UI
         asr_detail = str(exc)
 
     return {
         "ok": True,
         "version": app.version,
-        "asr": {"ready": asr_ok, "detail": asr_detail},
+        "asr": {"ready": asr_ok, "detail": asr_detail, "smart_turn": smart_turn},
         "tts": {"configured": bool(os.getenv("CHATTERBOX_MODAL_URL"))},
         "backchannels": {"cached": len(cached_clips())},
     }
@@ -272,7 +274,13 @@ async def voice_ws(websocket: WebSocket):
     """Live streaming voice loop with backchannels and thinking fillers."""
     await websocket.accept()
     out: asyncio.Queue[dict | None] = asyncio.Queue()
-    session = VoiceSession(out, clip_url=_clip_url)
+    smart_turn = False
+    try:
+        status = await asyncio.to_thread(asr_health)
+        smart_turn = bool(getattr(status, "smart_turn_ready", False))
+    except Exception:  # noqa: BLE001 - optional capability
+        LOGGER.debug("ASR health probe failed for Smart Turn capability", exc_info=True)
+    session = VoiceSession(out, clip_url=_clip_url, smart_turn_available=smart_turn)
     sender = asyncio.create_task(_drain(websocket, out))
     _schedule_prewarm()  # warm clip cache in the background
 

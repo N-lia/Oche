@@ -22,6 +22,11 @@ service ParakeetASR {
   // The client streams PCM audio chunks; the server streams partial
   // transcripts and an end-of-utterance event as they are recognized.
   rpc StreamTranscribe(stream StreamRequest) returns (stream StreamResponse);
+
+  // Semantic end-of-turn score (Pipecat Smart Turn v3). Called when the
+  // client VAD hears silence: a high probability means the thought is
+  // finished, a low one means "hold the turn open, they are still talking".
+  rpc ScoreTurn(TurnScoreRequest) returns (TurnScoreResponse);
 }
 
 message TranscribeRequest {
@@ -63,6 +68,46 @@ message HealthResponse {
 
   // Free-form detail, such as the configured model directory.
   string detail = 3;
+
+  // True when the Smart Turn end-of-turn model is loaded.
+  bool smart_turn_ready = 4;
+
+  // Smart Turn model file/identifier, empty when unavailable.
+  string smart_turn_model = 5;
+}
+
+// ---------------------------------------------------------------------------
+// Semantic end-of-turn scoring
+// ---------------------------------------------------------------------------
+
+message TurnScoreRequest {
+  // Audio bytes. Raw little-endian 16-bit mono PCM when format is "pcm16"
+  // (the default), otherwise an encoded container the server can decode.
+  bytes audio = 1;
+
+  // Sample rate of the PCM payload. Defaults to 16000 when zero.
+  uint32 sample_rate = 2;
+
+  // "pcm16" (default) or a container hint such as "wav"/"ogg".
+  string format = 3;
+
+  // Probability above which the turn is considered complete. Zero means the
+  // server default (0.5).
+  float threshold = 4;
+}
+
+message TurnScoreResponse {
+  // Probability in [0, 1] that the speaker finished their turn.
+  float probability = 1;
+
+  // Convenience flag: probability >= threshold.
+  bool complete = 2;
+
+  // Non-empty when the model is unavailable or inference failed.
+  string error = 3;
+
+  // Server-side inference time in seconds.
+  double duration_s = 4;
 }
 
 // ---------------------------------------------------------------------------

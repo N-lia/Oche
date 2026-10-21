@@ -19,6 +19,14 @@ Configuration (environment):
     PARAKEET_STREAM_IDLE_TIMEOUT
                          Seconds of silence after which a streaming turn is
                          finalized and its worker released. Default ``90``.
+    SMART_TURN_MODEL_DIR Directory holding ``smart-turn-v3.2-cpu.onnx``.
+                         Default ``models/smart-turn``; empty disables semantic
+                         end-of-turn scoring.
+    SMART_TURN_AUTO_DOWNLOAD
+                         Download the Smart Turn model on first start.
+                         Default ``1``.
+    SMART_TURN_THRESHOLD Probability above which a turn counts as complete.
+                         Default ``0.5``.
 """
 
 from __future__ import annotations
@@ -31,6 +39,7 @@ import signal
 import subprocess
 import tempfile
 import threading
+import time
 from concurrent import futures
 
 import grpc
@@ -39,6 +48,7 @@ import numpy as np
 import oyi_asr_pb2 as pb
 import oyi_asr_pb2_grpc as pb_grpc
 from parakeet_eou_onnx import ParakeetEOU, StreamingSession
+from smart_turn import SmartTurnAnalyzer, score_pcm16, threshold_from_env
 
 LOGGER = logging.getLogger("oyi.asr.server")
 
@@ -48,6 +58,7 @@ DEFAULT_MODEL_DIR = "models/parakeet-eou-160ms"
 DEFAULT_MAX_WORKERS = 8
 DEFAULT_MAX_MESSAGE_BYTES = 32 * 1024 * 1024
 DEFAULT_STREAM_INTERVAL = 0.6
+DEFAULT_SMART_TURN_DIR = "models/smart-turn"
 # A streaming turn holds one worker thread for its whole lifetime. Reap a
 # stream that has gone silent so an abandoned client cannot exhaust the pool.
 DEFAULT_STREAM_IDLE_TIMEOUT = 90.0
@@ -143,12 +154,24 @@ def _iter_requests(request_iterator, idle_timeout: float):
 class ParakeetASRServicer(pb_grpc.ParakeetASRServicer):
     """gRPC servicer backed by a single shared :class:`ParakeetEOU` model."""
 
-    def __init__(self, model: ParakeetEOU, model_dir: str) -> None:
+    def __init__(
+        self,
+        model: ParakeetEOU,
+        model_dir: str,
+        smart_turn: SmartTurnAnalyzer | None = None,
+    ) -> None:
         self._model = model
         self._model_dir = model_dir
+        self._smart_turn = smart_turn
 
     def Health(self, request: pb.HealthRequest, context: grpc.ServicerContext) -> pb.HealthResponse:
-        return pb.HealthResponse(ready=True, model=MODEL_ID, detail=self._model_dir)
+        return pb.HealthResponse(
+            ready=True,
+            model=MODEL_ID,
+            detail=self._model_dir,
+            smart_turn_ready=self._smart_turn is not None,
+            smart_turn_model=self._smart_turn.model_path if self._smart_turn else "",
+        )
 
     def Transcribe(
         self, request: pb.TranscribeRequest, context: grpc.ServicerContext
@@ -173,6 +196,37 @@ class ParakeetASRServicer(pb_grpc.ParakeetASRServicer):
             eou_detected=bool(result.get("eou_detected", False)),
             raw=result.get("raw", ""),
             duration_s=float(result.get("duration_s", 0.0)),
+        )
+
+    def ScoreTurn(
+        self, request: pb.TurnScoreRequest, context: grpc.ServicerContext
+    ) -> pb.TurnScoreResponse:
+        """Score whether the utterance that just paused is semantically done."""
+        if self._smart_turn is None:
+            return pb.TurnScoreResponse(error="smart turn model not loaded")
+        if not request.audio:
+            return pb.TurnScoreResponse(error="empty audio payload")
+
+        started = time.time()
+        try:
+            if request.format in ("", "pcm16"):
+                probability = score_pcm16(
+                    self._smart_turn, request.audio, sample_rate=request.sample_rate or 16000
+                )
+            else:
+                audio, rate = _decode_audio(request.audio, request.format)
+                probability = self._smart_turn.score(
+                    audio, sample_rate=request.sample_rate or rate
+                )
+        except Exception as exc:  # noqa: BLE001 - surfaced to the client
+            LOGGER.exception("Smart Turn inference failed")
+            return pb.TurnScoreResponse(error=f"smart turn failed: {exc}")
+
+        threshold = float(request.threshold) or threshold_from_env()
+        return pb.TurnScoreResponse(
+            probability=probability,
+            complete=probability >= threshold,
+            duration_s=time.time() - started,
         )
 
     def StreamTranscribe(self, request_iterator, context: grpc.ServicerContext):
@@ -218,13 +272,19 @@ def _to_stream_response(event: dict) -> pb.StreamResponse:
 
 
 def build_server(
-    model: ParakeetEOU, bind: str, model_dir: str, max_workers: int
+    model: ParakeetEOU,
+    bind: str,
+    model_dir: str,
+    max_workers: int,
+    smart_turn: SmartTurnAnalyzer | None = None,
 ) -> grpc.Server:
     server = grpc.server(
         futures.ThreadPoolExecutor(max_workers=max_workers),
         options=_SERVER_OPTIONS,
     )
-    pb_grpc.add_ParakeetASRServicer_to_server(ParakeetASRServicer(model, model_dir), server)
+    pb_grpc.add_ParakeetASRServicer_to_server(
+        ParakeetASRServicer(model, model_dir, smart_turn), server
+    )
     bound_port = server.add_insecure_port(bind)
     if bound_port == 0:
         raise RuntimeError(f"Could not bind Parakeet ASR server to {bind!r}")
@@ -241,10 +301,28 @@ def _install_signal_handlers(server: grpc.Server) -> None:
         signal.signal(sig, _shutdown)
 
 
-def serve(bind: str, model_dir: str, max_workers: int) -> None:
+def serve(bind: str, model_dir: str, max_workers: int, smart_turn_dir: str) -> None:
     LOGGER.info("Loading Parakeet-EOU model from %s", model_dir)
     model = ParakeetEOU(model_dir)
-    server = build_server(model, bind, model_dir, max_workers)
+
+    smart_turn = None
+    if smart_turn_dir:
+        auto = os.getenv("SMART_TURN_AUTO_DOWNLOAD", "1").strip().lower() not in {
+            "0",
+            "false",
+            "no",
+            "off",
+        }
+        try:
+            smart_turn = SmartTurnAnalyzer.load(smart_turn_dir, auto_download=auto)
+        except Exception:  # noqa: BLE001 - turn-taking degrades to fixed silence
+            LOGGER.exception("Could not load the Smart Turn model from %s", smart_turn_dir)
+    if smart_turn is None:
+        LOGGER.warning("Smart Turn unavailable; endpointing falls back to client VAD silence")
+    else:
+        LOGGER.info("Smart Turn ready (%s)", smart_turn.model_path)
+
+    server = build_server(model, bind, model_dir, max_workers, smart_turn)
     _install_signal_handlers(server)
     server.start()
     LOGGER.info("Parakeet ASR ready and listening on %s", bind)
@@ -260,9 +338,19 @@ def main() -> None:
     parser.add_argument("--bind", default=os.getenv("PARAKEET_GRPC_BIND", DEFAULT_BIND))
     parser.add_argument("--model-dir", default=os.getenv("PARAKEET_MODEL_DIR", DEFAULT_MODEL_DIR))
     parser.add_argument("--max-workers", type=int, default=int(os.getenv("PARAKEET_MAX_WORKERS", DEFAULT_MAX_WORKERS)))
+    parser.add_argument(
+        "--smart-turn-dir",
+        default=os.getenv("SMART_TURN_MODEL_DIR", DEFAULT_SMART_TURN_DIR),
+        help="Directory holding smart-turn-v3.2-cpu.onnx (empty disables).",
+    )
     args = parser.parse_args()
 
-    serve(bind=args.bind, model_dir=args.model_dir, max_workers=max(1, args.max_workers))
+    serve(
+        bind=args.bind,
+        model_dir=args.model_dir,
+        max_workers=max(1, args.max_workers),
+        smart_turn_dir=args.smart_turn_dir,
+    )
 
 
 if __name__ == "__main__":

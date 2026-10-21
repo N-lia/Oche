@@ -60,10 +60,37 @@ the sandboxed bot may open the gRPC connection. Optional variables:
 - `PARAKEET_MODEL_DIR` (server) model directory; `PARAKEET_GRPC_BIND` (server)
   bind address, default `0.0.0.0:50051`.
 
+### Cache-aware streaming
+
+`StreamingSession` keeps the Conformer attention/convolution caches and the
+RNNT decoder state across 160 ms chunks, so each chunk is encoded exactly once
+per turn. Partial transcripts no longer re-decode the whole utterance (O(n^2)
+→ O(n)); the final incremental transcript is byte-identical to a one-shot
+decode.
+
+### Smart Turn v3 (semantic endpointing)
+
+The ASR service also hosts Pipecat's **Smart Turn v3** model (`smart_turn.py`,
+`ScoreTurn` RPC). An acoustic VAD can only hear a pause; Smart Turn scores
+whether the last 8 s of waveform sound *finished*.
+
+- On `speech_end`, `voice_session.py` scores the turn. A probability ≥
+  `SMART_TURN_THRESHOLD` (default `0.5`) dispatches immediately; below it the
+  turn is **held open** for `SMART_TURN_GRACE_MS` (default `1800`). If the user
+  keeps talking, the same turn and ASR stream resume — no fragment is sent to
+  the agent.
+- When the service reports Smart Turn ready, the WebApp uses a 500 ms VAD
+  silence window; without it the client falls back to 750 ms.
+- `SMART_TURN_ENABLED=0` disables the client side; `SMART_TURN_MODEL_DIR=""` on
+  the server disables loading; `SMART_TURN_AUTO_DOWNLOAD=1` (default) fetches
+  `smart-turn-v3.2-cpu.onnx` into `/models/smart-turn` on first start.
+
 Test the service directly:
 
 ```sh
 .venv/bin/python test_parakeet_eou.py normal.wav --target "$PARAKEET_GRPC_TARGET"
+.venv/bin/python test_asr_cache_stream.py   # cache-aware equivalence
+.venv/bin/python test_smart_turn.py          # feature + model checks
 ```
 
 ## Live Chat WebApp (`/livechat`)

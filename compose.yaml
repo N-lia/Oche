@@ -21,6 +21,10 @@ services:
     environment:
       PARAKEET_GRPC_BIND: "0.0.0.0:50051"
       PARAKEET_MODEL_DIR: "/models/parakeet-eou-160ms"
+      # Semantic end-of-turn scoring (Pipecat Smart Turn v3). The model is
+      # downloaded into the persistent volume on first start.
+      SMART_TURN_MODEL_DIR: "/models/smart-turn"
+      SMART_TURN_AUTO_DOWNLOAD: "1"
       # Each live streaming turn holds one worker thread; keep headroom for
       # concurrent sessions plus the health probe.
       PARAKEET_MAX_WORKERS: "8"
