@@ -27,6 +27,7 @@ import numpy as np
 
 from asr_client import AsyncTranscribeStream, ascore_turn
 from backchannel import BackchannelController, clip_path
+from telegram_format import strip_telegram_html
 from turn_policy import classify_turn
 
 LOGGER = logging.getLogger("oyi.voice.session")
@@ -669,6 +670,8 @@ class VoiceSession:
         await self._speak(reply, turn_id)
 
     async def _speak(self, text: str, turn_id: int) -> None:
+        # Agent replies are Telegram HTML now; tags must never reach TTS.
+        text = strip_telegram_html(text)
         self.bot_speaking = True
         try:
             audio = await self._tts(text, self.mood)

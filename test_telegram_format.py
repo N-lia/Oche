@@ -103,6 +103,96 @@ def test_strip_telegram_html() -> None:
     assert tf.strip_telegram_html("<b>Bold</b> &amp; <code>code</code>") == "Bold & code"
 
 
+# ---------------------------------------------------------------------------
+# normalize_agent_html: native Telegram HTML authored by the model
+# ---------------------------------------------------------------------------
+
+
+def test_native_html_passes_through_unchanged() -> None:
+    html = '<b>Bold</b>, <i>italic</i>, <u>u</u>, <s>s</s>, <code>x</code>, <a href="https://x.y">l</a>'
+    assert tf.normalize_agent_html(html) == html
+
+
+def test_native_plain_text_goes_to_markdown_fallback() -> None:
+    assert tf.normalize_agent_html("**bold** and `code`") == "<b>bold</b> and <code>code</code>"
+
+
+def test_native_unclosed_tags_are_closed() -> None:
+    assert tf.normalize_agent_html("<b>bold but <i>mix") == "<b>bold but <i>mix</i></b>"
+
+
+def test_native_unknown_tags_stripped_li_becomes_bullet() -> None:
+    assert tf.normalize_agent_html("<p>One</p><li>Item</li>") == "One• Item"
+
+
+def test_native_stray_angle_brackets_escaped() -> None:
+    assert tf.normalize_agent_html("5 < 6 > 4") == "5 &lt; 6 &gt; 4"
+    out = tf.normalize_agent_html("x <b>y</b> <3 love")
+    assert out == "x <b>y</b> &lt;3 love"
+
+
+def test_native_bare_ampersand_escaped_but_entities_kept() -> None:
+    assert tf.normalize_agent_html("rock &amp; roll, R&D") == "rock &amp; roll, R&amp;D"
+
+
+def test_native_anchor_normalized_and_scheme_checked() -> None:
+    assert tf.normalize_agent_html("<a href='https://x.y'>go</a>") == '<a href="https://x.y">go</a>'
+    # javascript: href must be dropped (text kept, no tag)
+    assert tf.normalize_agent_html("<a href=\"javascript:alert(1)\">go</a>") == "go"
+    # bare & in URLs gets re-escaped
+    assert tf.normalize_agent_html('<a href="https://x.y/?a=1&b=2">l</a>') == (
+        '<a href="https://x.y/?a=1&amp;b=2">l</a>'
+    )
+
+
+def test_native_html_stewrapped_in_code_fence_is_unwrapped() -> None:
+    body = "<b>Answer</b>: done"
+    assert tf.normalize_agent_html("```html\n" + body + "\n```") == body
+
+
+def test_native_mismatched_nesting_rebalanced() -> None:
+    out = tf.normalize_agent_html("<i><b>both</i> after</b> end")
+    # every tag properly closed, no stray end tags, text preserved
+    assert re.fullmatch(r"<i><b>both</b></i> after end", out)
+
+
+def test_native_attributes_stripped_from_plain_tags() -> None:
+    assert tf.normalize_agent_html('<b onclick="evil()">yes</b>') == "<b>yes</b>"
+
+
+def test_native_span_spoilermapped() -> None:
+    out = tf.normalize_agent_html('<span class="tg-spoiler">shh</span>')
+    assert out == "<tg-spoiler>shh</tg-spoiler>"
+
+
+def test_native_code_class_processed() -> None:
+    out = tf.normalize_agent_html("<pre><code class='language-python'>x&lt;3</code></pre>")
+    assert out == '<pre><code class="language-python">x&lt;3</code></pre>'
+
+
+def test_native_long_reply_split_keeps_chunks_parseable() -> None:
+    body = "<p>" + ("<b>word</b> " * 400) + "</p>"
+    chunks = tf.split_telegram_text(body)
+    assert len(chunks) > 1
+    for chunk in chunks:
+        assert len(chunk) <= 4096
+        # no unopened end tags / every tag closed
+        assert re.search(r"</(?!(?:b|i|u|s|code|pre|a|blockquote|tg-spoiler)>)[a-zA-Z]+>", chunk) is None
+
+
+def test_preview_of_streaming_half_tag_never_shows_lt() -> None:
+    # accumulated stream cut mid-tag: the dangling "<ta" must not leak verbatim,
+    # and the still-open bold tag gets closed for a parseable preview
+    assert tf.normalize_agent_html("<b>done <ta") == "<b>done </b>"
+
+
+def test_wiring_functions_route_through_native() -> None:
+    assert tf.telegram_preview("<b>hi</b> there") == tf.truncate_telegram_html(
+        "<b>hi</b> there", tf.TELEGRAM_TEXT_LIMIT - 96
+    )
+    assert tf.split_telegram_text("<b>hi</b>") == ["<b>hi</b>"]
+
+
 def main() -> int:
     tests = [value for name, value in sorted(globals().items()) if name.startswith("test_") and callable(value)]
     for test in tests:

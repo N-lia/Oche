@@ -8,6 +8,8 @@ from datetime import datetime, timezone
 from functools import lru_cache
 from typing import Any
 
+import httpx
+
 from deepagents import (
     GeneralPurposeSubagentProfile,
     HarnessProfile,
@@ -165,6 +167,15 @@ WRONG Examples (DO NOT DO THIS):
 After calling send_voice_note:
 - Provide a brief chat acknowledgment like "Sent you a voice note above! 🎙️"
 - Do NOT repeat the voice note text in your chat reply
+
+Reply formatting — Telegram HTML (STRICT):
+- Your replies are rendered with Telegram parse_mode=HTML. Write EVERY chat reply as Telegram-compatible HTML using ONLY these tags: <b>bold</b>, <i>italic</i>, <u>underline</u>, <s>strike</s>, <code>inline code</code>, <pre><code class="language-python">code block</code></pre>, <a href="https://example.com">link text</a>, <blockquote>quote</blockquote>, <tg-spoiler>spoiler</tg-spoiler>, and <br> for forced line breaks.
+- NEVER use Markdown syntax: no **bold**, *italic*, no headings with #, no `backticks`, no ~~strike~~, and no [label](url) links. Never emit ``` code fences.
+- Never wrap the reply in <html>, <body>, <p>, <ul>, <div> or any other container tag — inline and body-level tags only.
+- Escape literal markup characters yourself: write &lt; for "<", &gt; for ">", and &amp; for "&" whenever you mean the character itself (in prose AND inside code blocks). Use no other character references.
+- Put the URL in href with double quotes; use http/https URLs only.
+- Plain text needs no tags: only use tags where formatting genuinely helps (emphasis, code, links, quotes, spoiling). For lists, write lines starting with "• " as plain text — there is no <li>.
+- Keep code blocks complete and concise inside <pre><code>…</code></pre>, and note the language in the class attribute.
 """
 
 
@@ -192,6 +203,9 @@ class AgentService:
             base_url=NEBIUS_BASE_URL,
             api_key=os.environ["NEBIUS_API_KEY"],
             streaming=True,
+            # Bounded sockets: a stalled connection must not freeze a live
+            # voice turn. The read timeout applies between streamed chunks.
+            timeout=httpx.Timeout(connect=10.0, read=45.0, write=10.0, pool=10.0),
         )
 
     @lru_cache(maxsize=3)

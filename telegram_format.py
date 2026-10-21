@@ -1,4 +1,4 @@
-"""Convert agent Markdown output into Telegram HTML.
+"""Convert agent replies into Telegram HTML.
 
 Telegram Bot API exposes text formatting through ``parse_mode`` on
 ``sendMessage`` / ``editMessageText`` (and the caption fields of media
@@ -6,10 +6,20 @@ methods), or through an explicit ``entities`` array. We use ``parse_mode="HTML"`
 instead of ``MarkdownV2`` because only ``&``, ``<`` and ``>`` need escaping and
 a formatting failure can safely fall back to plain text.
 
+Two input modes are handled by :func:`normalize_agent_html`, which every
+send-path routes through:
+
+- **Native HTML** (the system prompt asks the model to author replies as
+  Telegram HTML directly): allowed tags are trusted and emitted canonically,
+  stray ``&`` / ``<`` / ``>`` are escaped, unknown tags are stripped, links are
+  scheme-checked, mismatched nesting is rebalanced, and unclosed tags are
+  closed at the end.
+- **Markdown fallback**: replies without any Telegram tag are converted by
+  :func:`markdown_to_telegram_html` like before.
+
 Guarantees provided to callers:
-- Output is always valid Telegram HTML: escaping happens before tags are
-  inserted, code fragments are stashed, and raw model markup can never be
-  mistaken for tags.
+- Output is always valid Telegram HTML: raw model markup can never be mistaken
+  for an injection, and every open tag is matched or closed.
 - :func:`truncate_telegram_html` cuts safely: it never leaves an unclosed tag
   or a dangling ``<``, so streaming previews always parse.
 - :func:`split_telegram_text` yields chunks each <= 4096 chars, splitting the
@@ -168,6 +178,142 @@ def strip_telegram_html(text: str) -> str:
     return html.unescape(re.sub(r"<[^>]+>", "", text)).strip()
 
 
+# ---------------------------------------------------------------------------
+# Native HTML pass-through: the model authors Telegram HTML directly.
+# ---------------------------------------------------------------------------
+
+_ALIASES = {"strong": "b", "em": "i", "ins": "u", "del": "s", "strike": "s"}
+_NATIVE_TAGS = frozenset({
+    "b", "i", "u", "s", "code", "pre", "a", "blockquote", "tg-spoiler", "br",
+})
+# Detection regex: any Telegram tag (or common HTML tag the model may slip in)
+# turns on the native path. Anything else goes through markdown conversion.
+_NATIVE_TAG_RE = re.compile(
+    r"<(/?)(?:b|strong|i|em|u|ins|s|strike|code|pre|a|blockquote|tg-spoiler|br|span"
+    r"|p|div|ul|ol|li|h[1-6]|font|small|sub|sup|html|body)\b", re.I
+)
+_ANY_TAG_RE = re.compile(r"<(/?)([a-zA-Z][a-zA-Z0-9\-]*)((?:\s[^<>]*)?)\s*(/?)>")
+_CODE_CLASS_RE = re.compile(r'class\s*=\s*("language-[a-z0-9_+\-]+"|\'language-[a-z0-9_+\-]+\')', re.I)
+_HREF_RE = re.compile(r'''href\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'>]+))''', re.I)
+# Bare `&` runs on ESCAPED text, so the entity references are already canonical.
+_BARE_AMP_RE = re.compile(r"&(?!amp;|lt;|gt;|quot;|apos;|nbsp;|#\d{1,6};|#x[0-9a-fA-F]{1,6};)")
+_ENTITY_PRESENT_RE = re.compile(r"&(?:amp|lt|gt|quot|apos|#\d{1,6};|#x[0-9a-fA-F]{1,6});")
+_WRAP_FENCE_RE = re.compile(r"^```[A-Za-z0-9_+\-]*[ \t]*\n(.*?)[ \t]*```[ \t]*$", re.S)
+
+
+def normalize_agent_html(text: str) -> str:
+    """Trust allowed Telegram tags in model output; repair everything else.
+
+    The system prompt asks the model to author replies as Telegram HTML. Models
+    still slip sometimes, so this sanitizer keeps the *intent* while making the
+    result parseable: malformed tags are canonicalised, unknown tags stripped,
+    stray characters escaped, nesting rebalanced, and unclosed tags closed.
+    Replies without any tag fall back to markdown conversion.
+    """
+    text = (text or "").strip()
+    if not text:
+        return ""
+    text = _strip_dangling_tag(text)
+    # Models love wrapping the whole reply in a ```html fence even when told
+    # not to; unwrap a single trims-everything fence.
+    wrapped = _WRAP_FENCE_RE.match(text)
+    if wrapped and _NATIVE_TAG_RE.search(wrapped.group(1)):
+        text = wrapped.group(1).strip()
+        text = _strip_dangling_tag(text) or text
+    if not _NATIVE_TAG_RE.search(text):
+        if _ENTITY_PRESENT_RE.search(text):
+            # Entity-only reply (no tags): the model authored references, so
+            # unescape before the markdown converter re-escapes everything.
+            text = html.unescape(text)
+        return markdown_to_telegram_html(text)
+    return _normalize_native(text)
+
+
+def _escape_prose(fragment: str) -> str:
+    """Escape stray markup characters in a non-tag region.
+
+    Character references the model already emitted (``&amp;`` …) pass through;
+    a bare ``&``, leftover ``<`` and ``>`` become entities per the Telegram
+    HTML spec.
+    """
+    if not fragment:
+        return ""
+    fragment = fragment.replace("<", "&lt;").replace(">", "&gt;")
+    return _BARE_AMP_RE.sub("&amp;", fragment)
+
+
+def _canonical_open(name: str, rest: str) -> str | None:
+    """Build the Telegram-sanctioned form of an allowed opening tag.
+
+    ``None`` means the tag must be dropped entirely (bad link target).
+    """
+    if name == "a":
+        href_match = _HREF_RE.search(rest)
+        url = next((g for g in href_match.groups() if g is not None), "") if href_match else ""
+        if not _SAFE_URL_SCHEMES_RE.match(url.strip()):
+            return None
+        url = html.unescape(url.strip()).replace('"', "&quot;")
+        url = _BARE_AMP_RE.sub("&amp;", url)
+        return f'<a href="{url}">'
+    if name == "code":
+        class_match = _CODE_CLASS_RE.search(rest)
+        if class_match:
+            lang = html.unescape(class_match.group(1)).strip("'\"").removeprefix("language-")
+            return f"<code{_language_class(lang)}>"
+        return "<code>"
+    return f"<{name}>"
+
+
+def _normalize_native(text: str) -> str:
+    """Single-pass scan: tags emitted canonically, nesting kept balanced."""
+    out: list[str] = []
+    stack: list[str] = []
+    idx = 0
+
+    for match in _ANY_TAG_RE.finditer(text):
+        out.append(_escape_prose(text[idx: match.start()]))
+        slash, raw_name, rest, tail = match.group(1), match.group(2).lower(), match.group(3), match.group(4)
+        name = _ALIASES.get(raw_name, raw_name)
+
+        if name not in _NATIVE_TAGS:
+            # Unknown tag: map a spoiler span, keep list items as bullets, drop the rest.
+            if raw_name == "span" and "tg-spoiler" in rest:
+                if not slash:
+                    out.append("<tg-spoiler>")
+                    stack.append("tg-spoiler")
+            elif name == "li" and not slash:
+                out.append("• ")
+            idx = match.end()
+            continue
+
+        if name == "br":
+            out.append("<br>")
+            idx = match.end()
+            continue
+
+        if slash:  # closing tag
+            if stack and stack[-1] == name:
+                stack.pop()
+                out.append(f"</{name}>")
+            elif name in stack:
+                # Mismatched nesting: close everything opened after it first.
+                position = len(stack) - 1 - stack[::-1].index(name)
+                for late in reversed(stack[position + 1:]):
+                    out.append(f"</{late}>")
+                out.append(f"</{name}>")
+                del stack[position:]
+            # else: unmatched closer — drop it.
+        else:
+            canonical = _canonical_open(name, rest)
+            if canonical is not None:
+                out.append(canonical)
+                stack.append(name)
+        idx = match.end()
+
+    out.append(_escape_prose(text[idx:]))
+    return "".join(out) + "".join(f"</{n}>" for n in reversed(stack))
+
+
 def truncate_telegram_html(
     html_text: str,
     limit: int = TELEGRAM_TEXT_LIMIT,
@@ -196,12 +342,21 @@ def truncate_telegram_html(
     return strip_telegram_html(html_text)[: max(target, 0)] +"…" + suffix
 
 
+_DANGLING_TAG_RE = re.compile(r"<(?:[a-zA-Z/][^<>]*)?$")
+
+
 def _strip_dangling_tag(prefix: str) -> str:
-    """Drop a trailing incomplete ``<a href=...`` fragment."""
+    """Drop a trailing incomplete ``<a href=...`` fragment.
+
+    Only strips tails that look like a partial tag (letter or slash right
+    after ``<``); plain prose like ``<3`` stays untouched.
+    """
     last_open = prefix.rfind("<")
     last_close = prefix.rfind(">")
     if last_open > last_close:
-        return prefix[:last_open]
+        tail = prefix[last_open:]
+        if _DANGLING_TAG_RE.search(tail):
+            return prefix[:last_open]
     return prefix
 
 
@@ -224,7 +379,7 @@ def _close_open_tags(prefix: str) -> str:
 
 def telegram_preview(text: str) -> str:
     """Streaming preview: formatted HTML, safely truncated for editMessageText."""
-    return truncate_telegram_html(markdown_to_telegram_html(text), TELEGRAM_TEXT_LIMIT - 96)
+    return truncate_telegram_html(normalize_agent_html(text), TELEGRAM_TEXT_LIMIT - 96)
 
 
 def _split_source_lines(text: str, target: int) -> list[str]:
@@ -263,24 +418,24 @@ def _split_source_lines(text: str, target: int) -> list[str]:
 
 
 def split_telegram_text(text: str) -> list[str]:
-    """Split agent markdown into <=4096-char Telegram HTML message chunks."""
+    """Split an agent reply into <=4096-char Telegram HTML message chunks."""
     text = (text or "").strip()
     if not text:
         return [""]
-    full = markdown_to_telegram_html(text)
+    full = normalize_agent_html(text)
     if len(full) <= TELEGRAM_TEXT_LIMIT:
         return [full] if full else [""]
 
     chunks: list[str] = []
     for source in _split_source_lines(text, 3400):
-        chunk_html = markdown_to_telegram_html(source)
+        chunk_html = normalize_agent_html(source)
         if len(chunk_html) <= TELEGRAM_TEXT_LIMIT:
             chunks.append(chunk_html)
             continue
         # Escaping blew up (wall of & / <); bisect the source recursively.
         left, right = _bisect_source(source)
         for part in (left, right):
-            part_html = markdown_to_telegram_html(part)
+            part_html = normalize_agent_html(part)
             if len(part_html) <= TELEGRAM_TEXT_LIMIT:
                 chunks.append(part_html)
             else:
@@ -289,15 +444,18 @@ def split_telegram_text(text: str) -> list[str]:
 
 
 def _bisect_source(source: str) -> tuple[str, str]:
-    """Halve ``source`` at a newline boundary, keeping code fences usable."""
+    """Halve ``source`` at a clean boundary (newline, then space)."""
     midpoint = len(source) // 2
     split_at = source.find("\n", midpoint)
     if split_at == -1 or split_at == len(source) - 1:
         split_at = source.rfind("\n", 0, midpoint)
     if split_at <= 0:
-        return source, ""
+        # No newlines at all (single-line HTML reply): cut at a space instead.
+        split_at = source.rfind(" ", 0, midpoint)
+    if split_at <= 0:
+        split_at = midpoint  # pathological: one enormous token, hard cut
     left, right = source[: split_at + 1], source[split_at + 1 :]
-    if not left.strip() or not right.strip():
+    if not right:
         return source, ""
     if _fence_open(left):
         # Right half continues an unclosed fence; reopen it for a clean <pre>.
