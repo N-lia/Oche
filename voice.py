@@ -28,6 +28,23 @@ def get_chatterbox_url() -> str:
     return url.strip()
 
 
+def get_tts_provider() -> str:
+    """Which TTS backend ``synthesize_speech`` should call (chatterbox|cosyvoice)."""
+    return (os.environ.get("TTS_PROVIDER") or "chatterbox").strip().lower()
+
+
+def get_cosyvoice_url() -> str:
+    """Read the CosyVoice 2 Modal URL from the environment."""
+    return (os.environ.get("COSYVOICE_MODAL_URL") or "").strip()
+
+
+def get_tts_url() -> str:
+    """Resolve the active TTS endpoint from ``TTS_PROVIDER``."""
+    if get_tts_provider() == "cosyvoice":
+        return get_cosyvoice_url()
+    return get_chatterbox_url()
+
+
 def register_telegram_voice_sender(sender: TelegramVoiceSender) -> None:
     """Register the proactive Telegram voice delivery callback from TG.py."""
     global _TELEGRAM_VOICE_SENDER, _MAIN_LOOP
@@ -77,15 +94,22 @@ async def synthesize_speech(
     event: str = "chat",
     **dials,
 ) -> bytes:
-    """Call the Modal serverless endpoint to generate MP3 audio with Chatterbox."""
-    url = get_chatterbox_url()
+    """Call the configured Modal serverless endpoint to generate MP3 audio.
+
+    Chatterbox Turbo is the default; set ``TTS_PROVIDER=cosyvoice`` (and
+    ``COSYVOICE_MODAL_URL``) to compare against CosyVoice 2 instead.
+    """
+    provider = get_tts_provider()
+    url = get_tts_url()
     if not url:
-        raise ValueError("CHATTERBOX_MODAL_URL is not configured in .env")
+        env_name = "COSYVOICE_MODAL_URL" if provider == "cosyvoice" else "CHATTERBOX_MODAL_URL"
+        raise ValueError(f"{env_name} is not configured in .env (TTS_PROVIDER={provider})")
 
     # Ensure URL ends without trailing slash
     target_url = url.rstrip("/")
     LOGGER.info(
-        "Calling Chatterbox TTS at %s (text_len=%d, mood=%s, event=%s, dials=%s)",
+        "Calling %s TTS at %s (text_len=%d, mood=%s, event=%s, dials=%s)",
+        provider,
         target_url,
         len(text),
         mood,
@@ -107,12 +131,12 @@ async def synthesize_speech(
 
     response = await client.post(target_url, json=payload)
     if response.status_code != 200:
-        LOGGER.error("Chatterbox TTS failed with status %d: %s", response.status_code, response.text)
-        raise RuntimeError(f"Chatterbox TTS returned status {response.status_code}: {response.text}")
+        LOGGER.error("%s TTS failed with status %d: %s", provider, response.status_code, response.text)
+        raise RuntimeError(f"{provider} TTS returned status {response.status_code}: {response.text}")
 
     content = response.content
     if not content:
-        raise RuntimeError("Chatterbox TTS returned empty audio payload")
+        raise RuntimeError(f"{provider} TTS returned empty audio payload")
 
     return content
 
