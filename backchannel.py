@@ -26,7 +26,10 @@ from pathlib import Path
 LOGGER = logging.getLogger("oyi.backchannel")
 
 BACKCHANNEL_MOOD = "backchannel"
-DEFAULT_CACHE_DIR = os.getenv("BACKCHANNEL_CACHE_DIR", "data/backchannels")
+# Clips must live in an absolute, writable location: the container may run as
+# a non-root user where relative paths like "data/backchannels" (=/app/data)
+# are read-only. HOME is a mounted, writable volume in the deployed image.
+DEFAULT_CACHE_DIR = os.getenv("BACKCHANNEL_CACHE_DIR") or str(Path.home() / "backchannels")
 
 # Short, natural listener signals. Kept terse so clips stay snappy.
 ACK_PHRASES = ["mm-hmm", "uh-huh", "right", "yeah", "okay", "I see", "sure", "mhm", "got it"]
@@ -182,8 +185,16 @@ class BackchannelController:
 
 
 def _cache_dir() -> Path:
+    """Resolve the clip cache dir, falling back to HOME when not writable."""
     path = Path(os.getenv("BACKCHANNEL_CACHE_DIR", DEFAULT_CACHE_DIR))
-    path.mkdir(parents=True, exist_ok=True)
+    try:
+        path.mkdir(parents=True, exist_ok=True)
+        Path.touch(path / ".probe")
+    except OSError as exc:  # noqa: PERF203 - readability
+        fallback = Path.home() / "backchannels"
+        LOGGER.warning("Backchannel cache %s is not writable (%s); using %s", path, exc, fallback)
+        path = fallback
+        path.mkdir(parents=True, exist_ok=True)
     return path
 
 

@@ -37,7 +37,7 @@ from backchannel import (
     prewarm,
 )
 from main import astream_chat_agent
-from voice import synthesize_speech
+from voice import get_tts_provider, get_tts_url, synthesize_speech
 from voice_session import VoiceSession
 
 load_dotenv()
@@ -46,6 +46,22 @@ logging.basicConfig(level=logging.INFO)
 LOGGER = logging.getLogger("oyi.webapp")
 
 app = FastAPI(title="OYI Live Chat", version="2.0.0")
+
+
+@app.on_event("startup")
+async def _maybe_enable_loop_debug() -> None:
+    """WEBAPP_DEBUG_LOOP=1 turns on asyncio slow-callback warnings.
+
+    Any callback blocking the event loop >0.5s is logged with its stack, which
+    is how we hunt the stalls that used to trip WebSocket keepalive timeouts.
+    """
+    if os.getenv("WEBAPP_DEBUG_LOOP", "0") != "1":
+        return
+    loop = asyncio.get_running_loop()
+    loop.set_debug(True)
+    loop.slow_callback_duration = 0.5
+    logging.getLogger("asyncio").setLevel(logging.WARNING)
+    LOGGER.warning("asyncio loop debug enabled (slow_callback_duration=0.5s)")
 
 # CORS middleware for WebApp access
 app.add_middleware(
@@ -125,7 +141,10 @@ async def api_health():
         "ok": True,
         "version": app.version,
         "asr": {"ready": asr_ok, "detail": asr_detail, "smart_turn": smart_turn},
-        "tts": {"configured": bool(os.getenv("CHATTERBOX_MODAL_URL"))},
+        "tts": {
+            "configured": bool(get_tts_url()),
+            "provider": get_tts_provider(),
+        },
         "backchannels": {"cached": len(cached_clips())},
     }
 
@@ -312,7 +331,27 @@ async def voice_ws(websocket: WebSocket):
 if __name__ == "__main__":
     port = int(os.getenv("WEBAPP_PORT", "8000"))
     reload = os.getenv("WEBAPP_RELOAD", "0") == "1"
-    LOGGER.info("Starting OYI Live Chat on http://0.0.0.0:%d (reload=%s)", port, reload)
+    # WebSocket keepalive: browsers never send pings, and a >20s stall during
+    # agent/TTS would otherwise trip uvicorn's default 20s ping timeouts and
+    # close the voice socket mid-turn. Disabled by default; opt back in via
+    # WEBAPP_WS_PING_INTERVAL / WEBAPP_WS_PING_TIMEOUT (seconds).
+    def _ws_env(name: str, default: str | None) -> float | None:
+        raw = os.getenv(name)
+        if raw is None:
+            return None if default is None else float(default)
+        raw = raw.strip()
+        if not raw or raw == "0":
+            return None
+        return float(raw)
+
+    ws_ping_interval = _ws_env("WEBAPP_WS_PING_INTERVAL", None)
+    ws_ping_timeout = _ws_env("WEBAPP_WS_PING_TIMEOUT", None)
+    LOGGER.info(
+        "Starting OYI Live Chat on http://0.0.0.0:%d (reload=%s, ws_ping_interval=%s)",
+        port,
+        reload,
+        ws_ping_interval,
+    )
     uvicorn.run(
         "webapp_server:app",
         host="0.0.0.0",
@@ -320,5 +359,7 @@ if __name__ == "__main__":
         reload=reload,
         proxy_headers=True,
         forwarded_allow_ips="*",
+        ws_ping_interval=ws_ping_interval,
+        ws_ping_timeout=ws_ping_timeout,
     )
 
