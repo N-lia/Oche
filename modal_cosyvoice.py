@@ -51,7 +51,12 @@ cosyvoice_image = (
     modal.Image.from_registry(
         "nvidia/cuda:12.1.1-cudnn8-runtime-ubuntu22.04", add_python="3.10"
     )
-    .apt_install("git", "ffmpeg", "libsndfile1", "sox", "libsox-dev", "build-essential")
+    .apt_install(
+        "git", "ffmpeg", "libsndfile1", "sox", "libsox-dev",
+        # full C/C++ toolchain: several CosyVoice deps (pyworld, Cython
+        # extensions) build from sdist, and the CUDA image ships no compiler
+        "build-essential", "clang", "g++", "gcc",
+    )
     .run_commands(
         "git clone --depth 1 --recursive https://github.com/FunAudioLLM/CosyVoice.git /opt/CosyVoice"
     )
@@ -82,9 +87,32 @@ cosyvoice_image = (
         "fastapi[standard]",
         "huggingface_hub",
     )
-    # CosyVoice's flow-matching modules import `lightning` at import time;
-    # without it the container dies during Runner startup.
-    .pip_install("lightning==2.2.4", "pytorch-lightning==2.2.4")
+    # Build sdist deps (pyworld etc.) deterministically with gcc, in case the
+    # build sandbox defaults to clang++.
+    .env({"CC": "gcc", "CXX": "g++"})
+    # CosyVoice's flow-matching modules import `lightning` (and friends) at
+    # import time; without these the container dies during Runner startup.
+    # Mirrors the missing/pinned entries of upstream CosyVoice requirements
+    # (skipping gradio, fastapi-cli, deepspeed (needs nvcc to build) and
+    # tensorrt, which the inference runtime never touches).
+    .pip_install(
+        "lightning==2.2.4",
+        "pytorch-lightning==2.2.4",
+        "gdown==5.1.0",
+        "pydantic==2.7.0",
+        "rich==13.7.1",
+        "wget==3.2",
+        "onnx==1.16.0",
+        "pyarrow==18.1.0",
+        "pyworld==0.3.4",
+        "protobuf==4.25",
+        "grpcio==1.57.0",
+        "grpcio-tools==1.57.0",
+        "tensorboard==2.14.0",
+        # torch 2.3.1 / onnxruntime wheels are built against numpy 1.x; any
+        # transitive numpy>=2 upgrade breaks every C extension at import time.
+        "numpy==1.26.4",
+    )
     .run_commands("python -m pip install --no-build-isolation openai-whisper==20231117")
     .env(
         {
