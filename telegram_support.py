@@ -8,7 +8,13 @@ import time
 from dataclasses import dataclass
 from typing import Final
 
-from config import format_agent_response
+from config import format_agent_response  # noqa: F401  (kept: plain-text path for fallbacks)
+from telegram_format import (
+    markdown_to_telegram_html,
+    strip_telegram_html,
+    telegram_preview,
+)
+from telegram_format import split_telegram_text as _split_telegram_html
 
 TELEGRAM_TEXT_LIMIT: Final[int] = 4096
 TELEGRAM_EDIT_MARGIN: Final[int] = 96
@@ -119,26 +125,11 @@ def clamp_prompt(text: str, max_chars: int) -> tuple[str, bool]:
     return text[:max_chars], True
 
 
-def telegram_preview(text: str) -> str:
-    text = format_agent_response(text)
-    if len(text) <= TELEGRAM_TEXT_LIMIT:
-        return text
-    return text[: TELEGRAM_TEXT_LIMIT - TELEGRAM_EDIT_MARGIN].rstrip() + "\n\n[Response continues...]"
+# Agent replies are formatted as Telegram HTML (parse_mode=HTML): the LLM's
+# markdown is converted to supported tags (<b>, <i>, <code>, <pre>, <a>, ...),
+# truncated safely and split into <=4096-char chunks. See telegram_format.py.
 
 
 def split_telegram_text(text: str) -> list[str]:
-    chunks: list[str] = []
-    remaining = format_agent_response(text)
-    while len(remaining) > TELEGRAM_TEXT_LIMIT:
-        split_at = remaining.rfind("\n", 0, TELEGRAM_TEXT_LIMIT)
-        if split_at < TELEGRAM_TEXT_LIMIT // 2:
-            split_at = remaining.rfind(" ", 0, TELEGRAM_TEXT_LIMIT)
-        if split_at < TELEGRAM_TEXT_LIMIT // 2:
-            split_at = TELEGRAM_TEXT_LIMIT
-        chunk = remaining[:split_at].strip()
-        if chunk:
-            chunks.append(chunk)
-        remaining = remaining[split_at:].strip()
-    if remaining:
-        chunks.append(remaining)
-    return chunks or [""]
+    """Model response chunks as Telegram HTML (safe<=4096 chars each)."""
+    return _split_telegram_html(text)

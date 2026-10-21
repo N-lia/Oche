@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import html
 import io
 import logging
 import os
@@ -19,7 +20,7 @@ from telegram import (
     Update,
     WebAppInfo,
 )
-from telegram.constants import ChatAction
+from telegram.constants import ChatAction, ParseMode
 from telegram.error import BadRequest, NetworkError, RetryAfter, TelegramError, TimedOut
 from telegram.ext import (
     Application,
@@ -41,6 +42,7 @@ from telegram_support import (
     clamp_prompt,
     split_telegram_text,
     telegram_preview,
+    strip_telegram_html,
 )
 
 load_dotenv()
@@ -134,20 +136,64 @@ def extract_document_text(data: bytes, filename: str) -> str:
             os.remove(tmp_path)
 
 
-async def safe_edit_text(message, text: str) -> bool:
+async def safe_edit_text(message, text: str, parse_mode: str | None = ParseMode.HTML) -> bool:
+    """Edit a message, preferring Telegram HTML and falling back to plain text.
+
+    Formatting failures (``Can't parse entities`` / ``Unsupported start tag``)
+    are retried once without a parse mode, so a bad reply can never wedge the
+    streaming updater.
+    """
     try:
-        await message.edit_text(telegram_preview(text))
+        await message.edit_text(text, parse_mode=parse_mode)
         return True
     except BadRequest as exc:
-        if "Message is not modified" not in str(exc):
+        lowered = str(exc).lower()
+        if "message is not modified" in lowered:
+            return True
+        if parse_mode and ("parse" in lowered or "entities" in lowered or "unsupported" in lowered or "tag" in lowered):
+            LOGGER.warning("Telegram rejected HTML edit, falling back to plain text: %s", exc)
+            try:
+                await message.edit_text(strip_telegram_html(text))
+                return True
+            except TelegramError:
+                LOGGER.warning("Plain-fallback edit also rejected", exc_info=True)
+        elif "message is not modified" not in lowered:
             LOGGER.warning("Telegram rejected message edit: %s", exc)
     except RetryAfter as exc:
         LOGGER.info("Telegram asked to retry edit after %s seconds", exc.retry_after)
         await asyncio.sleep(float(exc.retry_after))
+        return await safe_edit_text(message, text, parse_mode=parse_mode)
     except (NetworkError, TimedOut) as exc:
         LOGGER.warning("Transient Telegram edit error: %s", exc)
     except TelegramError:
         LOGGER.exception("Unexpected Telegram edit error")
+    return False
+
+
+async def safe_send_html(message, text: str, parse_mode: str | None = ParseMode.HTML) -> bool:
+    """Send a new message preferring HTML parse mode, with plain-text fallback."""
+    try:
+        await message.reply_text(text, parse_mode=parse_mode)
+        return True
+    except BadRequest as exc:
+        lowered = str(exc).lower()
+        if parse_mode and ("parse" in lowered or "entities" in lowered or "unsupported" in lowered or "tag" in lowered):
+            LOGGER.warning("Telegram rejected HTML send, falling back to plain text: %s", exc)
+            try:
+                await message.reply_text(strip_telegram_html(text))
+                return True
+            except TelegramError:
+                LOGGER.warning("Plain-fallback send also rejected", exc_info=True)
+        else:
+            LOGGER.warning("Telegram rejected message send: %s", exc)
+    except RetryAfter as exc:
+        LOGGER.info("Telegram asked to retry send after %s seconds", exc.retry_after)
+        await asyncio.sleep(float(exc.retry_after))
+        return await safe_send_html(message, text, parse_mode=parse_mode)
+    except (NetworkError, TimedOut) as exc:
+        LOGGER.warning("Transient Telegram send error: %s", exc)
+    except TelegramError:
+        LOGGER.exception("Unexpected Telegram send error")
     return False
 
 
@@ -211,7 +257,7 @@ async def stream_reply(
             if final_chunks[0] != last_edit_text:
                 await safe_edit_text(sent_message, final_chunks[0])
             for chunk in final_chunks[1:]:
-                await message.reply_text(chunk)
+                await safe_send_html(message, chunk)
         except Exception:
             LOGGER.exception("Agent streaming failed")
             await safe_edit_text(sent_message, "Sorry, something went wrong while generating a response.")
@@ -309,7 +355,7 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 
         result = await atranscribe(voice_bytes)
         if result.error:
-            await safe_edit_text(status_msg, f"⚠️ Parakeet ASR error: {result.error}")
+            await safe_edit_text(status_msg, "⚠️ Parakeet ASR error: " + html.escape(str(result.error)))
             return
 
         user_text = result.text.strip()
@@ -320,14 +366,14 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             return
 
         eou_tag = " [EOU detected]" if eou else ""
-        await safe_edit_text(status_msg, f"🎙️ *\"{user_text}\"*{eou_tag}")
+        await safe_edit_text(status_msg, f"🎙️ <i>\"{html.escape(user_text)}\"</i>{eou_tag}")
 
         # Stream agent reply to the transcribed text
         await stream_reply(update, context, user_text, conversation_thread_id(chat.id))
 
     except Exception as exc:
         LOGGER.exception("Voice handling failed")
-        await safe_edit_text(status_msg, f"⚠️ Failed to process voice note: {exc}")
+        await safe_edit_text(status_msg, "⚠️ Failed to process voice note: " + html.escape(str(exc)))
 
 
 async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -404,15 +450,23 @@ async def _nightly_reconciliation_loop(application: Application) -> None:
 
 async def _on_post_init(application: Application) -> None:
     async def deliver_subagent_message(chat_id: int | str, task_name: str, result: str) -> None:
-        header = f"🔔 **Subagent Task Completed: {task_name}**\n\n"
+        header = f"🔔 <b>Subagent Task Completed: {html.escape(task_name)}</b>\n\n"
         full_text = header + result
         chunks = split_telegram_text(full_text)
         target_chat_id = int(chat_id) if str(chat_id).lstrip("-").isdigit() else chat_id
         for chunk in chunks:
             try:
-                await application.bot.send_message(chat_id=target_chat_id, text=chunk)
+                sent = await application.bot.send_message(chat_id=target_chat_id, text=chunk, parse_mode=ParseMode.HTML)
+            except BadRequest as exc:
+                if "parse" in str(exc).lower() or "entities" in str(exc).lower() or "unsupported" in str(exc).lower():
+                    sent = await application.bot.send_message(chat_id=target_chat_id, text=strip_telegram_html(chunk))
+                else:
+                    LOGGER.exception("Failed to deliver subagent result chunk to chat_id=%s", chat_id)
+                    continue
             except Exception:
                 LOGGER.exception("Failed to deliver subagent result chunk to chat_id=%s", chat_id)
+                continue
+            LOGGER.debug("Delivered subagent chunk %s to chat_id=%s", getattr(sent, "message_id", "?"), target_chat_id)
 
     register_telegram_notifier(deliver_subagent_message)
 
