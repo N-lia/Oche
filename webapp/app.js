@@ -11,38 +11,10 @@
     try {
       tg.ready();
       tg.expand();
-      if (tg.setHeaderColor) tg.setHeaderColor('secondary_bg_color');
-      if (tg.setBackgroundColor) tg.setBackgroundColor('bg_color');
+      // The mascot lives on white: keep the Telegram chrome white too.
+      if (tg.setHeaderColor) tg.setHeaderColor('#ffffff');
+      if (tg.setBackgroundColor) tg.setBackgroundColor('#ffffff');
     } catch (_) { /* older SDK */ }
-    applyTheme();
-    tg.onEvent('themeChanged', applyTheme);
-  }
-
-  function applyTheme() {
-    const params = (tg && tg.themeParams) || {};
-    const root = document.documentElement;
-    const map = {
-      '--tg-theme-bg-color': params.bg_color,
-      '--tg-theme-secondary-bg-color': params.secondary_bg_color,
-      '--tg-theme-text-color': params.text_color,
-      '--tg-theme-hint-color': params.hint_color,
-      '--tg-theme-link-color': params.link_color,
-      '--tg-theme-button-color': params.button_color,
-      '--tg-theme-button-text-color': params.button_text_color,
-      '--tg-theme-section-bg-color': params.section_bg_color,
-    };
-    Object.entries(map).forEach(([key, value]) => {
-      if (value) root.style.setProperty(key, value);
-    });
-    const scheme = params.bg_color ? luminance(params.bg_color) : 0;
-    root.setAttribute('data-theme', scheme > 0.5 ? 'light' : 'dark');
-  }
-
-  function luminance(hex) {
-    const m = hex.replace('#', '');
-    const v = m.length === 3 ? m.split('').map((c) => c + c).join('') : m;
-    const [r, g, b] = [0, 2, 4].map((i) => parseInt(v.slice(i, i + 2), 16) / 255);
-    return 0.2126 * r + 0.7152 * g + 0.0722 * b;
   }
 
   const haptic = (style = 'light') => {
@@ -53,19 +25,12 @@
   const $ = (id) => document.getElementById(id);
   const feed = $('feed');
   const connDot = $('connDot');
-  const connText = $('connText');
-  const voiceStrip = $('voiceStrip');
-  const voiceState = $('voiceState');
-  const wave = $('wave');
+  const stageText = $('stageText');
   const micButton = $('micButton');
   const chatForm = $('chatForm');
   const chatInput = $('chatInput');
   const sendButton = $('sendButton');
-  const activity = $('activity');
-  const activityText = $('activityText');
-  const activityTimer = $('activityTimer');
   const btnSettings = $('btnSettings');
-  const btnSound = $('btnSound');
   const sheet = $('sheet');
   const sheetBackdrop = $('sheetBackdrop');
   const modeSeg = $('modeSeg');
@@ -76,6 +41,9 @@
   const btnClear = $('btnClear');
   const engineInfo = $('engineInfo');
   const toastEl = $('toast');
+
+  // The mascot: one purple blob that blinks, looks around and talks.
+  const mascot = window.createMascot ? window.createMascot($('mascot')) : null;
 
   // ----------------------------------------------------------------- state
   const S = {
@@ -160,31 +128,42 @@
 
   function setConn(state, text) {
     S.wsState = state;
-    connDot.className = `conn-dot is-${state}`;
-    if (text) connText.textContent = text;
+    connDot.className = `stage__dot is-${state}`;
+    if (text) stageText.textContent = text;
   }
 
+  function setCaption(text) {
+    stageText.textContent = text || '';
+  }
+
+  // The mascot mirrors what the session is doing: idle, listening, thinking
+  // or speaking (with the mouth moving while the agent talks).
   function setVoiceState(state, text) {
-    voiceState.dataset.state = state;
-    voiceState.textContent = text;
+    if (text) setCaption(text);
+    if (!mascot) return;
+    if (state === 'speaking') mascot.setState('speaking');
+    else if (state === 'thinking') mascot.setState('thinking');
+    else if (state === 'holding') mascot.setState('listening');
+    else mascot.setState(S.voiceActive ? 'listening' : 'idle');
   }
 
   function showActivity(text) {
-    activity.hidden = false;
-    activityText.textContent = text || 'Working…';
+    setCaption(text || 'Working…');
+    if (mascot) mascot.setState('thinking');
     if (!S.activityStartedAt) {
       S.activityStartedAt = Date.now();
       S.activityInterval = setInterval(() => {
-        activityTimer.textContent = `${((Date.now() - S.activityStartedAt) / 1000).toFixed(1)}s`;
+        const seconds = ((Date.now() - S.activityStartedAt) / 1000).toFixed(1);
+        setCaption(`${text || 'Working…'} ${seconds}s`);
       }, 100);
     }
   }
 
   function hideActivity() {
-    activity.hidden = true;
-    activityTimer.textContent = '';
     S.activityStartedAt = 0;
     if (S.activityInterval) { clearInterval(S.activityInterval); S.activityInterval = null; }
+    if (mascot) mascot.setState(S.voiceActive ? 'listening' : 'idle');
+    setCaption(S.voiceActive ? 'Listening' : 'Ready');
   }
 
   let toastTimer = null;
@@ -218,6 +197,7 @@
     if (!S.botBubble) {
       S.botBubble = addMessage('bot', '');
       S.botBubble.classList.add('is-streaming');
+      if (mascot) mascot.pulse();
     }
     S.botBubble.textContent += delta;
     hideActivity();
@@ -420,6 +400,7 @@
 
       case 'error':
         hideActivity();
+        toast(msg.message || 'Something went wrong.');
         addMessage('error', msg.message || 'Something went wrong.');
         S.busy = false;
         finalizeBotBubble();
@@ -440,6 +421,60 @@
   }
 
   // -------------------------------------------------------------- playback
+  // A tiny analyser on the bot's audio drives the mascot's mouth: the louder
+  // the agent, the wider it opens.
+  let playbackContext = null;
+  let levelMeter = null;
+  let levelTimer = 0;
+
+  function levelMeterFor(audio) {
+    try {
+      const Ctx = window.AudioContext || window.webkitAudioContext;
+      if (!Ctx) return null;
+      if (!playbackContext || playbackContext.state === 'closed') {
+        playbackContext = new Ctx();
+      }
+      if (playbackContext.state === 'suspended') {
+        playbackContext.resume().catch(() => {});
+      }
+      const source = playbackContext.createMediaElementSource(audio);
+      const analyser = playbackContext.createAnalyser();
+      analyser.fftSize = 512;
+      source.connect(analyser);
+      analyser.connect(playbackContext.destination);
+      return analyser;
+    } catch (_) {
+      // Some browsers refuse to route a media element through Web Audio; the
+      // mascot then falls back to its synthetic envelope.
+      return null;
+    }
+  }
+
+  function startLevelMeter(audio) {
+    stopLevelMeter();
+    const analyser = levelMeterFor(audio);
+    if (!analyser) return;
+    levelMeter = analyser;
+    const buffer = new Uint8Array(analyser.fftSize);
+    levelTimer = window.setInterval(() => {
+      if (!levelMeter) return;
+      levelMeter.getByteTimeDomainData(buffer);
+      let sum = 0;
+      for (let i = 0; i < buffer.length; i += 1) {
+        const v = (buffer[i] - 128) / 128;
+        sum += v * v;
+      }
+      const rms = Math.sqrt(sum / buffer.length);
+      if (mascot) mascot.setLevel(Math.min(1, rms * 3.4));
+    }, 55);
+  }
+
+  function stopLevelMeter() {
+    if (levelTimer) { window.clearInterval(levelTimer); levelTimer = 0; }
+    levelMeter = null;
+    if (mascot) mascot.setLevel(0);
+  }
+
   function playOverlay(url, volume) {
     if (!url || !S.speakReplies) return;
     const audio = new Audio(url);
@@ -447,6 +482,7 @@
     overlays.add(audio);
     audio.onended = () => overlays.delete(audio);
     audio.play().catch(() => overlays.delete(audio));
+    if (mascot) mascot.pulse();
   }
 
   function stopOverlays() {
@@ -462,16 +498,21 @@
       return;
     }
     setVoiceState('speaking', 'Speaking…');
+    if (mascot) mascot.setSpeaking(true);
     ensureTurnTaker().agentOutputStart();
     wsSend({ type: 'playback_start' });
     botAudio = new Audio(`data:audio/mpeg;base64,${base64}`);
     botAudio.onended = () => {
       botAudio = null;
+      stopLevelMeter();
+      if (mascot) mascot.setSpeaking(false);
       ensureTurnTaker().agentOutputEnd();
       wsSend({ type: 'playback_end' });
       if (S.voiceActive) setVoiceState('listening', 'Listening');
     };
-    botAudio.play().catch(() => {
+    botAudio.play().then(() => startLevelMeter(botAudio)).catch(() => {
+      stopLevelMeter();
+      if (mascot) mascot.setSpeaking(false);
       ensureTurnTaker().agentOutputEnd();
       wsSend({ type: 'playback_end' });
     });
@@ -594,7 +635,6 @@
     if (!S.voiceActive || !S.socket || S.socket.readyState !== WebSocket.OPEN) return;
     const pcm = toInt16(resampleTo16k(float32, audioContext.sampleRate));
     const level = rms(pcm);
-    wave.style.setProperty('--level', level.toFixed(3));
     pushPreroll(pcm);
 
     // Turn timing is decided locally from the level — not from transcripts and
@@ -620,6 +660,8 @@
       // turn-taking on the server side.
       wsSend({ type: 'playback_end' });
     }
+    stopLevelMeter();
+    if (mascot) mascot.setSpeaking(false);
     if (turnTaker) turnTaker.agentOutputEnd();
     stopOverlays();
   }
@@ -663,13 +705,13 @@
       S.voiceActive = true;
       S.busy = false;
       micButton.classList.add('is-active');
-      voiceStrip.hidden = false;
       ensureTurnTaker().start();
       setVoiceState('listening', 'Listening');
       if (tg && tg.enableClosingConfirmation) tg.enableClosingConfirmation();
       haptic('medium');
       await ensureSocket();
     } catch (err) {
+      toast(`Microphone unavailable: ${err.message || err}`);
       addMessage('error', `Microphone unavailable: ${err.message || err}`);
       await stopVoice();
     }
@@ -680,14 +722,52 @@
     S.busy = false;
     if (turnTaker) turnTaker.stop();
     micButton.classList.remove('is-active');
-    voiceStrip.hidden = true;
     hideActivity();
     if (workletNode) { workletNode.port.onmessage = null; workletNode.disconnect(); workletNode = null; }
     if (micStream) { micStream.getTracks().forEach((t) => t.stop()); micStream = null; }
     if (audioContext) { await audioContext.close(); audioContext = null; analyser = null; }
     if (botAudio) { botAudio.pause(); botAudio = null; }
+    stopLevelMeter();
+    if (mascot) mascot.setSpeaking(false);
     stopOverlays();
     if (tg && tg.disableClosingConfirmation) tg.disableClosingConfirmation();
+  }
+
+  // --------------------------------------------------------- mascot control
+  // The mascot IS the interface: tap to start/stop talking, long-press to
+  // open settings. The composer stays in the DOM (hidden) so text handling
+  // keeps working, but there is deliberately no visible chrome.
+  const mascotFigure = $('mascotFigure');
+  let pressTimer = null;
+  let pressStart = 0;
+
+  function cancelLongPress() {
+    if (pressTimer) { clearTimeout(pressTimer); pressTimer = null; }
+  }
+
+  if (mascotFigure) {
+    mascotFigure.addEventListener('pointerdown', (event) => {
+      if (event.button && event.button !== 0) return;
+      pressStart = Date.now();
+      cancelLongPress();
+      pressTimer = setTimeout(() => {
+        pressTimer = null;
+        haptic('heavy');
+        openSheet();
+      }, 600);
+    });
+    mascotFigure.addEventListener('pointerup', () => {
+      const held = Date.now() - pressStart;
+      const wasLongPress = pressTimer === null;
+      cancelLongPress();
+      if (!wasLongPress && held < 600) {
+        haptic('light');
+        micButton.click();
+      }
+    });
+    mascotFigure.addEventListener('pointercancel', cancelLongPress);
+    mascotFigure.addEventListener('pointerleave', cancelLongPress);
+    mascotFigure.addEventListener('contextmenu', (event) => event.preventDefault());
   }
 
   // --------------------------------------------------------------- controls
@@ -695,8 +775,6 @@
     if (S.voiceActive) await stopVoice();
     else await startVoice();
   });
-
-  $('voiceStop').addEventListener('click', () => stopVoice());
 
   chatForm.addEventListener('submit', async (event) => {
     event.preventDefault();
@@ -713,14 +791,6 @@
   });
 
   chatInput.addEventListener('input', () => { sendButton.disabled = !chatInput.value.trim(); });
-
-  btnSound.addEventListener('click', () => {
-    S.speakReplies = !S.speakReplies;
-    toggleSpeak.checked = S.speakReplies;
-    btnSound.classList.toggle('is-off', !S.speakReplies);
-    wsSend({ type: 'set', speak_text_replies: S.speakReplies });
-    toast(S.speakReplies ? 'Spoken replies on' : 'Spoken replies off');
-  });
 
   function openSheet() { sheet.hidden = false; sheetBackdrop.hidden = false; if (tg && tg.BackButton) tg.BackButton.show(); }
   function closeSheet() { sheet.hidden = true; sheetBackdrop.hidden = true; if (tg && tg.BackButton) tg.BackButton.hide(); }
@@ -743,7 +813,6 @@
 
   toggleSpeak.addEventListener('change', () => {
     S.speakReplies = toggleSpeak.checked;
-    btnSound.classList.toggle('is-off', !S.speakReplies);
     wsSend({ type: 'set', speak_text_replies: S.speakReplies });
   });
 
@@ -779,6 +848,7 @@
 
   // ------------------------------------------------------------------ boot
   addMessage('system', 'Hey — talk or type. I stream live and you can interrupt me any time.');
+  ensureSocket(); // preconnect so the first tap starts talking instantly
   checkHealth();
   window.addEventListener('beforeunload', () => { S.wantSocket = false; });
 })();

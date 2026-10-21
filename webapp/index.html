@@ -1,9 +1,9 @@
 <!DOCTYPE html>
-<html lang="en" data-theme="dark">
+<html lang="en" data-theme="light">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
-  <meta name="color-scheme" content="dark light">
+  <meta name="color-scheme" content="light">
   <title>OYI Live</title>
   <script src="https://telegram.org/js/telegram-web-app.js"></script>
   <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -13,50 +13,56 @@
 </head>
 <body>
   <div class="app" id="app">
-    <header class="topbar">
-      <div class="topbar__brand">
-        <div class="avatar" id="avatar">OY</div>
-        <div class="topbar__meta">
-          <div class="topbar__title">OYI <span class="live-tag">LIVE</span></div>
-          <div class="topbar__sub" id="connState">
-            <span class="conn-dot" id="connDot"></span>
-            <span id="connText">Connecting…</span>
-          </div>
-        </div>
+    <header class="stage" id="stage">
+      <!-- The mascot IS the interface: tap to talk, long-press for settings. -->
+      <div class="stage__figure" id="mascotFigure">
+        <svg class="mascot" id="mascot" viewBox="0 0 400 320" role="img" aria-label="OYI mascot">
+        <g id="mascotBody" fill="#a021e9">
+          <circle cx="30" cy="214" r="56"></circle>
+          <circle cx="112" cy="182" r="66"></circle>
+          <circle cx="196" cy="152" r="80"></circle>
+          <circle cx="272" cy="180" r="66"></circle>
+          <circle cx="350" cy="214" r="56"></circle>
+          <path d="M-20 208 H400 V262 Q400 312 350 312 H30 Q-20 312 -20 262 Z"></path>
+        </g>
+
+        <g id="mascotFace">
+          <!-- brows -->
+          <path id="browL" d="M114 158 q27 -17 54 -5" fill="none" stroke="#5d0f9c" stroke-width="9" stroke-linecap="round"></path>
+          <path id="browR" d="M226 152 q27 -16 54 -4" fill="none" stroke="#5d0f9c" stroke-width="9" stroke-linecap="round"></path>
+
+          <!-- eyes -->
+          <g id="eyeL" class="eye">
+            <ellipse cx="142" cy="208" rx="35" ry="39" fill="#ffffff"></ellipse>
+            <g id="pupilL" class="pupil">
+              <circle cx="135" cy="215" r="20" fill="#0b0710"></circle>
+            </g>
+          </g>
+          <g id="eyeR" class="eye">
+            <ellipse cx="250" cy="200" rx="32" ry="36" fill="#ffffff"></ellipse>
+            <g id="pupilR" class="pupil">
+              <circle cx="255" cy="206" r="19" fill="#0b0710"></circle>
+            </g>
+          </g>
+
+          <!-- mouth -->
+          <g id="mouthGroup">
+            <ellipse id="mouthOpen" cx="196" cy="262" rx="17" ry="1" fill="#2a0733"></ellipse>
+            <path id="mouth" d="M170 258 q10 12 20 0 q10 -12 20 0 q10 12 20 0" fill="none" stroke="#5d0f9c" stroke-width="7" stroke-linecap="round" stroke-linejoin="round"></path>
+          </g>
+        </g>
+      </svg>
       </div>
-      <div class="topbar__actions">
-        <button class="icon-btn" id="btnSound" aria-label="Toggle spoken replies" title="Spoken replies">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-            <path d="M11 5 6 9H2v6h4l5 4V5Z"></path>
-            <path d="M15.54 8.46a5 5 0 0 1 0 7.07"></path>
-            <path d="M19.07 4.93a10 10 0 0 1 0 14.14"></path>
-          </svg>
-        </button>
-        <button class="icon-btn" id="btnSettings" aria-label="Settings" title="Settings">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-            <circle cx="12" cy="12" r="3"></circle>
-            <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1Z"></path>
-          </svg>
-        </button>
+
+      <div class="stage__caption ghost">
+        <span class="stage__dot" id="connDot"></span>
+        <span class="stage__text" id="stageText">Connecting…</span>
       </div>
     </header>
 
-    <main class="feed" id="feed" aria-live="polite"></main>
+    <main class="feed ghost" id="feed" aria-live="polite"></main>
 
-    <div class="activity" id="activity" hidden>
-      <span class="activity__spinner" aria-hidden="true"></span>
-      <span class="activity__text" id="activityText">Thinking…</span>
-      <span class="activity__timer" id="activityTimer"></span>
-    </div>
-
-    <footer class="composer" id="composer">
-      <div class="voice-strip" id="voiceStrip" hidden>
-        <div class="wave" id="wave" aria-hidden="true">
-          <span></span><span></span><span></span><span></span><span></span>
-        </div>
-        <div class="voice-state" id="voiceState">Listening</div>
-        <button class="voice-stop" id="voiceStop" aria-label="End voice chat">End</button>
-      </div>
+    <footer class="composer ghost" id="composer">
       <form class="composer__row" id="chatForm" autocomplete="off">
         <button type="button" class="mic-btn" id="micButton" aria-label="Start voice chat">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -74,6 +80,12 @@
             </svg>
           </button>
         </div>
+        <button type="button" class="icon-btn" id="btnSettings" aria-label="Settings" title="Settings">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <circle cx="12" cy="12" r="3"></circle>
+            <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1Z"></path>
+          </svg>
+        </button>
       </form>
     </footer>
   </div>
@@ -127,6 +139,7 @@
   <div class="toast" id="toast" hidden></div>
 
   <script src="/static/turn-taking.js"></script>
+  <script src="/static/mascot.js"></script>
   <script src="/static/app.js"></script>
 </body>
 </html>
