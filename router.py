@@ -49,6 +49,10 @@ def _classifier():
         api_key=os.environ["NEBIUS_API_KEY"],
         temperature=0,
         max_tokens=1000,
+        # The classifier once stalled ~90s on a structured-output call, which
+        # froze the whole turn before the agent even started. Bound it and
+        # fall back to the routine route (the exception path below).
+        timeout=12.0,
         extra_body={
             "chat_template_kwargs": {
                 "enable_thinking": False,

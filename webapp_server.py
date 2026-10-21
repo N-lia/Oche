@@ -63,6 +63,18 @@ async def _maybe_enable_loop_debug() -> None:
     logging.getLogger("asyncio").setLevel(logging.WARNING)
     LOGGER.warning("asyncio loop debug enabled (slow_callback_duration=0.5s)")
 
+    # SIGUSR1 dumps every thread's stack to the log: `docker kill -s USR1 webapp`
+    # after a hang shows what the agent task is really awaiting.
+    import faulthandler
+    import signal
+    import sys
+
+    # Fatal-signal stacks: if the process segfaults (exit 139), the next boot's
+    # log starts with the dump naming the thread and frames that died.
+    faulthandler.enable(file=sys.stderr, all_threads=True)
+    faulthandler.register(signal.SIGUSR1, all_threads=True, chain=False)
+    LOGGER.warning("faulthandler crash+SIGUSR1 dumps registered")
+
 # CORS middleware for WebApp access
 app.add_middleware(
     CORSMiddleware,
@@ -357,6 +369,10 @@ if __name__ == "__main__":
         host="0.0.0.0",
         port=port,
         reload=reload,
+        # Plain asyncio on purpose: uvloop segfaults inside openai/httpx SSE
+        # reads here (openai/_streaming.py __aiter__ -> exit 139,Fatal Python
+        # error), while the identical stream on the stdlib loop never crashed.
+        loop="asyncio",
         proxy_headers=True,
         forwarded_allow_ips="*",
         ws_ping_interval=ws_ping_interval,

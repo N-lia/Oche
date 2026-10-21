@@ -21,6 +21,9 @@ services:
       WEBAPP_PORT: "8000"
       # Reach the on-host gRPC ASR (same as the Telegram bot).
       PARAKEET_GRPC_TARGET: "host.docker.internal:50051"
+      # Warn (with stack) when something blocks the asyncio loop: the stall
+      # hunter for "agent reply never arrives while the loop looks alive".
+      WEBAPP_DEBUG_LOOP: "1"
     extra_hosts:
       - "host.docker.internal:host-gateway"
     volumes:
