@@ -28,7 +28,7 @@ import numpy as np
 from asr_client import AsyncTranscribeStream, ascore_turn
 from backchannel import BackchannelController, clip_path
 from phonon_tts import plan_chunks, stream_phonon_wav
-from telegram_format import voice_text_for_speech
+from telegram_format import normalize_agent_html, voice_text_for_speech
 from turn_policy import classify_turn
 
 LOGGER = logging.getLogger("oyi.voice.session")
@@ -401,6 +401,7 @@ class VoiceSession:
             try:
                 final_html = normalize_agent_html(reply)
             except Exception:
+                LOGGER.exception("normalize_agent_html failed on reply; sending raw", )
                 final_html = reply
             await self.send(
                 {"type": "bot_text_final", "text": final_html, "turn_id": turn_id}
