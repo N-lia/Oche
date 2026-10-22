@@ -227,6 +227,27 @@ def test_native_markdown_hidden_inside_code_stays_verbatim() -> None:
     assert out.count("<code>") == 1
 
 
+def test_bare_mermaid_code_block_gets_language_class() -> None:
+    # The model sometimes authors the diagram as a bare <pre><code> block
+    # with no language class: canonicalize on the keyword tell.
+    raw = "Flow only. <pre><code>\nflowchart TD\n A --> B\n</code></pre>"
+    out = tf.normalize_agent_html(raw)
+    assert 'class="language-mermaid"' in out, out
+    assert "A --&gt; B" in out  # block bodies are entity-escaped
+    # A graph with a direction alias is canonicalized too.
+    graph = "<pre><code>graph TD\n A --> B\n</code></pre>"
+    assert 'class="language-mermaid"' in tf.normalize_agent_html(graph)
+    # Real code is never touched.
+    code = "<pre><code>import os\n</code></pre>"
+    normal = tf.normalize_agent_html(code)
+    assert "language-mermaid" not in normal
+    # A real code block never gains the mermaid class (native normalization
+    # strips foreign class attributes; mermaid is added by keyword only).
+    keep = "<pre><code class=\"python\">import os\n</code></pre>"
+    normalized_keep = tf.normalize_agent_html(keep)
+    assert "language-mermaid" not in normalized_keep, normalized_keep
+
+
 def test_mermaid_block_survives_normalization() -> None:
     html_text = (
         "Here is the flow. <pre><code class=\"language-mermaid\">flowchart LR\n"

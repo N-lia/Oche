@@ -181,6 +181,32 @@ def strip_telegram_html(text: str) -> str:
 _MERMAID_BLOCK_RE = re.compile(
     r"<pre><code\s+class=\"language-mermaid\">\s*.*?\s*</code></pre>", re.S | re.I
 )
+# Models also emit the diagram as a bare <pre><code> block without the
+# language class; a body starting with a Mermaid diagram keyword is a strong
+# tell, and upgrading those keeps the miniapp renderer and the voice strip
+# working on every alias shape the model invents.
+_BARE_MERMAID_RE = re.compile(
+    r"<pre><code([^>]*)>(\s*(?:flowchart|sequenceDiagram|stateDiagram(?:-v2)?"
+    r"|classDiagram|erDiagram|graph(?:[ \t]+(?:TD|TB|LR|RL|BT))?|mindmap"
+    r"|pie|gantt|journey|timeline)\b)",
+    re.I,
+)
+
+
+def _canonicalize_bare_mermaid(text: str) -> str:
+    """Add class="language-mermaid" to bare <pre><code> diagram blocks."""
+    if not _BARE_MERMAID_RE.search(text):
+        return text
+
+    def _upgrade(match: re.Match[str]) -> str:
+        attrs = match.group(1)
+        if "class=" in attrs:
+            return match.group(0)
+        return f'<pre><code class="language-mermaid">{match.group(2)}'
+
+    return _BARE_MERMAID_RE.sub(_upgrade, text)
+
+
 _MERMAID_BLOCK_ALIAS_RE = re.compile(
     r"<(?:mermaid|diagram)>\s*(.*?)\s*</(?:mermaid|diagram)>", re.S | re.I
 )
@@ -251,6 +277,10 @@ def normalize_agent_html(text: str) -> str:
         ),
         text,
     )
+    # Same story for a bare <pre><code> block whose body starts with a
+    # Mermaid diagram keyword: Telegram renders it fine, but the miniapp
+    # renderer mounts only language-mermaid blocks, so give it the class.
+    text = _canonicalize_bare_mermaid(text)
     if not _NATIVE_TAG_RE.search(text):
         if _ENTITY_PRESENT_RE.search(text):
             # Entity-only reply (no tags): the model authored references, so
