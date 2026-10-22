@@ -50,9 +50,9 @@ def _classifier():
         temperature=0,
         max_tokens=1000,
         # The classifier once stalled ~90s on a structured-output call, which
-        # froze the whole turn before the agent even started. Bound it and
-        # fall back to the routine route (the exception path below).
-        timeout=12.0,
+        # froze the whole turn before the agent even started. Bound it tight
+        # and fall back to the routine route (the exception path below).
+        timeout=8.0,
         extra_body={
             "chat_template_kwargs": {
                 "enable_thinking": False,
@@ -72,6 +72,21 @@ COMPLEX_INDICATORS = {
 }
 
 
+# Fast path 3 markers: OBVIOUS current-information requests. Matched against
+# the cleaned input; a hit skips the structured HTTP classifier entirely
+# (its Nemotron call routinely costs 2-12s before the agent even starts).
+_SEARCH_FAST_PATH_MARKERS = (
+    # Explicit lookup verbs — the user is asking us to go find something.
+    "search", "google", "look up", "lookup", "find out",
+    # Recency wording (news-style).
+    "latest", "newest", "news", "breaking",
+    # Markets / conditions / live world state.
+    "price", "prices", "stock", "crypto", "weather", "forecast", "exchange rate",
+    # Sports scores and world events.
+    "who is winning", "who won", "what happened", "was released", "release date",
+)
+
+
 def classify_request(user_input: str) -> RouteDecision:
     """Classify intent and extract useful entities with the fast model."""
     cleaned = user_input.strip().lower()
@@ -85,6 +100,17 @@ def classify_request(user_input: str) -> RouteDecision:
             complexity="routine",
             confidence=1.0,
             reason="fast_path_greeting",
+        )
+
+    # Fast-path 3: OBVIOUS search / current-information turns (0ms).
+    # Real-time questions route to the fast model family directly; the agent
+    # still decides whether to actually run Tavily.
+    if any(marker in cleaned for marker in _SEARCH_FAST_PATH_MARKERS):
+        return RouteDecision(
+            intent="current_information",
+            complexity="standard",
+            confidence=0.95,
+            reason="fast_path_search",
         )
 
     # Fast-path 2: Short everyday queries without complex indicators (0ms)
@@ -124,6 +150,10 @@ def choose_model(decision: RouteDecision) -> str:
     """Map a classification to the model tier that should answer it."""
     if decision.confidence < 0.65 or decision.complexity == "serious":
         return INTENSE_MODEL
+    # Search turns favor latency: Tavily results carry the substance, so the
+    # nano tier answers noticeably faster than the 120B super model.
+    if decision.intent == "current_information":
+        return BASE_MODEL
     if decision.complexity == "standard":
         return REASONING_MODEL
     return BASE_MODEL

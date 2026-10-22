@@ -29,7 +29,14 @@ from memory import (
     set_current_user_id,
 )
 from privacy import restore_for_local_delivery, scrub_for_external
-from router import NEBIUS_BASE_URL, RouteDecision, choose_model, classify_request
+from router import (
+    BASE_MODEL,
+    INTENSE_MODEL,
+    NEBIUS_BASE_URL,
+    RouteDecision,
+    choose_model,
+    classify_request,
+)
 from subagent import SUBAGENT_TOOLS
 from tool import TAVILY_TOOLS
 from voice import VOICE_TOOLS
@@ -198,6 +205,16 @@ class AgentService:
 
     @staticmethod
     def _model(model_name: str) -> ChatOpenAI:
+        # Thinking stays OFF for the latency-bound tiers: Nemotron's reasoning
+        # pass otherwise burns seconds before the first visible token of every
+        # round, including the tool-call round. Deep (serious) turns keep it.
+        kwargs = (
+            {}
+            if model_name == INTENSE_MODEL
+            else {
+                "extra_body": {"chat_template_kwargs": {"enable_thinking": False}},
+            }
+        )
         return ChatOpenAI(
             model=model_name,
             base_url=NEBIUS_BASE_URL,
@@ -206,6 +223,7 @@ class AgentService:
             # Bounded sockets: a stalled connection must not freeze a live
             # voice turn. The read timeout applies between streamed chunks.
             timeout=httpx.Timeout(connect=10.0, read=45.0, write=10.0, pool=10.0),
+            **kwargs,
         )
 
     @lru_cache(maxsize=3)
@@ -233,6 +251,13 @@ class AgentService:
         current_time_str = now_utc.strftime("%A, %B %d, %Y at %H:%M:%S UTC")
 
         context_lines = [f"[Current Date & Time: {current_time_str}]"]
+        if decision.intent == "current_information":
+            context_lines.append(
+                "[Internal context: current-information turn. Answer after ONE focused "
+                "tavily_search (max_results <= 5); requery only if the first results "
+                "are clearly insufficient, then answer. Do not extract pages unless a "
+                "result lacks the needed detail.]"
+            )
         if decision.entities:
             entities = ", ".join(f"{key}={value}" for key, value in decision.entities.items())
             context_lines.append(f"[Internal context: extracted entities: {entities}]")

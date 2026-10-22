@@ -64,11 +64,12 @@ class TavilySearchInput(BaseModel):
         min_length=1,
     )
     search_depth: Literal["advanced", "basic", "fast", "ultra-fast"] = Field(
-        "advanced",
+        "basic",
         description=(
-            "Use 'advanced' by default for reliable relevance. Use 'basic' for simple "
-            "lookups where broad accuracy is enough. Use 'fast' or 'ultra-fast' only "
-            "when latency matters more than recall."
+            "Use 'basic' for almost every search; it is ~3x faster with the same "
+            "result quality. Reserve 'advanced' for multi-hop or comparison "
+            "questions, or when basic results were clearly insufficient. Use "
+            "'fast' or 'ultra-fast' only when latency matters more than recall."
         ),
     )
     topic: Literal["general", "news", "finance"] = Field(
