@@ -27,6 +27,7 @@ import numpy as np
 
 from asr_client import AsyncTranscribeStream, ascore_turn
 from backchannel import BackchannelController, clip_path
+from phonon_tts import plan_chunks, stream_phonon_wav
 from telegram_format import voice_text_for_speech
 from turn_policy import classify_turn
 
@@ -82,6 +83,15 @@ def _audio_mime(payload: bytes) -> str:
     from phonon_tts import is_wav
 
     return "audio/wav" if is_wav(payload) else "audio/mpeg"
+
+
+def _tts_provider() -> str:
+    """Which TTS backend is active (mirrors voice.get_tts_provider).
+
+    Kept local so the turn-state unit tests never import the heavyweight
+    voice module; the value must stay in sync with it by construction.
+    """
+    return (os.environ.get("TTS_PROVIDER") or "chatterbox").strip().lower()
 
 
 def _default_stream_factory(sample_rate: int) -> AsyncTranscribeStream:
@@ -159,7 +169,7 @@ class VoiceSession:
         self.soft_barge = False
         self.reply_turn_id = 0
         self.expecting_answer = False
-        self.pending_audio: tuple[str, bytes, int] | None = None
+        self.pending_frames: list[dict] | None = None
         # Semantic endpointing: the client VAD reports silence, Smart Turn
         # decides whether the thought is finished or deserves more time.
         self.smart_turn_available = smart_turn_available
@@ -552,7 +562,7 @@ class VoiceSession:
         # the new bubble appears, so the client never flashes the old turn.
         if verdict == "turn" and self.soft_barge:
             self.soft_barge = False
-            self.pending_audio = None
+            self.pending_frames = None
             await self._cancel_response()
             await self.send({"type": "interrupted", "turn_id": self.reply_turn_id})
 
@@ -575,7 +585,7 @@ class VoiceSession:
                 await self._flush_pending_audio()
                 return
             self.soft_barge = False
-            self.pending_audio = None
+            self.pending_frames = None
             self.state = SESSION_IDLE
             await self.send({"type": "turn_end", "turn_id": turn_id})
             return
@@ -622,7 +632,7 @@ class VoiceSession:
 
     async def _cancel_response(self) -> None:
         """Cancel an in-flight reply task (best effort)."""
-        self.pending_audio = None
+        self.pending_frames = None
         task = self.response_task
         if task and not task.done():
             task.cancel()
@@ -696,6 +706,23 @@ class VoiceSession:
         # One voice chain for every TTS path: agent HTML converges to spoken
         # text (diagram sources and tags never reach the synthesis engine).
         text = voice_text_for_speech(text)
+        if not text:
+            return
+        if _tts_provider() == "phonon":
+            # Sentence streaming: the first sentence goes out while the rest
+            # of the reply is still synthesizing (time-to-first-audio no
+            # longer scales with reply length). The Chatterbox/CosyVoice
+            # providers keep the whole-file path below.
+            try:
+                await self._speak_stream(text, turn_id)
+                return
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                LOGGER.exception("Phonon streaming TTS failed")
+                self.bot_speaking = False
+                await self.send({"type": "error", "message": f"TTS failed: {exc}"})
+                return
         self.bot_speaking = True
         try:
             audio = await self._tts(text, self.mood)
@@ -709,30 +736,62 @@ class VoiceSession:
         if self.soft_barge and turn_id == self.reply_turn_id:
             # The user is mid-utterance. Hold the audio: a continuer resumes it,
             # a real turn discards it (see _finish_turn). Never talk over them.
-            self.pending_audio = (text, audio, turn_id)
+            frame = self._audio_frame(text, audio, turn_id, 0, 1, True)
+            if self.pending_frames is None:
+                self.pending_frames = []
+            self.pending_frames.append(frame)
             return
-        await self.send(
-            {
-                "type": "bot_audio",
-                "text": text,
-                "audio": base64.b64encode(audio).decode(),
-                "mime": _audio_mime(audio),
-                "turn_id": turn_id,
-            }
-        )
+        await self.send(self._audio_frame(text, audio, turn_id, 0, 1, True))
+
+    @staticmethod
+    def _audio_frame(
+        text: str, audio: bytes, turn_id: int, idx: int, total: int, final: bool
+    ) -> dict:
+        return {
+            "type": "bot_audio",
+            "text": text,
+            "audio": base64.b64encode(audio).decode(),
+            "mime": _audio_mime(audio),
+            "turn_id": turn_id,
+            "frame": idx,
+            "frames": total,
+            "final": final,
+        }
+
+    async def _speak_stream(self, text: str, turn_id: int) -> None:
+        """Stream one ``bot_audio`` frame per sentence while the rest synthesize.
+
+        The producer (this generator chain) sends each sentence frame the
+        moment it is synthesized; the WebSocket is the queue; the client
+        plays them back to back. Soft-barge still applies per frame mid
+        stream: while the user talks, frames buffer into pending_frames and
+        a continuer flushes them in order.
+        """
+        chunks = plan_chunks(text)
+        total = len(chunks)
+        idx = 0
+        self.bot_speaking = True
+        async for wav in stream_phonon_wav(text, self.mood):
+            frame = self._audio_frame(
+                chunks[idx] if idx < total else "",
+                wav,
+                turn_id,
+                idx,
+                total,
+                idx == total - 1,
+            )
+            if self.soft_barge and turn_id == self.reply_turn_id:
+                if self.pending_frames is None:
+                    self.pending_frames = []
+                self.pending_frames.append(frame)
+            else:
+                await self.send(frame)
+            idx += 1
 
     async def _flush_pending_audio(self) -> None:
-        pending, self.pending_audio = self.pending_audio, None
+        pending, self.pending_frames = self.pending_frames, None
         if pending is None:
             return
-        text, audio, turn_id = pending
         self.bot_speaking = True
-        await self.send(
-            {
-                "type": "bot_audio",
-                "text": text,
-                "audio": base64.b64encode(audio).decode(),
-                "mime": _audio_mime(audio),
-                "turn_id": turn_id,
-            }
-        )
+        for frame in pending:
+            await self.send(frame)

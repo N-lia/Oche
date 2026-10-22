@@ -20,8 +20,10 @@ import asyncio
 import io
 import logging
 import os
+import re
 import threading
 import wave
+from collections.abc import AsyncIterator
 
 LOGGER = logging.getLogger("oyi.phonon")
 
@@ -88,26 +90,72 @@ def _get_engine():
         return engine
 
 
-def _split_sentences(text: str) -> list[str]:
-    """Greedy sentence packing so every chunk stays below the size budget."""
-    import re
+_SENTENCE_RE = re.compile(r"[^.!?\u2026]+[.!?\u2026]*\s*|[^.!?\u2026]+$")
+_CLAUSE_SPLIT_RE = re.compile(r"(?<=[,;:\u2014])\s+")
 
-    parts = re.findall(r"[^.!?\u2026]+[.!?\u2026]*\s*|[^.!?\u2026]+$", text)
+
+def _sentence_units(text: str) -> list[str]:
+    units: list[str] = []
+    for part in _SENTENCE_RE.findall(text):
+        stripped = part.strip()
+        if stripped:
+            units.append(stripped)
+    return units
+
+
+def _split_sentences(text: str) -> list[str]:
+    """Greedy sentence packing so every chunk stays below the size budget.
+
+    Whole-file syntheses want FEW chunks (one audio blob), so two short
+    sentences merge into a block; the streaming path uses its own splitter.
+    """
+    if not text:
+        return []
+    units = _sentence_units(text)
+    if not units:
+        return [text.strip()]
     chunks: list[str] = []
     current = ""
-    for part in parts:
-        stripped = part.strip()
-        if not stripped:
-            continue
-        if len(current) + len(stripped) + 1 <= _MAX_CHUNK_CHARS:
-            current = f"{current} {stripped}".strip()
+    for unit in units:
+        if len(current) + len(unit) + 1 <= _MAX_CHUNK_CHARS:
+            current = f"{current} {unit}".strip()
         else:
             if current:
                 chunks.append(current)
-            current = stripped
+            current = unit
     if current:
         chunks.append(current)
     return chunks or [text.strip()]
+
+
+def _stream_split(text: str) -> list[str]:
+    """Sentence-per-frame split for streaming.
+
+    No packing (frames should be small to ship early), but long sentences
+    without a terminal mark are sub-split at clause boundaries so a single
+    frame can never push the engine past the size budget.
+    """
+    if not text:
+        return []
+    units = _sentence_units(text)
+    if not units:
+        return [text.strip()]
+    chunks: list[str] = []
+    for unit in units:
+        if len(unit) <= _MAX_CHUNK_CHARS:
+            chunks.append(unit)
+            continue
+        buffer = ""
+        for piece in _CLAUSE_SPLIT_RE.split(unit):
+            if len(buffer) + len(piece) + 1 <= _MAX_CHUNK_CHARS:
+                buffer = f"{buffer} {piece}".strip()
+            else:
+                if buffer:
+                    chunks.append(buffer)
+                buffer = piece
+        if buffer:
+            chunks.append(buffer)
+    return chunks
 
 
 def _synthesize_block(engine, text: str, pacing: float) -> bytes:
@@ -186,6 +234,43 @@ async def synthesize_phonon_wav(
     return _pcm16_wav(np.concatenate([
         np.frombuffer(frame, dtype="<i2").astype(np.float32) / 32768.0 for frame in frames
     ]), rate)
+
+
+def plan_chunks(text: str) -> list[str]:
+    """The exact sentence chunks :func:`stream_phonon_wav` will yield.
+
+    Streaming consumers need the frame count (and each chunk's text) before
+    the first chunk finishes synthesizing, so the split is exposed as a
+    deterministic standalone function.
+    """
+    return _stream_split((text or "").strip())
+
+
+async def stream_phonon_wav(
+    text: str,
+    mood: str = "normal",
+    event: str = "chat",
+    *,
+    feeding: float | None = None,
+    **dials,
+) -> AsyncIterator[bytes]:
+    """Async generator: yield one WAV per sentence chunk, first chunk first.
+
+    modal-phonon-voice-bot's producer->queue->frames shape, with this
+    generator as the producer: a caller can send the first sentence while
+    the rest of the reply is still synthesizing, which is what makes
+    time-to-first-audio independent of reply length.
+    """
+    text = (text or "").strip()
+    if not text:
+        raise ValueError("Phonon TTS got empty text")
+
+    pacing = feeding if feeding is not None else mood_pacing(mood)
+    engine = await asyncio.to_thread(_get_engine)
+    # Same split as plan_chunks: the generator and the planner always agree
+    # on both order and count.
+    for chunk in _stream_split(text):
+        yield await asyncio.to_thread(_synthesize_block, engine, chunk, pacing)
 
 
 def is_wav(payload: bytes) -> bool:
