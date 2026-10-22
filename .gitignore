@@ -15,3 +15,6 @@ models/
 *.wav
 *.mp3
 *.log
+
+# Phonon q8 checkpoint ships on the VM, never in git
+phonon_model/

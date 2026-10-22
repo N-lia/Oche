@@ -2,3 +2,5 @@
 # The WebApp is a separate process from the Telegram bot.
 fastapi
 uvicorn[standard]
+# Local TTS (Phonon q8 GGUF, ARM CPU) so voice answers skip Modal entirely.
+ptts==0.4.0rc3

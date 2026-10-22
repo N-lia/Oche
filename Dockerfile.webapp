@@ -33,10 +33,15 @@ RUN --mount=type=cache,target=/root/.cache/uv \
 
 COPY config.py main.py agent_service.py memory.py privacy.py router.py \
      telegram_support.py telegram_format.py TG.py voice.py subagent.py tool.py \
+     phonon_tts.py \
      asr_client.py oyi_asr_pb2.py oyi_asr_pb2_grpc.py \
      webapp_server.py voice_session.py backchannel.py turn_policy.py ./
 COPY webapp/ ./webapp/
 COPY tavily_response/ ./tavily_response/
+# Phonon checkpoint (gradium 31M q8, ~65 MB). Not in git; ships on the VM
+# from gradium/phonon-31m-en @ 52433c469 (q8 gguf + config + tokenizer +
+# default voice). Missing files fail fast with a clear error at first TTS.
+COPY phonon_model/ /opt/phonon/
 
 RUN mkdir -p /data/oyi-memory/workspace \
     && chown -R 65532:65532 /app /data

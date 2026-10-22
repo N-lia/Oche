@@ -24,6 +24,11 @@ services:
       # Warn (with stack) when something blocks the asyncio loop: the stall
       # hunter for "agent reply never arrives while the loop looks alive".
       WEBAPP_DEBUG_LOOP: "1"
+      # Voice: Phonon runs in-process on the VM - no Modal round trip,
+      # WAV instead of MP3 (crisp), pacing mapped from the session mood.
+      TTS_PROVIDER: "phonon"
+      PHONON_MODEL_DIR: "/opt/phonon"
+      PHONON_THREADS: "2"
     extra_hosts:
       - "host.docker.internal:host-gateway"
     volumes:

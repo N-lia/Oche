@@ -29,7 +29,7 @@ def get_chatterbox_url() -> str:
 
 
 def get_tts_provider() -> str:
-    """Which TTS backend ``synthesize_speech`` should call (chatterbox|cosyvoice)."""
+    """Which TTS backend ``synthesize_speech`` should call (chatterbox|cosyvoice|phonon)."""
     return (os.environ.get("TTS_PROVIDER") or "chatterbox").strip().lower()
 
 
@@ -94,12 +94,17 @@ async def synthesize_speech(
     event: str = "chat",
     **dials,
 ) -> bytes:
-    """Call the configured Modal serverless endpoint to generate MP3 audio.
+    """Call the configured backend to synthesize speech.
 
-    Chatterbox Turbo is the default; set ``TTS_PROVIDER=cosyvoice`` (and
+    Phonon runs in-process on the VM (no HTTP, WAV out). Chatterbox Turbo is
+    the default remote option; set ``TTS_PROVIDER=cosyvoice`` (and
     ``COSYVOICE_MODAL_URL``) to compare against CosyVoice 2 instead.
     """
     provider = get_tts_provider()
+    if provider == "phonon":
+        from phonon_tts import synthesize_phonon_wav
+
+        return await synthesize_phonon_wav(text, mood=mood, event=event, **dials)
     url = get_tts_url()
     if not url:
         env_name = "COSYVOICE_MODAL_URL" if provider == "cosyvoice" else "CHATTERBOX_MODAL_URL"

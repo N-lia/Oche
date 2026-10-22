@@ -385,7 +385,7 @@
 
       case 'bot_audio':
         if (msg.turn_id && msg.turn_id <= S.interruptedTurnId) break;
-        playBotAudio(msg.audio);
+        playBotAudio(msg.audio, msg.mime);
         break;
 
       case 'interrupted':
@@ -490,7 +490,7 @@
     overlays.clear();
   }
 
-  function playBotAudio(base64) {
+  function playBotAudio(base64, mime) {
     stopOverlays();
     if (botAudio) { botAudio.pause(); botAudio = null; }
     if (!S.speakReplies || !base64) {
@@ -501,7 +501,7 @@
     if (mascot) mascot.setSpeaking(true);
     ensureTurnTaker().agentOutputStart();
     wsSend({ type: 'playback_start' });
-    botAudio = new Audio(`data:audio/mpeg;base64,${base64}`);
+    botAudio = new Audio(`data:${mime || 'audio/mpeg'};base64,${base64}`);
     botAudio.onended = () => {
       botAudio = null;
       stopLevelMeter();

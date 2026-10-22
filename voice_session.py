@@ -77,6 +77,13 @@ async def _default_tts(text: str, mood: str) -> bytes:
     return await synthesize_speech(text, mood=mood, event="chat")
 
 
+def _audio_mime(payload: bytes) -> str:
+    """Mime of a TTS payload: Phonon produces WAV, Modal providers produce MP3."""
+    from phonon_tts import is_wav
+
+    return "audio/wav" if is_wav(payload) else "audio/mpeg"
+
+
 def _default_stream_factory(sample_rate: int) -> AsyncTranscribeStream:
     loop = asyncio.get_running_loop()
     return AsyncTranscribeStream(loop, sample_rate=sample_rate).start()
@@ -692,6 +699,7 @@ class VoiceSession:
                 "type": "bot_audio",
                 "text": text,
                 "audio": base64.b64encode(audio).decode(),
+                "mime": _audio_mime(audio),
                 "turn_id": turn_id,
             }
         )
@@ -707,6 +715,7 @@ class VoiceSession:
                 "type": "bot_audio",
                 "text": text,
                 "audio": base64.b64encode(audio).decode(),
+                "mime": _audio_mime(audio),
                 "turn_id": turn_id,
             }
         )
