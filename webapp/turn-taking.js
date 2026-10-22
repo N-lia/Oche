@@ -4,8 +4,26 @@
  * know when a turn starts, and a transcript cannot tell "mm-hmm" from "yes".
  * This is a small, deterministic state machine driven by microphone level:
  *
- *   armed -> user_speaking -> cooldown -> armed
+ *   idle -> armed -> user_speaking -> cooldown -> armed
  *   agent_speaking -> barge_pending -> (interrupted | agent_speaking)
+ *
+ * Detection is built on three ideas:
+ *
+ *   1. Adaptive noise floor. The floor tracks the quietest recent frames
+ *      (instant downward, slow upward) and the start/end thresholds ride on
+ *      top of it, clamped to the configured absolute gates. A quiet phone mic
+ *      and a loud room both land inside hysteresis without re-tuning.
+ *   2. Hysteresis. Opening a turn requires the start threshold; keeping it
+ *      open only requires the (lower) end threshold, so word tails do not
+ *      slam the gate shut mid-sentence.
+ *   3. Gap tolerance. Voice dips shorter than gapToleranceMs never abandon
+ *      the onset (or a barge); anything longer always does. The onset
+ *      timestamp is never left armed between voice bursts — a stray blip can
+ *      never retro-qualify a later blip into a turn.
+ *
+ * Cooldown is timestamp-based and re-arms inside the next level() frame: no
+ * setTimeout, so Telegram WebView timer throttling can never freeze the
+ * state machine silently.
  *
  * Echo policy: while the agent speaks, mic input is ignored for a short guard
  * window and barge-in needs sustained speech. We duck immediately and only
@@ -25,6 +43,8 @@
     silenceMs: 750,
     debounceMs: 100,
     cooldownMs: 180,
+    // Voice dips shorter than this keep the current onset/barge alive.
+    gapToleranceMs: 120,
     // Ignore the first moments of agent playback: speaker -> mic echo.
     echoGuardMs: 350,
     // Sustained speech beyond this is a real interruption, not an "mm-hmm".
@@ -38,7 +58,15 @@
     halfDuplex: {
       preventWhileAgentSpeaking: false,
     },
+    // Periodic 'vad.frame' events (every 10th frame) for diagnostics.
+    debug: false,
   };
+
+  // Floor adaptation: instant downward, slow upward (tau ~ 1.6 s at 20 ms
+  // frames). Only frames BELOW the end threshold train the floor, so speech
+  // and speaker echo can never drag the thresholds up out of reach.
+  const FLOOR_RISE = 0.02;
+  const FLOOR_INIT = 0.004;
 
   function isObject(value) {
     return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
@@ -60,14 +88,17 @@
     const notify = opts.onEvent || function () {};
     const clock = opts.now || function () { return performance.now(); };
 
-    let state = 'armed';
+    let state = 'idle';
     let muted = false;
     let running = false;
     let agentSpeaking = false;
     let agentStartedAt = 0;
-    let speechStartedAt = 0;
+    let speechStartedAt = 0; // current voice onset; 0 == no voice burst open
+    let lastVoiceAt = 0;     // last frame at/above the start threshold
     let silenceSince = 0;
     let cooldownUntil = 0;
+    let floor = FLOOR_INIT;
+    let frameCount = 0;
     let bargeEmitted = false;
     let cancelEmitted = false;
     let noiseEmitted = false;
@@ -90,16 +121,65 @@
 
     function resetSpeech() {
       speechStartedAt = 0;
+      lastVoiceAt = 0;
       silenceSince = 0;
       bargeEmitted = false;
       cancelEmitted = false;
     }
 
+    // Start/end hysteresis pair derived from the adaptive floor, clamped to
+    // the configured absolute gates so an almost-silent room still needs a
+    // real voice to open a turn.
+    function thresholds() {
+      const start = Math.max(config.speechThreshold, floor * 2.8);
+      let end = Math.max(config.noiseFloorThreshold, floor * 1.6);
+      if (end > start * 0.9) end = start * 0.9;
+      return { start: start, end: end };
+    }
+
+    // Floor adaptation: instant downward, slow upward (tau ~ 1.6 s at 20 ms
+    // frames). Only frames BELOW the start threshold train the floor, so
+    // speech and speaker echo can never drag the thresholds up out of reach;
+    // mid-level room noise (fans, traffic) shadows it up slowly instead.
+    function adaptFloor(value, startThreshold) {
+      if (value >= startThreshold) return;
+      if (value < floor) {
+        floor = value;
+      } else {
+        floor += (value - floor) * FLOOR_RISE;
+      }
+    }
+
     function level(value, at) {
       if (!running || muted) return;
+      if (typeof value !== 'number' || !Number.isFinite(value) || value < 0) return;
       const now = typeof at === 'number' ? at : clock();
-      if (now < cooldownUntil) return;
-      const speaking = value >= config.speechThreshold;
+      frameCount++;
+
+      // Timestamp-based cooldown: the state machine itself re-arms as soon as
+      // a frame arrives past cooldownUntil. No timers are involved, so a
+      // throttled WebView cannot freeze the session in 'cooldown'.
+      if (state === 'cooldown') {
+        if (now < cooldownUntil) return;
+        setState('armed', 'cooldown_elapsed');
+      }
+
+      const t = thresholds();
+      if (config.debug && frameCount % 10 === 0) {
+        emit('vad.frame', {
+          level: value,
+          floor: Math.round(floor * 10000) / 10000,
+          start: Math.round(t.start * 10000) / 10000,
+          end: Math.round(t.end * 10000) / 10000,
+        });
+      }
+
+      if (!agentSpeaking) {
+        adaptFloor(value, t.start);
+      }
+
+      const speaking = value >= t.start;   // enough to OPEN a turn
+      const trailing = value >= t.end;     // enough to KEEP it open
 
       if (agentSpeaking) {
         if (config.halfDuplex.preventWhileAgentSpeaking) {
@@ -121,10 +201,10 @@
           }
           return;
         }
-        if (!speaking) {
-          if (state === 'barge_pending') {
-            // The "barge-in" lasted less than a syllable: close the turn we
-            // already opened on the server so a ducked reply can resume.
+        if (!trailing) {
+          if (state === 'barge_pending' && now - lastVoiceAt > config.gapToleranceMs) {
+            // The "barge-in" died mid-gap: close the turn we already opened
+            // on the server so a ducked reply can resume.
             const durationMs = Math.round(now - speechStartedAt);
             resetSpeech();
             setState('agent_speaking', 'barge_aborted');
@@ -136,6 +216,7 @@
           speechStartedAt = now;
           setState('barge_pending', 'speech_during_output');
         }
+        lastVoiceAt = now;
         const sustained = now - speechStartedAt;
         const qualifyAt = Math.max(config.minSpeechMs, config.debounceMs);
         if (!bargeEmitted && sustained >= qualifyAt) {
@@ -152,33 +233,46 @@
       }
 
       if (state === 'user_speaking') {
-        if (speaking) {
+        if (trailing) {
           silenceSince = 0;
+          lastVoiceAt = now;
           return;
         }
         if (!silenceSince) silenceSince = now;
         if (now - silenceSince >= config.silenceMs) {
-          const durationMs = Math.round(now - speechStartedAt);
+          const durationMs = Math.round(
+            Math.max(lastVoiceAt, speechStartedAt) - speechStartedAt
+          );
           resetSpeech();
           setState('cooldown', 'speech_end');
           emit('user_speech.ended', { durationMs: durationMs });
           cooldownUntil = now + config.cooldownMs;
-          setTimeout(function () {
-            if (state === 'cooldown') setState('armed', 'cooldown_elapsed');
-          }, config.cooldownMs);
         }
         return;
       }
 
+      // armed: onset counting with gap tolerance. Any quiet stretch longer
+      // than gapToleranceMs abandons the onset entirely — the previous build
+      // left speechStartedAt armed across bursts, so one blip retro-qualified
+      // the next blip, minutes later, into an instant turn.
       if (speaking) {
         noiseEmitted = false;
         if (!speechStartedAt) speechStartedAt = now;
+        lastVoiceAt = now;
         if (now - speechStartedAt >= config.minSpeechMs) {
           silenceSince = 0;
           setState('user_speaking', 'speech_start');
           emit('user_speech.started', {});
         }
-      } else if (value >= config.noiseFloorThreshold) {
+      } else if (speechStartedAt) {
+        if (now - lastVoiceAt > config.gapToleranceMs) {
+          resetSpeech();
+          if (value >= t.end && !noiseEmitted) {
+            noiseEmitted = true;
+            emit('input.noise_gated', { level: value });
+          }
+        }
+      } else if (value >= t.end) {
         // Below speech but above the floor: noise/echo, not a turn.
         if (!noiseEmitted) {
           noiseEmitted = true;
@@ -205,6 +299,7 @@
       if (wasBarging) {
         // The user is mid-utterance; keep the turn open until silence ends it.
         speechStartedAt = clock();
+        lastVoiceAt = speechStartedAt;
         setState('user_speaking', 'output_end');
         return;
       }
@@ -243,6 +338,8 @@
     function start() {
       running = true;
       resetSpeech();
+      floor = FLOOR_INIT;
+      frameCount = 0;
       setState('armed', 'session_start');
     }
 
