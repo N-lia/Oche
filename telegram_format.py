@@ -271,7 +271,7 @@ def _normalize_native(text: str) -> str:
     idx = 0
 
     for match in _ANY_TAG_RE.finditer(text):
-        out.append(_escape_prose(text[idx: match.start()]))
+        out.append(_native_prose(text[idx: match.start()], stack))
         slash, raw_name, rest, tail = match.group(1), match.group(2).lower(), match.group(3), match.group(4)
         name = _ALIASES.get(raw_name, raw_name)
 
@@ -310,8 +310,36 @@ def _normalize_native(text: str) -> str:
                 stack.append(name)
         idx = match.end()
 
-    out.append(_escape_prose(text[idx:]))
+    out.append(_native_prose(text[idx:], stack))
     return "".join(out) + "".join(f"</{n}>" for n in reversed(stack))
+
+
+_NATIVE_CODE_SPAN_RE = re.compile(r"`([^`\n]+?)`")
+
+
+def _native_prose(fragment: str, stack: list[str]) -> str:
+    """Escape a prose region and convert markdown slips the model still drops.
+
+    The reply briefing says "no markdown", but models routinely fall back to
+    ``**bold**``, ``*italic*``, ``# headings``, ``- bullets``, ``~~strike~~``,
+    ``||spoiler||``, ``[label](url)`` and ``backticks`` — often mixed INTO an
+    otherwise-HTML reply. Apply the same inline/bullet/heading/quote transforms
+    the markdown converter knows, on the already-escaped prose. Verbatim code
+    content (``<pre>``/``<code>`` bodies) is escaped only.
+    """
+    escaped = _escape_prose(fragment)
+    if not escaped or any(tag in ("pre", "code") for tag in stack):
+        return escaped
+    escaped = _BULLET_RE.sub(r"\1• ", escaped)
+    escaped = _wrap_line_markup(escaped)
+    escaped = _NATIVE_CODE_SPAN_RE.sub(r"<code>\1</code>", escaped)
+    escaped = _STRIKE_RE.sub(r"<s>\1</s>", escaped)
+    escaped = _BOLD_RE.sub(r"<b>\1</b>", escaped)
+    escaped = _ITALIC_ASTERISK_RE.sub(r"<i>\1</i>", escaped)
+    escaped = _ITALIC_UNDERSCORE_RE.sub(r"<i>\1</i>", escaped)
+    escaped = _SPOILER_RE.sub(r"<tg-spoiler>\1</tg-spoiler>", escaped)
+    escaped = _LINK_RE.sub(_link_replacement, escaped)
+    return escaped
 
 
 def truncate_telegram_html(

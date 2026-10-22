@@ -193,6 +193,40 @@ def test_wiring_functions_route_through_native() -> None:
     assert tf.split_telegram_text("<b>hi</b>") == ["<b>hi</b>"]
 
 
+def test_native_markdown_slips_in_prose_are_converted() -> None:
+    reply = "Answer below.\n\n<b>Key</b>\n\n**Bold point** and *ital* together."
+    out = tf.normalize_agent_html(reply)
+    assert "<b>Bold point</b>" in out
+    assert "<i>ital</i>" in out
+    assert "**" not in out and "*" not in out.replace("<i>", "").replace("</i>", "")
+
+
+def test_native_code_spans_and_links_converted() -> None:
+    out = tf.normalize_agent_html("run `git status` — see <b>docs</b> [here](https://x.y/guide)")
+    assert "<code>git status</code>" in out
+    assert '<a href="https://x.y/guide">here</a>' in out
+
+
+def test_native_heading_bullets_and_quotes_converted() -> None:
+    out = tf.normalize_agent_html("## Plan\n\n- first\n- second\n\n> quoted\nplain")
+    assert "<b>Plan</b>" in out
+    assert "• first" in out and "• second" in out
+    assert "<blockquote>" in out
+
+
+def test_native_strikethrough_and_spoiler_converted() -> None:
+    out = tf.normalize_agent_html("keep <b>this</b> — ~~gone~~ ||hidden||")
+    assert "<s>gone</s>" in out
+    assert "<tg-spoiler>hidden</tg-spoiler>" in out
+
+
+def test_native_markdown_hidden_inside_code_stays_verbatim() -> None:
+    out = tf.normalize_agent_html("text <pre><code>keep **this** raw `and this`</code></pre> after")
+    assert "keep **this** raw `and this`" in out
+    assert out.count("<b>") == 0
+    assert out.count("<code>") == 1
+
+
 def main() -> int:
     tests = [value for name, value in sorted(globals().items()) if name.startswith("test_") and callable(value)]
     for test in tests:
