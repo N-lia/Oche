@@ -178,6 +178,26 @@ def strip_telegram_html(text: str) -> str:
     return html.unescape(re.sub(r"<[^>]+>", "", text)).strip()
 
 
+_MERMAID_BLOCK_RE = re.compile(
+    r"<pre><code\s+class=\"language-mermaid\">\s*.*?\s*</code></pre>", re.S | re.I
+)
+_MERMAID_BLOCK_ALIAS_RE = re.compile(
+    r"<(?:mermaid|diagram)>\s*(.*?)\s*</(?:mermaid|diagram)>", re.S | re.I
+)
+
+
+def strip_diagrams_for_voice(text: str) -> str:
+    """Drop Mermaid diagram blocks: they are visual, never spoken.
+
+    Call this on NORMALIZED agent HTML (the canonical
+    ``<pre><code class="language-mermaid">`` shape); a raw ```mermaid fence
+    turns into that shape via :func:`normalize_agent_html`.
+    """
+    if not text:
+        return ""
+    return _MERMAID_BLOCK_RE.sub(" ", text)
+
+
 # ---------------------------------------------------------------------------
 # Native HTML pass-through: the model authors Telegram HTML directly.
 # ---------------------------------------------------------------------------
@@ -220,6 +240,17 @@ def normalize_agent_html(text: str) -> str:
     if wrapped and _NATIVE_TAG_RE.search(wrapped.group(1)):
         text = wrapped.group(1).strip()
         text = _strip_dangling_tag(text) or text
+    # Models also invent a <mermaid> tag for diagrams; canonicalise it into
+    # the pre/code language block before any other pass sees an unknown tag.
+    # Substituted plainly (no stash): the native path keeps pre/code bodies
+    # verbatim, so the escaped Mermaid source survives untouched.
+    text = _MERMAID_BLOCK_ALIAS_RE.sub(
+        lambda m: (
+            f"<pre><code class=\"language-mermaid\">"
+            f"{html.escape(html.unescape(m.group(1)).strip())}</code></pre>"
+        ),
+        text,
+    )
     if not _NATIVE_TAG_RE.search(text):
         if _ENTITY_PRESENT_RE.search(text):
             # Entity-only reply (no tags): the model authored references, so

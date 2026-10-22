@@ -27,7 +27,7 @@ import numpy as np
 
 from asr_client import AsyncTranscribeStream, ascore_turn
 from backchannel import BackchannelController, clip_path
-from telegram_format import strip_telegram_html
+from telegram_format import normalize_agent_html, strip_diagrams_for_voice, strip_telegram_html
 from turn_policy import classify_turn
 
 LOGGER = logging.getLogger("oyi.voice.session")
@@ -388,6 +388,13 @@ class VoiceSession:
             if turn_id != self.turn_id:
                 return
             reply = "".join(chunks).strip() or "I could not produce a response."
+            try:
+                final_html = normalize_agent_html(reply)
+            except Exception:
+                final_html = reply
+            await self.send(
+                {"type": "bot_text_final", "text": final_html, "turn_id": turn_id}
+            )
             self.expecting_answer = reply.rstrip().endswith("?")
             if speak and self.mode != "echo":
                 await self._speak(reply, turn_id)
@@ -666,6 +673,15 @@ class VoiceSession:
                     chunks.append(chunk)
                     await self.send({"type": "bot_text_delta", "text": chunk, "turn_id": turn_id})
             reply = "".join(chunks).strip() or "I could not produce a response."
+            # One normalized copy for the miniapp: real Telegram HTML there,
+            # with <pre><code class="language-mermaid"> blocks for pele to mount.
+            try:
+                final_html = normalize_agent_html(reply)
+            except Exception:
+                final_html = reply
+            await self.send(
+                {"type": "bot_text_final", "text": final_html, "turn_id": turn_id}
+            )
         except asyncio.CancelledError:
             raise
         except Exception as exc:
@@ -677,8 +693,9 @@ class VoiceSession:
         await self._speak(reply, turn_id)
 
     async def _speak(self, text: str, turn_id: int) -> None:
-        # Agent replies are Telegram HTML now; tags must never reach TTS.
-        text = strip_telegram_html(text)
+        # Agent replies are Telegram HTML: normalize, then never speak diagram
+        # sources (they are visual-only), then strip tags for the TTS engine.
+        text = strip_telegram_html(strip_diagrams_for_voice(normalize_agent_html(text)))
         self.bot_speaking = True
         try:
             audio = await self._tts(text, self.mood)

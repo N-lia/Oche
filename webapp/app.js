@@ -210,6 +210,63 @@
     if (S.botBubble) { S.botBubble.classList.remove('is-streaming'); S.botBubble = null; }
   }
 
+  // The agent replies in Telegram HTML: render it client-side with a tiny
+  // allowlist, then let pele.mount turn any mermaid code block into a live
+  // SVG diagram inside the bubble.
+  function sanitizeBotHtml(htmlText) {
+    const allowed = new Set(['B', 'I', 'U', 'S', 'STRONG', 'EM', 'DEL', 'INS', 'CODE', 'PRE', 'A', 'BLOCKQUOTE', 'BR']);
+    const host = document.createElement('div');
+    host.innerHTML = htmlText;
+    const walk = (node) => {
+      [...node.children].forEach((child) => {
+        walk(child);
+        if (!allowed.has(child.tagName)) {
+          child.replaceWith(...child.childNodes);
+          return;
+        }
+        [...child.attributes].forEach((attr) => child.removeAttribute(attr.name));
+        if (child.tagName === 'A' && (/^(https?:|mailto:)/i.test(child.getAttribute('href') || ''))) {
+          child.setAttribute('href', child.getAttribute('href'));
+          child.setAttribute('target', '_blank');
+          child.setAttribute('rel', 'noopener');
+        }
+        if (child.tagName === 'CODE') {
+          const cls = child.getAttribute('class') || '';
+          if (/^language-[a-z0-9_+\-]+$/i.test(cls)) child.setAttribute('class', cls);
+        }
+      });
+    };
+    walk(host);
+    return host;
+  }
+
+  function mountMermaidDiagrams(container) {
+    if (!window.pele || typeof window.pele.mount !== 'function') return;
+    container.querySelectorAll('pre > code.language-mermaid').forEach((code) => {
+      const pre = code.closest('pre');
+      if (!pre) return;
+      const source = code.textContent.trim();
+      if (!source) return;
+      const holder = document.createElement('div');
+      holder.className = 'diagram';
+      holder.setAttribute('aria-label', 'Diagram');
+      holder.dataset.source = source;
+      pre.replaceWith(holder);
+      window.pele.mount(holder, source, { maxWidth: Math.max(300, container.clientWidth || 340) });
+    });
+  }
+
+  function renderBotHtml(htmlText) {
+    if (!S.botBubble) {
+      S.botBubble = addMessage('bot', '');
+    }
+    S.botBubble.classList.remove('is-streaming');
+    S.botBubble.innerHTML = '';
+    S.botBubble.appendChild(sanitizeBotHtml(htmlText));
+    mountMermaidDiagrams(S.botBubble);
+    scrollDown();
+  }
+
   // ------------------------------------------------------------- websocket
   function wsSend(obj) {
     if (S.socket && S.socket.readyState === WebSocket.OPEN) {
@@ -383,6 +440,11 @@
       case 'bot_text_delta':
         if (msg.turn_id && msg.turn_id <= S.interruptedTurnId) break;
         appendBotText(msg.text);
+        break;
+
+      case 'bot_text_final':
+        if (msg.turn_id && msg.turn_id <= S.interruptedTurnId) break;
+        renderBotHtml(msg.text || '');
         break;
 
       case 'bot_audio':

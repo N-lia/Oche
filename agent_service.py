@@ -62,7 +62,7 @@ register_harness_profile(
     ),
 )
 
-SYSTEM_PROMPT = """You are OYI, Sir Mario's personal AI assistant.
+_SYSTEM_PROMPT = """You are OYI, Sir Mario's personal AI assistant.
 
 Reply directly in chat by default.
 
@@ -183,7 +183,12 @@ Reply formatting — Telegram HTML (STRICT):
 - Put the URL in href with double quotes; use http/https URLs only.
 - Plain text needs no tags: only use tags where formatting genuinely helps (emphasis, code, links, quotes, spoiling). For lists, write lines starting with "• " as plain text — there is no <li>.
 - Keep code blocks complete and concise inside <pre><code>…</code></pre>, and note the language in the class attribute.
+- Diagrams: the Skill library below defines exactly when and how to draw Mermaid diagrams — follow it strictly.
 """
+
+from skills import SKILLS_PROMPT
+
+SYSTEM_PROMPT = _SYSTEM_PROMPT + "\n\n" + SKILLS_PROMPT
 
 
 class AgentService:

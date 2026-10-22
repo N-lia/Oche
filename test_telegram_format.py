@@ -227,6 +227,41 @@ def test_native_markdown_hidden_inside_code_stays_verbatim() -> None:
     assert out.count("<code>") == 1
 
 
+def test_mermaid_block_survives_normalization() -> None:
+    html_text = (
+        "Here is the flow. <pre><code class=\"language-mermaid\">flowchart LR\n"
+        "  A[Agent] --> B[TTS]</code></pre> Done."
+    )
+    out = tf.normalize_agent_html(html_text)
+    assert 'class="language-mermaid"' in out
+    assert "flowchart LR" in out
+    # Prose stays outside the block; the block itself holds entity-escaped
+    # Mermaid source (Telegram-safe), decoded by the browser when pele mounts.
+    block = tf._MERMAID_BLOCK_RE.search(out)
+    assert block and "A[Agent] --&gt; B[TTS]" in block.group(0)
+
+
+def test_voice_strip_removes_mermaid_not_prose() -> None:
+    html_text = (
+        "Here is the flow. <pre><code class=\"language-mermaid\">flowchart LR\n"
+        "  A[Agent] --> B[TTS]</code></pre> Done."
+    )
+    out = tf.strip_diagrams_for_voice(tf.normalize_agent_html(html_text))
+    spoken = tf.strip_telegram_html(out)
+    assert "flowchart" not in spoken and "A[Agent]" not in spoken
+    assert "Here is the flow." in spoken and "Done." in spoken
+
+
+def test_voice_chain_never_speaks_fenced_mermaid() -> None:
+    # Raw model output with a markdown-fenced diagram (prompt tells it not to,
+    # but the fallback must still be safe for TTS).
+    raw = "Flow below.\n```mermaid\nflowchart TD\n A --> B\n```\nThat is all."
+    normalized = tf.normalize_agent_html(raw)
+    spoken = tf.strip_telegram_html(tf.strip_diagrams_for_voice(normalized))
+    assert "flowchart TD" not in spoken and "-->" not in spoken
+    assert "Flow below." in spoken and "That is all." in spoken
+
+
 def main() -> int:
     tests = [value for name, value in sorted(globals().items()) if name.startswith("test_") and callable(value)]
     for test in tests:

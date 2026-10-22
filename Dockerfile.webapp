@@ -31,7 +31,7 @@ COPY requirements-webapp.txt ./
 RUN --mount=type=cache,target=/root/.cache/uv \
     uv pip install --python /app/.venv/bin/python -r requirements-webapp.txt
 
-COPY config.py main.py agent_service.py memory.py privacy.py router.py \
+COPY config.py main.py agent_service.py memory.py privacy.py router.py skills.py \
      telegram_support.py telegram_format.py TG.py voice.py subagent.py tool.py \
      phonon_tts.py \
      asr_client.py oyi_asr_pb2.py oyi_asr_pb2_grpc.py \

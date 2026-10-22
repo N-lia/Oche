@@ -184,6 +184,25 @@ body {
 
 .msg.bot.is-streaming { opacity: 0.92; }
 
+/* Agent diagrams: the reply carries <pre><code class="language-mermaid">
+   blocks; pele.mount replaces each with a themed SVG card. Telegram shows
+   the same block as monospace code, so the intent stays readable there. */
+.msg.bot .diagram {
+  --pele-bg: transparent;
+  --pele-fg: var(--text);
+  --pele-line: var(--accent);
+  --pele-surface: var(--accent-soft);
+  --pele-border: var(--border);
+  margin: 10px 0 4px;
+  padding: 8px;
+  background: #fff;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  overflow: auto;
+  max-width: 100%;
+}
+.msg.bot .diagram svg { display: block; max-width: 100%; height: auto; }
+
 .msg.error {
   align-self: flex-start;
   background: #fff1f3;
