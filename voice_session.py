@@ -27,7 +27,7 @@ import numpy as np
 
 from asr_client import AsyncTranscribeStream, ascore_turn
 from backchannel import BackchannelController, clip_path
-from telegram_format import normalize_agent_html, strip_diagrams_for_voice, strip_telegram_html
+from telegram_format import voice_text_for_speech
 from turn_policy import classify_turn
 
 LOGGER = logging.getLogger("oyi.voice.session")
@@ -693,9 +693,9 @@ class VoiceSession:
         await self._speak(reply, turn_id)
 
     async def _speak(self, text: str, turn_id: int) -> None:
-        # Agent replies are Telegram HTML: normalize, then never speak diagram
-        # sources (they are visual-only), then strip tags for the TTS engine.
-        text = strip_telegram_html(strip_diagrams_for_voice(normalize_agent_html(text)))
+        # One voice chain for every TTS path: agent HTML converges to spoken
+        # text (diagram sources and tags never reach the synthesis engine).
+        text = voice_text_for_speech(text)
         self.bot_speaking = True
         try:
             audio = await self._tts(text, self.mood)

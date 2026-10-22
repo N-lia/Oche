@@ -28,6 +28,7 @@ from pydantic import BaseModel
 
 from agent_service import agent_service
 from asr_client import atranscribe, health as asr_health
+from telegram_format import voice_text_for_speech
 from backchannel import (
     CATEGORIES,
     all_phrases,
@@ -215,10 +216,11 @@ async def api_voice_turn(req: VoiceTurnRequest):
             LOGGER.exception("Agent service chat failed")
             bot_text = f"Agent error: {exc}"
 
-    # 3. Synthesize voice with Chatterbox Turbo
+    # 3. Synthesize voice with the configured provider
     audio_base64 = ""
     try:
-        audio_bytes = await synthesize_speech(bot_text, mood=req.mood, event="chat")
+        spoken = voice_text_for_speech(bot_text)
+        audio_bytes = await synthesize_speech(spoken, mood=req.mood, event="chat")
         audio_base64 = base64.b64encode(audio_bytes).decode("utf-8")
     except Exception as exc:
         LOGGER.exception("Chatterbox TTS failed")

@@ -224,6 +224,25 @@ def strip_diagrams_for_voice(text: str) -> str:
     return _MERMAID_BLOCK_RE.sub(" ", text)
 
 
+def voice_text_for_speech(text: str) -> str:
+    """The ONE conversion from agent HTML to speakable plain text.
+
+    Every TTS path must use this instead of composing its own chain:
+    normalize first (so markdown slips and diagram aliases converge), drop
+    visual-only diagram sources, then strip tags for the synthesis engine.
+    """
+    if not text:
+        return ""
+    try:
+        normalized = normalize_agent_html(text)
+    except Exception:
+        normalized = text
+    if "language-mermaid" in normalized:
+        normalized = strip_diagrams_for_voice(normalized)
+    spoken = strip_telegram_html(normalized)
+    return re.sub(r"[ \t]{2,}", " ", re.sub(r"\n{3,}", "\n\n", spoken)).strip()
+
+
 # ---------------------------------------------------------------------------
 # Native HTML pass-through: the model authors Telegram HTML directly.
 # ---------------------------------------------------------------------------

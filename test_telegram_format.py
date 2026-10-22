@@ -283,6 +283,19 @@ def test_voice_chain_never_speaks_fenced_mermaid() -> None:
     assert "Flow below." in spoken and "That is all." in spoken
 
 
+def test_voice_text_for_speech_single_chain() -> None:
+    raw = (
+        "Check this: <b>Nice</b> flow. <mermaid>flowchart TD\n A --> B</mermaid>"
+        "\n```mermaid\nflowchart LR\n C --> D\n```\n\nRepeat   text."
+    )
+    spoken = tf.voice_text_for_speech(raw)
+    assert "<b>" not in spoken and "<mermaid>" not in spoken
+    assert "flowchart" not in spoken and "-->" not in spoken
+    assert "Check this: Nice flow." in spoken
+    assert "Repeat text." in spoken and "Repeat   text" not in spoken
+    assert tf.voice_text_for_speech("") == ""
+
+
 def main() -> int:
     tests = [value for name, value in sorted(globals().items()) if name.startswith("test_") and callable(value)]
     for test in tests:
