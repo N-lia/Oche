@@ -81,6 +81,9 @@
   let workletNode = null;
   let analyser = null;
   let botAudio = null;
+  // Sentence-streamed replies arrive as a frame sequence; the queue holds
+  // frames that finished synthesizing while an earlier frame is still on air.
+  let audioQueue = [];
   const overlays = new Set();
 
   if (tg && tg.initDataUnsafe && tg.initDataUnsafe.user && tg.initDataUnsafe.user.id) {
@@ -242,6 +245,15 @@
 
   function mountMermaidDiagrams(container) {
     if (!window.pele || typeof window.pele.mount !== 'function') return;
+    // The server canonicalizes all alias shapes into language-mermaid
+    // blocks; blocks that somehow arrived class-less (stale cache, old
+    // message) still get mounted when the body opens with a diagram
+    // keyword, so a diagram never falls back to dead code text.
+    container.querySelectorAll('pre > code:not([class])').forEach((code) => {
+      if (/^\s*(?:flowchart|sequenceDiagram|stateDiagram|classDiagram|erDiagram|graph(?:[ \t]+(?:TD|TB|LR|RL|BT))?|mindmap|pie|gantt|journey|timeline)\b/i.test(code.textContent)) {
+        code.className = 'language-mermaid';
+      }
+    });
     container.querySelectorAll('pre > code.language-mermaid').forEach((code) => {
       const pre = code.closest('pre');
       if (!pre) return;
@@ -449,7 +461,7 @@
 
       case 'bot_audio':
         if (msg.turn_id && msg.turn_id <= S.interruptedTurnId) break;
-        playBotAudio(msg.audio, msg.mime);
+        queueBotAudio(msg);
         break;
 
       case 'interrupted':
@@ -554,31 +566,65 @@
     overlays.clear();
   }
 
-  function playBotAudio(base64, mime) {
+  function queueBotAudio(msg) {
+    if (typeof msg.frame !== 'number') {
+      // Whole-file reply (Chatterbox/CosyVoice, REST echo): single shot.
+      playBotAudio(msg.audio, msg.mime, null);
+      return;
+    }
+    // Streaming is ordered on the WebSocket, so frames append in order. If
+    // a frame is on air the queue just holds this one; the ended handler
+    // pulls the next.
+    audioQueue.push(msg);
+    if (!botAudio) playNextFrame();
+  }
+
+  function playNextFrame() {
+    const next = audioQueue.shift();
+    if (next) playBotAudio(next.audio, next.mime, next);
+  }
+
+  function playBotAudio(base64, mime, frame) {
     stopOverlays();
     if (botAudio) { botAudio.pause(); botAudio = null; }
+    const final = !frame || frame.final !== false;
     if (!S.speakReplies || !base64) {
-      wsSend({ type: 'playback_end' });
+      if (final) wsSend({ type: 'playback_end' });
+      else playNextFrame();
       return;
     }
     setVoiceState('speaking', 'Speaking…');
     if (mascot) mascot.setSpeaking(true);
-    ensureTurnTaker().agentOutputStart();
-    wsSend({ type: 'playback_start' });
+    const taker = ensureTurnTaker();
+    // Only the FIRST frame of an output stream opens the turn on the server
+    // and resets the echo guard: repeated starts would re-arm the barge
+    // window and freeze the taker mid-sentence.
+    if (taker.state !== 'agent_speaking' && taker.state !== 'barge_pending' && taker.state !== 'interrupted') {
+      taker.agentOutputStart();
+      wsSend({ type: 'playback_start' });
+    }
     botAudio = new Audio(`data:${mime || 'audio/mpeg'};base64,${base64}`);
     botAudio.onended = () => {
       botAudio = null;
       stopLevelMeter();
-      if (mascot) mascot.setSpeaking(false);
-      ensureTurnTaker().agentOutputEnd();
-      wsSend({ type: 'playback_end' });
-      if (S.voiceActive) setVoiceState('listening', 'Listening');
+      if (final) {
+        if (mascot) mascot.setSpeaking(false);
+        taker.agentOutputEnd();
+        wsSend({ type: 'playback_end' });
+        if (S.voiceActive) setVoiceState('listening', 'Listening');
+      } else {
+        playNextFrame();
+      }
     };
     botAudio.play().then(() => startLevelMeter(botAudio)).catch(() => {
       stopLevelMeter();
-      if (mascot) mascot.setSpeaking(false);
-      ensureTurnTaker().agentOutputEnd();
-      wsSend({ type: 'playback_end' });
+      if (final) {
+        if (mascot) mascot.setSpeaking(false);
+        taker.agentOutputEnd();
+        wsSend({ type: 'playback_end' });
+      } else {
+        playNextFrame();
+      }
     });
   }
 
@@ -735,6 +781,7 @@
   }
 
   function stopBotAudio() {
+    audioQueue = [];  // never keep playing queued sentence frames after a stop
     if (botAudio) {
       botAudio.pause();
       botAudio = null;
