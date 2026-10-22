@@ -28,7 +28,7 @@ from pydantic import BaseModel
 
 from agent_service import agent_service
 from asr_client import atranscribe, health as asr_health
-from telegram_format import voice_text_for_speech
+from telegram_format import normalize_agent_html, voice_text_for_speech
 from backchannel import (
     CATEGORIES,
     all_phrases,
@@ -169,7 +169,9 @@ async def api_chat(req: ChatRequest):
         return {"response": ""}
     try:
         reply = await asyncio.to_thread(agent_service.chat, req.prompt, req.thread_id)
-        return {"response": reply}
+        # Text bubbles go through the same canonicality pass as voice turns:
+        # one HTML format everywhere, diagrams always mountable in the miniapp.
+        return {"response": normalize_agent_html(reply)}
     except Exception as exc:
         LOGGER.exception("Agent chat failed")
         raise HTTPException(status_code=500, detail=str(exc))
@@ -227,7 +229,8 @@ async def api_voice_turn(req: VoiceTurnRequest):
 
     return {
         "user_text": user_text,
-        "bot_text": bot_text,
+        # Same one-format pass as /api/chat: bubbles render canonical HTML.
+        "bot_text": normalize_agent_html(bot_text),
         "eou_detected": eou_detected,
         "audio_base64": audio_base64,
     }
