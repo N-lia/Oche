@@ -210,6 +210,7 @@ def _canonicalize_bare_mermaid(text: str) -> str:
 _MERMAID_BLOCK_ALIAS_RE = re.compile(
     r"<(?:mermaid|diagram)>\s*(.*?)\s*</(?:mermaid|diagram)>", re.S | re.I
 )
+_MERMAID_FENCE_RE = re.compile(r"```mermaid[^\n]*\n(.*?)```", re.S | re.I)
 
 
 def strip_diagrams_for_voice(text: str) -> str:
@@ -300,6 +301,15 @@ def normalize_agent_html(text: str) -> str:
     # Mermaid diagram keyword: Telegram renders it fine, but the miniapp
     # renderer mounts only language-mermaid blocks, so give it the class.
     text = _canonicalize_bare_mermaid(text)
+    # Same for raw ```mermaid fences in tag-bearing replies: the native path
+    # only canonicalises tags, so convert the fence here.
+    text = _MERMAID_FENCE_RE.sub(
+        lambda m: (
+            f"<pre><code class=\"language-mermaid\">"
+            f"{html.escape(html.unescape(m.group(1)).strip())}</code></pre>"
+        ),
+        text,
+    )
     if not _NATIVE_TAG_RE.search(text):
         if _ENTITY_PRESENT_RE.search(text):
             # Entity-only reply (no tags): the model authored references, so
