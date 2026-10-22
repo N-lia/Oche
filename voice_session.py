@@ -653,8 +653,8 @@ class VoiceSession:
     # ------------------------------------------------------------- reply
     async def _run_agent(self, user_text: str, turn_id: int) -> None:
         if self.mode == "echo":
-            await self.send({"type": "bot_text_delta", "text": f"You said: {user_text}", "turn_id": turn_id})
-            await self._speak(f"You said: {user_text}", turn_id)
+            await self.send({"type": "bot_text_delta", "text": f"[Echo test] You said: {user_text}", "turn_id": turn_id})
+            await self._speak(f"[Echo test] You said: {user_text}", turn_id)
             return
         await self.send(
             {"type": "status", "phase": "thinking", "text": "Thinking…", "turn_id": turn_id}

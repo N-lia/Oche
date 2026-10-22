@@ -71,6 +71,8 @@
   };
 
   const PREROLL_FRAMES = 16;
+  // Ring entries are { pcm: Int16Array, sent: bool }: `sent` marks frames the
+  // turn taker already streamed so preroll seeds never double-feed the ASR.
   const preroll = [];
   let turnTaker = null;
 
@@ -564,12 +566,16 @@
   }
 
   function prerollBase64() {
+    // Only frames the client has NOT already streamed: the turn taker sends
+    // audio directly during speech/barge, and re-seeding those frames made
+    // the ASR transcript repeat the onset words.
+    const unsent = preroll.filter((entry) => !entry.sent);
     let total = 0;
-    for (const frame of preroll) total += frame.length;
+    for (const entry of unsent) total += entry.pcm.length;
     if (!total) return '';
     const merged = new Int16Array(total);
     let offset = 0;
-    for (const frame of preroll) { merged.set(frame, offset); offset += frame.length; }
+    for (const entry of unsent) { merged.set(entry.pcm, offset); offset += entry.pcm.length; }
     return base64FromInt16(merged);
   }
 
@@ -627,8 +633,19 @@
 
   // --------------------------------------------------------------- voice
   function pushPreroll(pcm) {
-    preroll.push(pcm);
+    preroll.push({ pcm, sent: false });
     while (preroll.length > PREROLL_FRAMES) preroll.shift();
+  }
+
+  function markPrerollSent() {
+    // Another frame of the same audio went to the socket directly; the newest
+    // unsent entry corresponds to it.
+    for (let i = preroll.length - 1; i >= 0; i -= 1) {
+      if (!preroll[i].sent) {
+        preroll[i].sent = true;
+        break;
+      }
+    }
   }
 
   function onMicFrame(float32) {
@@ -641,7 +658,10 @@
     // not with a server round-trip.
     const turn = ensureTurnTaker();
     turn.level(level);
-    if (turn.shouldSend(level)) S.socket.send(pcm.buffer);
+    if (turn.shouldSend(level)) {
+      S.socket.send(pcm.buffer);
+      markPrerollSent();
+    }
   }
 
   function duckBotAudio() {
@@ -804,6 +824,7 @@
     S.mode = button.dataset.mode;
     [...modeSeg.children].forEach((b) => b.classList.toggle('is-active', b === button));
     wsSend({ type: 'set', mode: S.mode });
+    toast(S.mode === 'echo' ? 'Echo test: replies repeat your words' : 'Agent mode: normal conversation');
   });
 
   moodSelect.addEventListener('change', () => {
@@ -828,6 +849,10 @@
 
   btnClear.addEventListener('click', () => {
     feed.innerHTML = '';
+    // A fresh checkpointer thread too: stale history (e.g. echo-test turns,
+    // half-finished barge-ins) must not color the next conversation.
+    S.threadId = `${S.threadId}-${Date.now().toString(36)}`;
+    wsSend({ type: 'set', thread_id: S.threadId });
     addMessage('system', 'Conversation cleared. Start speaking or type a message.');
     closeSheet();
   });

@@ -201,7 +201,7 @@ async def api_voice_turn(req: VoiceTurnRequest):
 
     # 2. Generate response text with LLM
     if req.mode == "echo":
-        bot_text = f"You said: {user_text}"
+        bot_text = f"[Echo test] You said: {user_text}"
     else:
         try:
             LOGGER.info("Triggering OYI LLM agent for user_text: '%s' (thread_id=%s)", user_text, req.thread_id)
