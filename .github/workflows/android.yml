@@ -66,8 +66,29 @@ jobs:
           restore-keys: gradle-android-
 
       - name: Assemble debug APK
+        id: build
         working-directory: android
-        run: ./gradlew assembleDebug --no-daemon --stacktrace
+        continue-on-error: true
+        run: |
+          set -o pipefail
+          ./gradlew assembleDebug --no-daemon --stacktrace 2>&1 | tee /tmp/gradle-build.log
+
+      # Surface the failure reason in the run summary and as annotations so a
+      # broken build can be diagnosed without opening the raw log.
+      - name: Publish build diagnostics
+        if: steps.build.outcome == 'failure'
+        run: |
+          {
+            echo "### Gradle build failed"
+            echo
+            echo '```'
+            tail -80 /tmp/gradle-build.log || true
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          tail -60 /tmp/gradle-build.log | while IFS= read -r line; do
+            echo "::error title=Gradle build failed::${line}"
+          done
+          exit 1
 
       - name: Upload APK
         uses: actions/upload-artifact@v5
