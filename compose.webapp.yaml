@@ -24,6 +24,11 @@ services:
       # Warn (with stack) when something blocks the asyncio loop: the stall
       # hunter for "agent reply never arrives while the loop looks alive".
       WEBAPP_DEBUG_LOOP: "1"
+      # Phone control (see .env.example):
+      #   NEBIUS_API_KEY          - vision planner credentials
+      #   OYI_DEVICE_TOKEN        - shared secret for the phone WebSocket
+      #   OYI_DEVICE_API_TOKEN    - shared secret for /api/device/* callers
+      #   OYI_DEVICE_VISION_MODEL - defaults to nvidia/Nemotron-3.5-Super-VL
     extra_hosts:
       - "host.docker.internal:host-gateway"
     volumes:

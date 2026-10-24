@@ -1,0 +1,85 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <!-- The always-on OYI bubble. -->
+    <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
+    <!-- Foreground app + duration tracking (granted from Settings > Usage access). -->
+    <uses-permission
+        android:name="android.permission.PACKAGE_USAGE_STATS"
+        tools:ignore="ProtectedPermissions" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
+
+    <!-- Package visibility: lets OYI resolve app labels and launch apps. -->
+    <queries>
+        <intent>
+            <action android:name="android.intent.action.MAIN" />
+            <category android:name="android.intent.category.LAUNCHER" />
+        </intent>
+    </queries>
+
+    <application
+        android:name=".OyiApplication"
+        android:allowBackup="false"
+        android:icon="@mipmap/ic_launcher"
+        android:label="@string/app_name"
+        android:roundIcon="@mipmap/ic_launcher_round"
+        android:supportsRtl="true"
+        android:theme="@style/Theme.Oyi"
+        android:usesCleartextTraffic="true">
+
+        <activity
+            android:name=".MainActivity"
+            android:exported="true"
+            android:label="@string/app_name"
+            android:launchMode="singleTop"
+            android:theme="@style/Theme.Oyi">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+
+        <!-- Foreground service: overlay bubble + usage tracking + device link. -->
+        <service
+            android:name=".service.OyiService"
+            android:exported="false"
+            android:foregroundServiceType="specialUse"
+            android:stopWithTask="false">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="Always-on personal assistant overlay, foreground app usage tracking, and paired device control." />
+        </service>
+
+        <!-- Drives the phone: reads the UI tree, taps, types, screenshots. -->
+        <service
+            android:name=".accessibility.OyiAccessibilityService"
+            android:exported="true"
+            android:label="@string/accessibility_service_label"
+            android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE">
+            <intent-filter>
+                <action android:name="android.accessibilityservice.AccessibilityService" />
+            </intent-filter>
+            <meta-data
+                android:name="android.accessibilityservice"
+                android:resource="@xml/accessibility_service_config" />
+        </service>
+
+        <receiver
+            android:name=".service.BootReceiver"
+            android:enabled="true"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+                <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
+            </intent-filter>
+        </receiver>
+    </application>
+
+</manifest>

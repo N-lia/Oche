@@ -46,3 +46,15 @@ network_policies:
         port: 50051
     binaries:
       - path: /usr/local/bin/python3.12
+
+  # OYI webapp: hosts /ws/device (phone WebSocket) and /api/device/* (command
+  # API used by the Telegram bot and the agent's control_phone tool).
+  # Replace the host with the public domain of the webapp, then point the bot
+  # at it with:
+  #     OYI_DEVICE_GATEWAY_URL=https://<host>
+  oyi_webapp:
+    endpoints:
+      - host: "150-230-152-243.sslip.io"
+        port: 443
+    binaries:
+      - path: /usr/local/bin/python3.12

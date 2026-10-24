@@ -11,6 +11,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Final
 
+import httpx
 from dotenv import load_dotenv
 from telegram import (
     BotCommand,
@@ -32,6 +33,7 @@ from telegram.ext import (
 )
 
 from asr_client import atranscribe
+from channels import ChannelRegistry, TelegramChannel
 from main import astream_chat_agent
 from memory import reconcile_preferences
 from subagent import register_telegram_notifier
@@ -267,6 +269,124 @@ def get_webapp_url() -> str:
     return os.getenv("TELEGRAM_WEBAPP_URL", "").strip()
 
 
+def get_device_gateway_url() -> str:
+    return os.getenv("OYI_DEVICE_GATEWAY_URL", "").strip().rstrip("/")
+
+
+def get_device_api_token() -> str:
+    return (
+        os.getenv("OYI_DEVICE_API_TOKEN", "").strip()
+        or os.getenv("OYI_DEVICE_TOKEN", "").strip()
+    )
+
+
+async def device_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Send a natural-language task to the paired Android phone."""
+    if not await enforce_access_and_rate_limit(update, context):
+        return
+
+    message = update.effective_message
+    if message is None:
+        return
+
+    text = " ".join(context.args).strip()
+    if not text:
+        await message.reply_text(
+            "Usage: <code>/device open Settings and turn on dark mode</code>\n"
+            "The phone must have the OYI app running and be paired.",
+            parse_mode=ParseMode.HTML,
+        )
+        return
+
+    base_url = get_device_gateway_url()
+    token = get_device_api_token()
+    if not base_url or not token:
+        await message.reply_text(
+            "Phone control is not configured. Set <code>OYI_DEVICE_GATEWAY_URL</code> "
+            "and <code>OYI_DEVICE_API_TOKEN</code> in the bot environment.",
+            parse_mode=ParseMode.HTML,
+        )
+        return
+
+    status_message = await message.reply_text("📱 Sending to your phone...")
+    try:
+        async with httpx.AsyncClient(
+            timeout=httpx.Timeout(connect=10.0, read=240.0, write=20.0, pool=10.0)
+        ) as client:
+            response = await client.post(
+                f"{base_url}/api/device/command",
+                headers={"Authorization": f"Bearer {token}"},
+                json={
+                    "text": text,
+                    "max_steps": 8,
+                    "timeout_s": 220,
+                    "thread_id": conversation_thread_id(update.effective_chat.id),
+                },
+            )
+            response.raise_for_status()
+            data = response.json()
+    except httpx.HTTPStatusError as exc:
+        await safe_edit_text(
+            status_message,
+            f"📱 Phone request failed ({exc.response.status_code}): "
+            f"{html.escape(exc.response.text[:400])}",
+        )
+        return
+    except Exception as exc:  # noqa: BLE001 - reported to the Telegram user
+        LOGGER.exception("Phone command request failed")
+        await safe_edit_text(status_message, f"📱 Phone request failed: {html.escape(str(exc))}")
+        return
+
+    status = html.escape(str(data.get("status", "error")))
+    body = html.escape(str(data.get("message") or data.get("error") or "No result from the phone."))
+    steps = data.get("steps", 0)
+    await safe_edit_text(
+        status_message,
+        f"📱 <b>Phone {status}</b> ({steps} step{'s' if steps != 1 else ''})\n{body}",
+    )
+
+
+async def device_list(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """List paired Android phones and their connection state."""
+    if not await enforce_access_and_rate_limit(update, context):
+        return
+
+    message = update.effective_message
+    if message is None:
+        return
+
+    base_url = get_device_gateway_url()
+    token = get_device_api_token()
+    if not base_url or not token:
+        await message.reply_text("Phone control is not configured.")
+        return
+
+    try:
+        async with httpx.AsyncClient(timeout=20.0) as client:
+            response = await client.get(
+                f"{base_url}/api/device/devices",
+                headers={"Authorization": f"Bearer {token}"},
+            )
+            response.raise_for_status()
+            devices = response.json().get("devices", [])
+    except Exception as exc:  # noqa: BLE001 - reported to the Telegram user
+        LOGGER.exception("Could not list devices")
+        await message.reply_text(f"Could not list phones: {html.escape(str(exc))}")
+        return
+
+    if not devices:
+        await message.reply_text("No phones are connected. Open the OYI Android app and start the overlay.")
+        return
+
+    lines = ["📱 <b>Paired phones</b>"]
+    for device in devices:
+        state = "online" if device.get("connected") else "offline"
+        name = html.escape(str(device.get("name") or device.get("model") or "Android"))
+        device_id = html.escape(str(device.get("device_id", "")))
+        lines.append(f"• <b>{name}</b> — {state}\n  <code>{device_id}</code>")
+    await message.reply_text("\n".join(lines), parse_mode=ParseMode.HTML)
+
+
 async def live_chat(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Open the real-time OYI Live WebApp (voice + text)."""
     if not await enforce_access_and_rate_limit(update, context):
@@ -484,6 +604,12 @@ async def _on_post_init(application: Application) -> None:
 
     register_telegram_voice_sender(deliver_voice_message)
 
+    channels = application.bot_data.get("channels")
+    if channels is None:
+        channels = ChannelRegistry()
+        application.bot_data["channels"] = channels
+        channels.register(TelegramChannel(application.bot))
+
     webapp_url = get_webapp_url()
     if webapp_url:
         try:
@@ -499,6 +625,8 @@ async def _on_post_init(application: Application) -> None:
             [
                 BotCommand("livechat", "🎧 Real-time voice chat (WebApp)"),
                 BotCommand("voice", "🎧 Real-time voice chat (WebApp)"),
+                BotCommand("device", "📱 Control my paired Android phone"),
+                BotCommand("devices", "📱 List paired Android phones"),
                 BotCommand("start", "Show the welcome message"),
             ]
         )
@@ -536,6 +664,8 @@ def build_application(settings: Settings) -> Application:
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("livechat", live_chat))
     app.add_handler(CommandHandler("voice", voice_app))
+    app.add_handler(CommandHandler("device", device_command))
+    app.add_handler(CommandHandler("devices", device_list))
     # Telegram only permits [a-z0-9_] in command names; also accept a typed
     # "/live-chat" so the natural spelling works.
     app.add_handler(MessageHandler(filters.Regex(r"^/live-?chat(?:@\w+)?\b"), live_chat))

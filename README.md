@@ -189,6 +189,66 @@ names. Values are replaced with per-request aliases; use `prepare_mail()` from
 `privacy.py` only at a trusted local mail-delivery boundary to restore the original
 values. The scrubber never sends its alias vault to external services.
 
+## Android device app (`android/`)
+
+OYI has a native Android companion app that runs on the phone (tested on an
+itel City 100, Android 14). It provides:
+
+- an always-on **overlay bubble** showing the current app, how long it has been
+  open, the OYI link state, and today's total for that app;
+- **foreground app + duration tracking** stored locally in SQLite;
+- **phone control**: the phone sends a screenshot plus a compact accessibility
+  tree to the server, `nvidia/Nemotron-3.5-Super-VL` on Nebius Token Factory
+  picks exactly one action per step, and the phone executes it.
+
+The phone only dials out, so there is no inbound port, ADB, Shizuku, or
+device-owner setup on the phone itself. See [`android/README.md`](android/README.md)
+for the full setup.
+
+Server side pieces:
+
+- `device_protocol.py` — wire models and action parsing shared with the app.
+- `device_gateway.py` — device registry and the command state machine
+  (`command` → `observation` → `action` → … → `command_done`).
+- `vision_agent.py` — Nebius `nvidia/Nemotron-3.5-Super-VL` planner.
+- `device_tool.py` — the `control_phone` and `phone_status` agent tools.
+- `channels/` — messaging adapters; Telegram is the first one, and phone
+  control is reachable from any channel through the shared agent/tool layer.
+
+Endpoints (webapp):
+
+| Endpoint | Purpose |
+| --- | --- |
+| `GET /api/device/health` | gateway + model status |
+| `GET /api/device/devices` | paired phones |
+| `GET /api/device/status` | current app + today's usage, straight from the phone |
+| `POST /api/device/command` | run a task and wait for the result |
+| `POST /api/device/cancel/{command_id}` | stop a running task |
+| `WS /ws/device` | outbound link used by the phone |
+
+Required environment variables (see `.env.example`):
+
+```sh
+NEBIUS_API_KEY=<nebius token factory key>
+OYI_DEVICE_TOKEN=<shared secret for the phone WebSocket>
+OYI_DEVICE_API_TOKEN=<shared secret for /api/device/* callers>
+OYI_DEVICE_VISION_MODEL=nvidia/Nemotron-3.5-Super-VL
+OYI_DEVICE_GATEWAY_URL=https://<webapp-host>   # used by the bot / agent tool
+```
+
+From Telegram you can drive the phone directly:
+
+```
+/device open Settings and turn on dark mode
+/devices
+```
+
+or let the agent do it — the `control_phone` tool is registered with the OYI
+agent, so a plain message like "open WhatsApp on my phone" works from
+Telegram, the voice webapp, or the live chat. The `phone_status` tool answers
+"which app am I using / how much screen time today" from the phone's local
+usage data.
+
 ## Module boundaries
 
 - `agent_service.py` owns model construction, routing, memory context, privacy, and streaming.
@@ -197,6 +257,9 @@ values. The scrubber never sends its alias vault to external services.
 - `TG.py` owns Telegram handlers, document transport, and application lifecycle.
 - `asr_server.py` hosts the Parakeet-EOU gRPC ASR service on the VM; `asr_client.py` is its client used by `TG.py` and `webapp_server.py`.
 - `memory.py`, `privacy.py`, `router.py`, and `tool.py` provide reusable domain services.
+- `device_protocol.py`, `device_gateway.py`, and `vision_agent.py` own the phone-control protocol, the device registry/command loop, and the vision planner.
+- `device_tool.py` exposes phone control to the agent as the `control_phone` and `phone_status` tools.
+- `channels/` holds the messaging adapters (`ChannelAdapter`, `ChannelRegistry`, Telegram); channels are transports, not device capabilities.
 
 Mem0 uses Nebius for memory extraction and embeddings, and local Qdrant for
 the vector store. Qdrant runs in-process; no separate Qdrant service is

@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">OYI</string>
+    <string name="accessibility_service_label">OYI device control</string>
+    <string name="accessibility_service_description">Lets OYI see the screen so it can carry out tasks you ask for in chat, and show which app is open.</string>
+    <string name="notification_channel_name">OYI device</string>
+    <string name="notification_channel_description">Keeps the OYI overlay and phone link running.</string>
+    <string name="notification_title">OYI is watching</string>
+    <string name="notification_stop">Stop</string>
+    <string name="notification_open">Open OYI</string>
+</resources>

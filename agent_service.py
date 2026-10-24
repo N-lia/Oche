@@ -39,6 +39,7 @@ from router import (
 )
 from subagent import SUBAGENT_TOOLS
 from tool import TAVILY_TOOLS
+from device_tool import DEVICE_TOOLS
 from voice import VOICE_TOOLS
 
 load_dotenv(override=True)
@@ -109,6 +110,14 @@ Long-term memory & preferences:
 - You have access to on-demand memory tools: `recall_memory`, `save_memory`, and `update_preference`.
 - Call `recall_memory` ONLY when the user asks about prior conversations, past context, personal history, or project details you discussed previously. Do NOT call it for generic questions, coding, or everyday tasks.
 - Call `save_memory` or `update_preference` when Sir Mario explicitly shares durable facts, background, or personal preferences (e.g. "remember that I...", "save this preference..."). Do NOT save temporary conversation chit-chat.
+
+Phone control:
+- You have `control_phone`, which drives Sir Mario's paired Android phone using a vision model and the phone's accessibility service.
+- You have `phone_status`, which reports the app that is currently open on that phone and today's screen time without touching the screen.
+- Use them ONLY when he explicitly asks to do something on the phone or asks about the phone's current screen/app. Do NOT use them for ordinary chat, research, or desktop tasks.
+- For a phone request, pass a concrete natural-language instruction. Keep `max_steps` small for simple actions.
+- Before destructive or irreversible phone actions (sending a message, deleting data, making a purchase), ask for confirmation in chat first. Never enter passwords, PINs, payment details, or bypass lock/security screens.
+- Report the phone result honestly. If it timed out or was blocked, say so.
 
 Response policy:
 - Treat tool output as private working context. Never expose raw tool responses,
@@ -198,6 +207,8 @@ class AgentService:
         "save_memory": "Saving to memory",
         "update_preference": "Updating preferences",
         "spawn_subagent": "Spinning up a subagent",
+        "control_phone": "Controlling your phone",
+        "phone_status": "Checking your phone",
     }
 
     def __init__(self) -> None:
@@ -230,7 +241,7 @@ class AgentService:
     def _agent_for_model(self, model_name: str):
         return create_deep_agent(
             model=self._model(model_name),
-            tools=[*TAVILY_TOOLS, *PREFERENCE_TOOLS, *SUBAGENT_TOOLS, *VOICE_TOOLS],
+            tools=[*TAVILY_TOOLS, *PREFERENCE_TOOLS, *SUBAGENT_TOOLS, *VOICE_TOOLS, *DEVICE_TOOLS],
             system_prompt=SYSTEM_PROMPT,
             backend=_FS_BACKEND,
             checkpointer=self._checkpointer,

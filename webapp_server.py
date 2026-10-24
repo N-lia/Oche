@@ -15,12 +15,13 @@ import base64
 import json
 import logging
 import os
+import secrets
 import time
 from pathlib import Path
 
 import uvicorn
 from dotenv import load_dotenv
-from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, Header, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
@@ -28,6 +29,13 @@ from pydantic import BaseModel
 
 from agent_service import agent_service
 from asr_client import atranscribe, health as asr_health
+from device_gateway import (
+    DeviceConnection,
+    DeviceGatewayError,
+    DeviceOfflineError,
+    device_gateway,
+)
+from device_protocol import CommandRequest, DeviceHello
 from backchannel import (
     CATEGORIES,
     all_phrases,
@@ -75,6 +83,11 @@ async def _maybe_enable_loop_debug() -> None:
     faulthandler.register(signal.SIGUSR1, all_threads=True, chain=False)
     LOGGER.warning("faulthandler crash+SIGUSR1 dumps registered")
 
+
+@app.on_event("shutdown")
+async def _shutdown_device_gateway() -> None:
+    await device_gateway.aclose()
+
 # CORS middleware for WebApp access
 app.add_middleware(
     CORSMiddleware,
@@ -86,6 +99,39 @@ app.add_middleware(
 
 STATIC_DIR = Path(__file__).parent / "webapp"
 app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
+
+
+def _device_api_token() -> str:
+    return (
+        os.getenv("OYI_DEVICE_API_TOKEN", "").strip()
+        or os.getenv("OYI_DEVICE_TOKEN", "").strip()
+    )
+
+
+def _require_device_api(authorization: str | None) -> None:
+    expected = _device_api_token()
+    if not expected:
+        raise HTTPException(
+            status_code=503,
+            detail="Device API is not configured. Set OYI_DEVICE_API_TOKEN (or OYI_DEVICE_TOKEN).",
+        )
+    supplied = (authorization or "").strip()
+    if not supplied.startswith("Bearer ") or not secrets.compare_digest(
+        supplied.removeprefix("Bearer ").strip(), expected
+    ):
+        raise HTTPException(status_code=401, detail="Invalid device API token.")
+
+
+def _device_ws_token_ok(websocket: WebSocket) -> bool:
+    expected = os.getenv("OYI_DEVICE_TOKEN", "").strip() or _device_api_token()
+    if not expected:
+        return False
+    supplied = websocket.headers.get("authorization", "").strip()
+    if supplied.startswith("Bearer "):
+        supplied = supplied.removeprefix("Bearer ").strip()
+    else:
+        supplied = websocket.query_params.get("token", "").strip()
+    return bool(supplied) and secrets.compare_digest(supplied, expected)
 
 
 def decode_audio_base64(audio_base64: str) -> bytes:
@@ -159,6 +205,124 @@ async def api_health():
         },
         "backchannels": {"cached": len(cached_clips())},
     }
+
+
+@app.get("/api/device/health")
+async def api_device_health(authorization: str | None = Header(default=None)):
+    """Health/capability probe for the Android app and channel adapters."""
+    _require_device_api(authorization)
+    devices = device_gateway.list_devices()
+    return {
+        "ok": True,
+        "model": os.getenv("OYI_DEVICE_VISION_MODEL", "nvidia/Nemotron-3.5-Super-VL"),
+        "vision_configured": bool(os.getenv("NEBIUS_API_KEY", "").strip()),
+        "devices_connected": sum(1 for device in devices if device.connected),
+        "devices": [device.model_dump() for device in devices],
+    }
+
+
+@app.get("/api/device/devices")
+async def api_device_devices(authorization: str | None = Header(default=None)):
+    _require_device_api(authorization)
+    return {"devices": [device.model_dump() for device in device_gateway.list_devices()]}
+
+
+@app.get("/api/device/status")
+async def api_device_status(
+    device_id: str = "",
+    authorization: str | None = Header(default=None),
+):
+    """Ask the phone what it is doing right now (current app + usage)."""
+    _require_device_api(authorization)
+    try:
+        return await device_gateway.request_status(device_id=device_id)
+    except (DeviceGatewayError, DeviceOfflineError) as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@app.post("/api/device/command")
+async def api_device_command(
+    req: CommandRequest,
+    authorization: str | None = Header(default=None),
+):
+    """Run one phone task and wait for the vision loop to finish.
+
+    The endpoint is intentionally synchronous from the caller's point of view:
+    Telegram sends one request and gets a final message.  The phone itself sends
+    observations/actions asynchronously over ``/ws/device``.
+    """
+    _require_device_api(authorization)
+    try:
+        result = await device_gateway.execute_command(
+            text=req.text,
+            device_id=req.device_id,
+            max_steps=req.max_steps,
+            timeout_s=req.timeout_s,
+            thread_id=req.thread_id,
+        )
+    except (DeviceGatewayError, DeviceOfflineError) as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return result.model_dump()
+
+
+@app.post("/api/device/cancel/{command_id}")
+async def api_device_cancel(
+    command_id: str,
+    authorization: str | None = Header(default=None),
+):
+    _require_device_api(authorization)
+    return {"cancelled": await device_gateway.cancel(command_id, reason="Cancelled by user")}
+
+
+@app.websocket("/ws/device")
+async def device_ws(websocket: WebSocket):
+    """Persistent outbound WebSocket from the paired Android app.
+
+    The phone connects out, so OYI never needs an inbound port or ADB on the
+    device.  The first frame must be a ``hello`` with a stable device id.
+    """
+    await websocket.accept()
+    if not _device_ws_token_ok(websocket):
+        await websocket.close(code=1008, reason="Unauthorized device")
+        return
+
+    connection: DeviceConnection | None = None
+    try:
+        first = await asyncio.wait_for(websocket.receive_text(), timeout=15.0)
+        try:
+            hello = DeviceHello.model_validate_json(first)
+        except Exception:  # noqa: BLE001 - reject malformed handshakes
+            await websocket.close(code=1008, reason="Expected a valid hello frame")
+            return
+
+        connection = DeviceConnection(websocket=websocket, hello=hello)
+        await device_gateway.register(connection)
+        await connection.send(
+            {
+                "type": "hello_ack",
+                "device_id": hello.device_id,
+                "server_time": time.time(),
+                "model": os.getenv("OYI_DEVICE_VISION_MODEL", "nvidia/Nemotron-3.5-Super-VL"),
+            }
+        )
+        LOGGER.info("Device WebSocket ready id=%s", hello.device_id)
+
+        while True:
+            message = await websocket.receive_text()
+            await device_gateway.handle_message(connection, message)
+    except WebSocketDisconnect:
+        pass
+    except asyncio.TimeoutError:
+        await websocket.close(code=1008, reason="Timed out waiting for hello")
+    except Exception:
+        LOGGER.exception("Device WebSocket failed")
+    finally:
+        if connection is not None:
+            await device_gateway.unregister(connection)
+        try:
+            await websocket.close()
+        except Exception:  # noqa: BLE001 - already closed
+            pass
 
 
 @app.post("/api/chat")
