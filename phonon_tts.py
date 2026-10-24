@@ -51,6 +51,12 @@ _MOOD_PACING = {
 # ~0.2-1.5s of wall time, and one turn must finish while the user listens.
 _MAX_CHUNK_CHARS = 220
 
+# The opening chunk is deliberately much smaller: time-to-first-audio is
+# dominated by how much text the engine must synthesize before the first frame
+# can ship. 80 chars ~= 4.5s of speech ~= 1.1s of synthesis on the VM, and
+# halves the base64 payload of the first WebSocket frame.
+_FIRST_CHUNK_CHARS = 80
+
 _ENGINE = None
 _ENGINE_LOCK = threading.Lock()
 _SYNTH_LOCK = threading.Lock()  # phonon runtime is not thread-safe
@@ -128,18 +134,44 @@ def _split_sentences(text: str) -> list[str]:
     return chunks or [text.strip()]
 
 
+def _split_first(unit: str, limit: int) -> tuple[str, str]:
+    """Split the opening sentence at a natural boundary near ``limit``.
+
+    The first frame sets time-to-first-audio, so it is worth cutting a long
+    opening sentence before its terminal punctuation. Prefer a clause boundary
+    (comma, semicolon, colon, dash), then a word boundary, then hard-cut.
+    """
+    if len(unit) <= limit:
+        return unit, ""
+    window = unit[: limit + 1]
+    for separator in (", ", "; ", ": ", " \u2014 ", " - "):
+        cut = window.rfind(separator)
+        if cut >= 20:
+            end = cut + len(separator)
+            return unit[:end].strip(), unit[end:].strip()
+    cut = window.rfind(" ")
+    if cut >= 20:
+        return unit[:cut].strip(), unit[cut + 1 :].strip()
+    return unit[:limit].strip(), unit[limit:].strip()
+
+
 def _stream_split(text: str) -> list[str]:
     """Sentence-per-frame split for streaming.
 
     No packing (frames should be small to ship early), but long sentences
     without a terminal mark are sub-split at clause boundaries so a single
-    frame can never push the engine past the size budget.
+    frame can never push the engine past the size budget. The opening chunk is
+    additionally capped at ``_FIRST_CHUNK_CHARS``: synthesizing (and shipping)
+    80 chars takes roughly a quarter of the time of a full sentence, so the
+    user hears the first words much sooner.
     """
     if not text:
         return []
     units = _sentence_units(text)
     if not units:
         return [text.strip()]
+    first, tail = _split_first(units[0], _FIRST_CHUNK_CHARS)
+    units = [first] + ([tail] if tail else []) + units[1:]
     chunks: list[str] = []
     for unit in units:
         if len(unit) <= _MAX_CHUNK_CHARS:

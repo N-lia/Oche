@@ -653,7 +653,15 @@ class VoiceSession:
         reply is left running (the client ducks it) and ``_finish_turn``
         resumes it for a continuer or cancels it for a real turn.
         """
-        if self.state == SESSION_IDLE and not self.response_task and self.stream is None:
+        # A reply can finish generating while its audio is still playing:
+        # state is IDLE and the task is gone, but bot_speaking is True. That
+        # is exactly when a barge-in matters, so never treat it as idle.
+        if (
+            self.state == SESSION_IDLE
+            and not self.response_task
+            and self.stream is None
+            and not self.bot_speaking
+        ):
             return
 
         self.soft_barge = bool(

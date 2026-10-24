@@ -13,6 +13,7 @@ import os
 import sys
 
 import voice_session as vs
+import phonon_tts
 from voice_session import VoiceSession
 
 AUDIO = b"\x00\x00" * 160
@@ -158,6 +159,29 @@ async def test_stream_soft_barge_buffers_then_flushes() -> None:
         os.environ.pop("TTS_PROVIDER", None)
 
 
+async def test_plan_chunks_caps_the_opening_frame() -> None:
+    """The first chunk must stay short so audio starts before the rest is ready."""
+    text = (
+        "A vector database stores high-dimensional vectors representing data "
+        "embeddings, enabling fast similarity searches based on distance "
+        "metrics. It is optimized for retrieving items closest to a query vector."
+    )
+    chunks = vs.plan_chunks(text)
+    assert len(chunks) >= 3, chunks
+    assert len(chunks[0]) <= phonon_tts._FIRST_CHUNK_CHARS, chunks[0]
+    pos = 0
+    for chunk in chunks:
+        idx = text.find(chunk, pos)
+        assert idx >= 0, f"chunk out of order or invented: {chunk!r}"
+        pos = idx + len(chunk)
+    assert not text[pos:].strip(), "chunks must cover the whole reply"
+
+
+async def test_plan_chunks_keeps_short_sentences_intact() -> None:
+    """A short opening sentence is not cut just for the sake of the cap."""
+    assert vs.plan_chunks("Hello there. Nice job.") == ["Hello there.", "Nice job."]
+
+
 async def test_legacy_provider_sends_whole_file_with_frame_metadata() -> None:
     """Without phonon, the reply stays one bot_audio carrying final frame fields."""
     session, queue, streams = _make_session()
@@ -188,6 +212,8 @@ def main() -> int:
         cases = [
             test_stream_one_frame_per_sentence,
             test_stream_soft_barge_buffers_then_flushes,
+            test_plan_chunks_caps_the_opening_frame,
+            test_plan_chunks_keeps_short_sentences_intact,
             test_legacy_provider_sends_whole_file_with_frame_metadata,
             test_speak_empty_text_is_silent_noop,
         ]

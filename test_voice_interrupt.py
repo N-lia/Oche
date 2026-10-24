@@ -178,6 +178,43 @@ async def test_barge_in_ducks_then_cancels_on_a_real_turn() -> None:
     await session.aclose()
 
 
+async def test_barge_in_after_generation_but_during_playback() -> None:
+    """Barge-in must still work when the reply task is done but audio plays on."""
+    streams: list[FakeStream] = []
+
+    async def agent(text, turn_id):
+        yield "A short reply"
+
+    async def tts(text, mood):
+        return b"VOICE"
+
+    session, queue = _make_session(streams, agent, tts)
+    await session.on_control({"type": "start"})
+    await _user_turn(session, streams, "hello")
+    await asyncio.sleep(0.05)
+
+    # Generation is done and the state machine is IDLE, but the client has not
+    # finished playing the queued audio yet.
+    assert session.state == SESSION_IDLE, session.state
+    assert session.response_task is None
+    assert session.bot_speaking is True
+    _drain(queue)
+
+    await session.on_control({"type": "barge_in", "preroll": _b64(b"\x01\x02" * 8)})
+    assert session.turn_id == 2, "barge-in during playback must start a new turn"
+    assert session.state == SESSION_LISTENING
+    assert len(streams) == 2
+    assert "barge_pending" in _types(_drain(queue))
+
+    await streams[1].events.put({"type": "eou", "text": "wait, stop", "model_eou": True})
+    await asyncio.sleep(0.05)
+    messages = _drain(queue)
+    assert "interrupted" in _types(messages)
+    interrupted = next(m for m in messages if m["type"] == "interrupted")
+    assert interrupted["turn_id"] == 1
+    await session.aclose()
+
+
 async def test_barge_in_with_a_continuer_resumes_the_reply() -> None:
     """\"mm-hmm\"/\"ok\" over the agent is a continuer, not an interruption."""
     streams: list[FakeStream] = []
