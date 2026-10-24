@@ -183,15 +183,19 @@ Backchannel pacing is tunable via `BackchannelController` (`min_gap`,
 .venv/bin/python test_backchannel.py
 .venv/bin/python test_turn_policy.py
 .venv/bin/python test_voice_interrupt.py
+.venv/bin/python test_stream_tts.py
+.venv/bin/python test_router_latency.py
 .venv/bin/python test_live_chat_text.py
 node test_turn_taking.js
 ```
 
 Requests use a model cascade. The fast classifier extracts intent and entities,
 then routes routine work to Nano, standard work to Super, and serious reasoning
-to Nemotron 3 Ultra. Override the defaults with `OYI_BASE_MODEL`,
-`OYI_REASONING_MODEL`, and `OYI_INTENSE_MODEL` when exporting the sandbox
-environment.
+to Nemotron 3 Ultra. Live voice turns skip that classifier (the round trip is
+too slow for a conversation): greeting and search fast paths still win, complex
+asks stay on Super, and routine voice answers use Nano. Text turns keep the
+full cascade. Override the defaults with `OYI_BASE_MODEL`, `OYI_REASONING_MODEL`,
+and `OYI_INTENSE_MODEL` when exporting the sandbox environment.
 
 External requests pass through a local privacy scrubber before reaching Tavily or
 Nebius. Set `OYI_PII_PROJECT_NAMES` to a comma-separated list of sensitive project
