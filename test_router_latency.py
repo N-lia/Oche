@@ -113,6 +113,61 @@ def test_agent_models_disable_thinking_except_serious_tier() -> None:
     assert not intense.extra_body, intense.extra_body
 
 
+def test_voice_fast_path_skips_classifier() -> None:
+    """Voice turns must not pay the router LLM round trip."""
+    def _boom():  # noqa: ANN001
+        raise AssertionError("classifier must not run on the voice fast path")
+
+    original = router._classifier
+    router._classifier = _boom
+    try:
+        decision = classify_request(
+            "Explain in two sentences how a vector database works and why it matters.",
+            voice=True,
+        )
+        assert decision.reason == "fast_path_voice", decision
+        assert decision.complexity == "routine", decision
+        assert choose_model(decision) == BASE_MODEL, decision
+    finally:
+        router._classifier = original
+
+
+def test_voice_fast_path_keeps_complex_turns_on_the_strong_tier() -> None:
+    decision = classify_request(
+        "Analyze the tradeoffs between a vector database and Postgres for production.",
+        voice=True,
+    )
+    assert decision.reason == "fast_path_voice", decision
+    assert decision.complexity == "standard", decision
+    assert choose_model(decision) == REASONING_MODEL, decision
+
+
+def test_voice_fast_path_does_not_override_search() -> None:
+    decision = classify_request("what is the latest news on the mars mission", voice=True)
+    assert decision.intent == "current_information", decision
+    assert decision.reason == "fast_path_search", decision
+    assert choose_model(decision) == BASE_MODEL, decision
+
+
+def test_agent_route_passes_the_voice_flag() -> None:
+    import agent_service
+
+    seen: dict[str, bool] = {}
+    original = agent_service.classify_request
+
+    def fake(text: str, *, voice: bool = False) -> RouteDecision:
+        seen["voice"] = voice
+        return RouteDecision(intent="conversation", complexity="routine", confidence=0.9)
+
+    agent_service.classify_request = fake
+    try:
+        _, model = AgentService._route("hello there", voice=True)
+        assert seen["voice"] is True
+        assert model == BASE_MODEL, model
+    finally:
+        agent_service.classify_request = original
+
+
 def main() -> int:
     tests = [value for name, value in sorted(globals().items()) if name.startswith("test_")]
     failures = 0

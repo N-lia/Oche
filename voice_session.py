@@ -68,7 +68,7 @@ def audio_rms(pcm16: bytes) -> float:
 async def _default_agent_streamer(text: str, turn_id: int) -> AsyncIterator[str]:
     from main import astream_chat_agent
 
-    async for chunk in astream_chat_agent(text, thread_id="webapp"):
+    async for chunk in astream_chat_agent(text, thread_id="webapp", voice=True):
         yield chunk
 
 

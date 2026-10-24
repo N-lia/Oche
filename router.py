@@ -87,7 +87,7 @@ _SEARCH_FAST_PATH_MARKERS = (
 )
 
 
-def classify_request(user_input: str) -> RouteDecision:
+def classify_request(user_input: str, *, voice: bool = False) -> RouteDecision:
     """Classify intent and extract useful entities with the fast model."""
     cleaned = user_input.strip().lower()
     words = cleaned.split()
@@ -120,6 +120,19 @@ def classify_request(user_input: str) -> RouteDecision:
             complexity="routine",
             confidence=0.9,
             reason="fast_path_routine",
+        )
+
+    # Fast-path 4: live voice turns are latency-bound. Skip the structured
+    # classifier (a network round trip) and route deterministically: complex
+    # asks keep the stronger tier, everything else answers on nano. The
+    # greeting and search fast paths above still win.
+    if voice:
+        complex_request = any(ind in cleaned for ind in COMPLEX_INDICATORS)
+        return RouteDecision(
+            intent="analysis" if complex_request else "conversation",
+            complexity="standard" if complex_request else "routine",
+            confidence=0.85,
+            reason="fast_path_voice",
         )
 
     user_input = PrivacyVault().scrub(user_input)

@@ -15,8 +15,8 @@ def stream_chat_agent(user_input: str, thread_id: str = "me"):
     yield from agent_service.stream(user_input, thread_id)
 
 
-async def astream_chat_agent(user_input: str, thread_id: str = "me"):
-    async for chunk in agent_service.astream(user_input, thread_id):
+async def astream_chat_agent(user_input: str, thread_id: str = "me", *, voice: bool = False):
+    async for chunk in agent_service.astream(user_input, thread_id, voice=voice):
         yield chunk
 
 

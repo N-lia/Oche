@@ -153,8 +153,8 @@ class AgentService:
         )
 
     @staticmethod
-    def _route(user_input: str) -> tuple[RouteDecision, str]:
-        decision = classify_request(user_input)
+    def _route(user_input: str, voice: bool = False) -> tuple[RouteDecision, str]:
+        decision = classify_request(user_input, voice=voice)
         return decision, choose_model(decision)
 
     @staticmethod
@@ -244,10 +244,10 @@ class AgentService:
             reset_current_user_id(token)
         self._remember_exchange(user_input, "".join(visible_text), thread_id, decision.intent)
 
-    async def astream(self, user_input: str, thread_id: str = "me"):
+    async def astream(self, user_input: str, thread_id: str = "me", *, voice: bool = False):
         visible_text: list[str] = []
         safe_input, vault = scrub_for_external(user_input)
-        decision, model_name = await asyncio.to_thread(self._route, safe_input)
+        decision, model_name = await asyncio.to_thread(self._route, safe_input, voice)
         token = set_current_user_id(thread_id)
         try:
             prompt = await asyncio.to_thread(self._prompt_with_route, safe_input, thread_id, decision)
