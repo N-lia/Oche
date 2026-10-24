@@ -257,7 +257,7 @@ class DeviceController(private val service: AccessibilityService) {
             }
             service.takeScreenshot(
                 Display.DEFAULT_DISPLAY,
-                service.mainExecutor,
+                androidx.core.content.ContextCompat.getMainExecutor(service),
                 object : AccessibilityService.TakeScreenshotCallback {
                     override fun onSuccess(screenshot: AccessibilityService.ScreenshotResult) {
                         val bitmap = try {

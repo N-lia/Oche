@@ -65,6 +65,7 @@ class DeviceClient(
 
     fun start() {
         if (settingsJob != null) return
+        stopped = false
         settingsJob = scope.launch {
             settings.settings.collect { current ->
                 if (stopped) return@collect
