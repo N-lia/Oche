@@ -82,10 +82,19 @@ jobs:
             echo "### Gradle build failed"
             echo
             echo '```'
-            tail -80 /tmp/gradle-build.log || true
+            sed -n '/FAILURE: Build failed/,/^\* Try:/p' /tmp/gradle-build.log | head -60 || true
+            echo '```'
+            echo
+            echo '```'
+            grep -E "^e: |error:|Caused by:|What went wrong|Could not|Unsupported|requires " \
+              /tmp/gradle-build.log | head -60 || true
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
-          tail -60 /tmp/gradle-build.log | while IFS= read -r line; do
+          {
+            sed -n '/FAILURE: Build failed/,/^\* Try:/p' /tmp/gradle-build.log | head -40
+            grep -E "^e: |error:|Caused by:|What went wrong|Could not|Unsupported" \
+              /tmp/gradle-build.log | head -40
+          } | while IFS= read -r line; do
             echo "::error title=Gradle build failed::${line}"
           done
           exit 1
