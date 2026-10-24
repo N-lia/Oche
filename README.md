@@ -129,9 +129,10 @@ messages and shows a live **agent-activity** stream (thinking, tool use).
   are dropped by `turn_id`.
 - **Text turns** send `{"type": "text", …}`; the session streams
   `status`/`tool`/`bot_text_delta` events and optionally speaks the reply.
-- Backchannel clips are short phrases pre-synthesized in OYI's voice with the
-  soft `backchannel` mood and cached under `BACKCHANNEL_CACHE_DIR`
-  (default `data/backchannels`) so playback never waits on Modal.
+- Backchannel clips are short phrases pre-synthesized in OYI's **default** voice
+  with the soft `backchannel` mood and cached under `BACKCHANNEL_CACHE_DIR`
+  (default `$HOME/backchannels`). Cache keys include the active TTS voice, so
+  switching providers or voices regenerates them instead of replaying old audio.
 - Redeploy Chatterbox once so the new preset exists:
   `modal deploy modal_chatterbox.py`.
 

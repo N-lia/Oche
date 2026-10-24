@@ -8,6 +8,7 @@ Run:
 from __future__ import annotations
 
 import random
+import os
 import sys
 
 from backchannel import (
@@ -105,6 +106,22 @@ def test_thinking_filler_from_catalog() -> None:
 def test_clip_keys_are_stable_and_unique() -> None:
     assert clip_key("mm-hmm") == clip_key("mm-hmm")
     assert clip_key("mm-hmm") != clip_key("right")
+
+
+def test_clip_keys_follow_the_active_voice() -> None:
+    """A provider/voice swap must invalidate cached audio, not reuse the old timbre."""
+    previous = os.environ.get("TTS_PROVIDER")
+    try:
+        os.environ["TTS_PROVIDER"] = "phonon"
+        phonon_key = clip_key("mm-hmm")
+        os.environ["TTS_PROVIDER"] = "chatterbox"
+        chatterbox_key = clip_key("mm-hmm")
+    finally:
+        if previous is None:
+            os.environ.pop("TTS_PROVIDER", None)
+        else:
+            os.environ["TTS_PROVIDER"] = previous
+    assert phonon_key != chatterbox_key, "voice must be part of the clip cache key"
 
 
 def main() -> int:

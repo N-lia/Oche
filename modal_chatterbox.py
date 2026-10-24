@@ -206,7 +206,9 @@ class ChatterboxService:
         if not text:
             return Response(content="Missing 'text' parameter", status_code=400)
 
-        ref = ref_for(mood)
+        # Backchannels are listener noises, not replies: use the model's
+        # built-in voice instead of the cloned reference used for full replies.
+        ref = None if mood == "backchannel" else ref_for(mood)
         shaped = sanitize_and_shape_text(text, mood)
 
         # Dial settings: load mood preset and allow request-level overrides
@@ -260,7 +262,8 @@ def speak(
     mood = mood or EVENT_MOOD.get(event, "normal")
     params = PRESETS.get(mood, PRESETS["normal"]).copy()
     params.update({k: v for k, v in kwargs.items() if v is not None})
-    ref = ref_for(mood)
+    # Same rule as the HTTP endpoint: backchannels stay on the default voice.
+    ref = None if mood == "backchannel" else ref_for(mood)
     shaped = sanitize_and_shape_text(text, mood)
     wav = call_generate(model(), shaped, audio_prompt_path=ref, **params)
     os.makedirs(OUT_DIR, exist_ok=True)

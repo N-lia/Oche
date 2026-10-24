@@ -198,8 +198,31 @@ def _cache_dir() -> Path:
     return path
 
 
+def _voice_signature() -> str:
+    """Identity of the voice that owns the clip cache.
+
+    Clips are audio, not text: a provider or voice swap must never keep serving
+    the old timbre. This is what retired the cloned-voice "hmm" clips when the
+    WebApp moved to Phonon's built-in default voice.
+    """
+    provider = (os.getenv("TTS_PROVIDER") or "chatterbox").strip().lower()
+    if provider == "phonon":
+        voice = Path(os.getenv("PHONON_MODEL_DIR", "/opt/phonon")) / "default-voice.safetensors"
+        try:
+            stat = voice.stat()
+        except OSError:
+            return "phonon:default"
+        return f"phonon:default:{stat.st_size}:{int(stat.st_mtime)}"
+    if provider == "cosyvoice":
+        return "cosyvoice"
+    # Chatterbox backchannels use its built-in voice (see modal_chatterbox.py),
+    # never the cloned reference used for full replies.
+    return "chatterbox:default"
+
+
 def clip_key(phrase: str, mood: str = BACKCHANNEL_MOOD) -> str:
-    digest = hashlib.sha1(f"{mood}\x00{phrase}".encode("utf-8")).hexdigest()[:16]
+    voice = _voice_signature()
+    digest = hashlib.sha1(f"{voice}\x00{mood}\x00{phrase}".encode("utf-8")).hexdigest()[:16]
     return digest
 
 

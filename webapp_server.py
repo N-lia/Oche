@@ -285,7 +285,10 @@ def _schedule_prewarm() -> None:
 async def api_backchannel_clip(clip_id: str):
     for phrase in all_phrases():
         if clip_key(phrase) == clip_id and clip_path(phrase).exists():
-            return Response(content=clip_path(phrase).read_bytes(), media_type="audio/mpeg")
+            payload = clip_path(phrase).read_bytes()
+            # Phonon caches WAV; Chatterbox caches MP3. Serve the actual bytes.
+            media = "audio/wav" if payload[:4] == b"RIFF" else "audio/mpeg"
+            return Response(content=payload, media_type=media)
     raise HTTPException(status_code=404, detail="Backchannel clip not found")
 
 
