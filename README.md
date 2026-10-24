@@ -23,6 +23,7 @@ openshell sandbox create \
 	--env TELEGRAM_BOT_TOKEN="$TELEGRAM_BOT_TOKEN" \
 	--env My_Telegram_ID="$My_Telegram_ID" \
 	--env NEBIUS_API_KEY="$NEBIUS_API_KEY" \
+	--env NEBIUS_SANDBOX_URL="$NEBIUS_SANDBOX_URL" \
 	--env PARAKEET_GRPC_TARGET="$PARAKEET_GRPC_TARGET" \
 	--env CHATTERBOX_MODAL_URL="$CHATTERBOX_MODAL_URL" \
 	--env TAVILY_API_KEY="$TAVILY_API_KEY" \
@@ -164,6 +165,14 @@ docker compose -f compose.webapp.yaml logs -f caddy   # watch cert issuance
 the embedded IP — no domain purchase needed) and inbound TCP **80 + 443** open in
 the OCI VCN security list. Point the bot at it with
 `TELEGRAM_WEBAPP_URL=https://<WEBAPP_DOMAIN>`.
+
+Diagram generation goes through the Nebius token sandbox. Set
+`NEBIUS_SANDBOX_URL` to the endpoint that accepts
+`{"mermaid": "...", "format": "svg"}` and returns `{"svg": "..."}` (a JSON
+`url` field also works); `NEBIUS_API_KEY`, when set, is sent as a Bearer token.
+Without the URL `render_diagram` returns a clear error instead of inventing an
+image. The model then emits the validated Mermaid source and the WebApp renders
+it live with pele; spoken replies strip the diagram source.
 
 Backchannel pacing is tunable via `BackchannelController` (`min_gap`,
 `first_after`, `long_turn`, `pause`, `max_per_turn`) and the energy VAD threshold

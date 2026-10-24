@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Tests for the agent Skill library (skills.py).
+"""Tests for the agent Skill library (skill/*.md + skills.py).
 
 Run:
     .venv/bin/python test_skills.py
@@ -12,7 +12,28 @@ import sys
 
 os.environ.setdefault("NEBIUS_API_KEY", "test-key")
 
-from skills import SKILL_CATALOG, SKILLS_PROMPT
+from skills import SKILL_CATALOG, SKILLS_DIR, SKILLS_PROMPT, load_skills
+
+
+def test_skills_loaded_from_folder() -> None:
+    # Every skill is an individual Markdown file in skill/.
+    files = sorted(path.name for path in SKILLS_DIR.glob("*-skill.md"))
+    assert files, f"no *-skill.md files found in {SKILLS_DIR}"
+    assert len(files) == len(SKILL_CATALOG), (files, [s.name for s in SKILL_CATALOG])
+    assert len(load_skills()) == len(SKILL_CATALOG)
+
+
+def test_expected_skills_present() -> None:
+    names = {skill.name for skill in SKILL_CATALOG}
+    for expected in (
+        "diagrams",
+        "tavily",
+        "memory",
+        "subagents",
+        "voice-notes",
+        "file-writing",
+    ):
+        assert expected in names, f"missing skill: {expected} (have {names})"
 
 
 def test_diagram_skill_documented() -> None:
@@ -26,6 +47,14 @@ def test_prompt_has_when_and_how() -> None:
     assert "language-mermaid" in text, "the HOW section must carry the exact format"
     # The HOW explicitly forbids the two alias forms the model tends to use.
     assert "NOT a ``` fence" in text and "NOT an invented <mermaid> tag" in text
+
+
+def test_tavily_skill_is_served() -> None:
+    text = SKILLS_PROMPT
+    assert "SKILL tavily" in text
+    assert "tavily_search" in text
+    assert "tavily_research" in text
+    assert "USE WHEN" in text
 
 
 def test_agent_prompt_embeds_skill_library() -> None:
