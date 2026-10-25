@@ -222,9 +222,17 @@ say "5. Point the app at the local gateway"
 ensure_app_ui || bad "could not bring the OYI screen to the front"
 $ADB shell am start -n "$PKG/ai.oyi.device.MainActivity" \
   --es oyi_gateway_url "$GATEWAY_URL" --es oyi_token "$TOKEN" >/dev/null 2>&1
-sleep 3
-ui_dump || true
-check "URL field holds the gateway" "grep -q '127.0.0.1:$PORT' \$UI"
+# The settings are applied on the intent, then Compose recomposes; give the
+# UI a moment to show the new value.
+url_shown() {
+  ui_dump || true
+  grep -q "127.0.0.1:$PORT" "$UI"
+}
+for _ in $(seq 1 10); do
+  url_shown && break
+  sleep 2
+done
+check "URL field holds the gateway" "url_shown"
 check "no fatal exception after saving" "! $ADB logcat -d -s AndroidRuntime:E | grep -q 'FATAL EXCEPTION'"
 
 say "6. Turn on the OYI overlay (real UI switch)"
