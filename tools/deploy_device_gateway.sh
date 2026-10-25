@@ -96,12 +96,18 @@ set_env() {  # set_env <KEY> <value>
   fi
 }
 
-TOKEN=$(grep -E "^[[:space:]]*OYI_DEVICE_TOKEN[[:space:]]*=" "$ENV_FILE" | cut -d= -f2- | tr -d ' ')
+# A missing key must not abort the script under "set -e".
+read_env() {  # read_env <KEY> -> value ("" when absent)
+  grep -E "^[[:space:]]*$1[[:space:]]*=" "$ENV_FILE" 2>/dev/null \
+    | cut -d= -f2- | tr -d ' ' || true
+}
+
+TOKEN=$(read_env OYI_DEVICE_TOKEN)
 if [ -z "$TOKEN" ]; then
   TOKEN=$(openssl rand -hex 32)
   echo "generated a new OYI_DEVICE_TOKEN"
 fi
-API_TOKEN=$(grep -E "^[[:space:]]*OYI_DEVICE_API_TOKEN[[:space:]]*=" "$ENV_FILE" | cut -d= -f2- | tr -d ' ')
+API_TOKEN=$(read_env OYI_DEVICE_API_TOKEN)
 if [ -z "$API_TOKEN" ]; then
   API_TOKEN="$TOKEN"
 fi
@@ -120,7 +126,8 @@ docker compose -p "$PROJECT" -f "$COMPOSE_FILE" up -d --build webapp
 docker compose -p "$PROJECT" -f "$COMPOSE_FILE" up -d caddy
 
 say "Wait for the device API"
-DOMAIN=$(grep -E "^[[:space:]]*WEBAPP_DOMAIN[[:space:]]*=" "$ENV_FILE" | cut -d= -f2- | tr -d ' ')
+DOMAIN=$(read_env WEBAPP_DOMAIN)
+[ -n "$DOMAIN" ] || die "WEBAPP_DOMAIN is missing from $ENV_FILE"
 for _ in $(seq 1 60); do
   if curl -sf -o /dev/null -H "Authorization: Bearer $API_TOKEN" \
       "https://${DOMAIN}/api/device/health"; then
@@ -128,7 +135,7 @@ for _ in $(seq 1 60); do
   fi
   sleep 3
 done
-curl -s -H "Authorization: Bearer $API_TOKEN" "https://${DOMAIN}/api/device/health"
+curl -s -H "Authorization: Bearer $API_TOKEN" "https://${DOMAIN}/api/device/health" || true
 echo
 
 # --------------------------------------------------------------------------
