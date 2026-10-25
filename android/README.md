@@ -74,6 +74,52 @@ adb install -r app/build/outputs/apk/debug/app-debug.apk
 The pairing token is the server's `OYI_DEVICE_TOKEN` (the app sends it as
 `Authorization: Bearer <token>`).
 
+### Pairing from a terminal (debug builds)
+
+Debug builds accept the gateway settings as intent extras, which avoids
+fighting the on-screen keyboard:
+
+```bash
+adb shell am start -n ai.oyi.device.debug/ai.oyi.device.MainActivity \
+  --es oyi_gateway_url http://127.0.0.1:8099 --es oyi_token "$OYI_DEVICE_TOKEN"
+```
+
+Release builds ignore these extras.
+
+### Diagnosing the link
+
+The app logs the connection lifecycle under the `OyiLink` tag:
+
+```bash
+adb logcat -s OyiLink:I
+```
+
+`I OyiLink : connecting to wss://host/ws/device` followed by
+`I OyiLink : connected to ...` means the link is up. A failed attempt shows a
+human-readable reason in the app ("Cannot reach the gateway", "Gateway host
+not found", "TLS handshake failed") instead of a raw socket error.
+
+## End-to-end test on an emulator
+
+`tools/emulator_test.sh` runs the whole product loop on a real Android 14
+emulator: install, overlay bubble, gateway link, usage reporting, and a
+vision-guided command that actually opens an app on the device.
+
+```bash
+# one-time setup
+sdkmanager "emulator" "platform-tools" "platforms;android-35" \
+           "build-tools;35.0.0" "system-images;android-34;google_apis;x86_64"
+avdmanager create avd -n oyi34 \
+  -k "system-images;android-34;google_apis;x86_64" -d pixel_5 --force
+
+cd android && ./gradlew assembleDebug && cd ..
+ANDROID_SDK_ROOT=/path/to/sdk bash tools/emulator_test.sh \
+  android/app/build/outputs/apk/debug/app-debug.apk
+```
+
+It needs `NEBIUS_API_KEY` (read from `.env` if present) and uses an
+`adb reverse` tunnel so the emulator reaches the local gateway.
+
 ## Server configuration
 
 ```bash
