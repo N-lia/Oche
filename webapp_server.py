@@ -23,7 +23,7 @@ import uvicorn
 from dotenv import load_dotenv
 from fastapi import FastAPI, Header, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, Response
+from fastapi.responses import FileResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
@@ -327,15 +327,43 @@ async def device_ws(websocket: WebSocket):
 
 @app.post("/api/chat")
 async def api_chat(req: ChatRequest):
-    """Run text prompt through OYI agent."""
+    """Run text prompt through OYI agent.
+
+    The async path is required: tools such as `control_phone` are coroutines,
+    and the synchronous agent entrypoint cannot invoke them.
+    """
     if not req.prompt.strip():
         return {"response": ""}
     try:
-        reply = await asyncio.to_thread(agent_service.chat, req.prompt, req.thread_id)
-        return {"response": reply}
+        chunks: list[str] = []
+        async for chunk in agent_service.astream(req.prompt, req.thread_id):
+            chunks.append(chunk)
+        return {"response": "".join(chunks)}
     except Exception as exc:
         LOGGER.exception("Agent chat failed")
         raise HTTPException(status_code=500, detail=str(exc))
+
+
+@app.post("/api/chat/stream")
+async def api_chat_stream(req: ChatRequest):
+    """Stream the agent's reply as newline-delimited JSON.
+
+    Each line is {"text": "..."} so a client can render tokens as they
+    arrive.  Async tools (phone control) work on this path too.
+    """
+    if not req.prompt.strip():
+        return StreamingResponse(iter(()), media_type="application/x-ndjson")
+
+    async def generate():
+        try:
+            async for chunk in agent_service.astream(req.prompt, req.thread_id):
+                yield json.dumps({"text": chunk}) + "\n"
+        except Exception as exc:  # noqa: BLE001 - reported to the client
+            LOGGER.exception("Agent chat stream failed")
+            yield json.dumps({"error": str(exc)}) + "\n"
+        yield json.dumps({"done": True}) + "\n"
+
+    return StreamingResponse(generate(), media_type="application/x-ndjson")
 
 
 @app.post("/api/voice-turn")

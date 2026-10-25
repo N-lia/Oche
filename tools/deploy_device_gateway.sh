@@ -87,6 +87,9 @@ fi
 say "Make sure the device environment is set"
 [ -f "$ENV_FILE" ] || die "no $ENV_FILE"
 
+DOMAIN=$(read_env WEBAPP_DOMAIN)
+[ -n "$DOMAIN" ] || die "WEBAPP_DOMAIN is missing from $ENV_FILE"
+
 set_env() {  # set_env <KEY> <value>
   local key="$1" value="$2"
   if grep -qE "^[[:space:]]*$key[[:space:]]*=" "$ENV_FILE"; then
@@ -117,6 +120,9 @@ grep -qE "^[[:space:]]*NEBIUS_API_KEY[[:space:]]*=.+" "$ENV_FILE" || \
 set_env OYI_DEVICE_TOKEN "$TOKEN"
 set_env OYI_DEVICE_API_TOKEN "$API_TOKEN"
 set_env OYI_DEVICE_VISION_MODEL "nvidia/Nemotron-3.5-Super-VL"
+# The agent runs inside the webapp, so its control_phone tool needs to know
+# where the gateway lives as well.
+set_env OYI_DEVICE_GATEWAY_URL "https://${DOMAIN}"
 
 # --------------------------------------------------------------------------
 # 4. Rebuild
@@ -126,8 +132,6 @@ docker compose -p "$PROJECT" -f "$COMPOSE_FILE" up -d --build webapp
 docker compose -p "$PROJECT" -f "$COMPOSE_FILE" up -d caddy
 
 say "Wait for the device API"
-DOMAIN=$(read_env WEBAPP_DOMAIN)
-[ -n "$DOMAIN" ] || die "WEBAPP_DOMAIN is missing from $ENV_FILE"
 for _ in $(seq 1 60); do
   if curl -sf -o /dev/null -H "Authorization: Bearer $API_TOKEN" \
       "https://${DOMAIN}/api/device/health"; then

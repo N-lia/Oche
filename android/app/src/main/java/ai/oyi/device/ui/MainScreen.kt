@@ -22,6 +22,8 @@ import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Switch
+import androidx.compose.material3.Tab
+import androidx.compose.material3.TabRow
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
@@ -47,6 +49,7 @@ import ai.oyi.device.model.ConnectionState
 fun MainScreen(viewModel: MainViewModel = viewModel()) {
     val state by viewModel.state.collectAsStateWithLifecycle()
     val context = LocalContext.current
+    var tab by remember { mutableStateOf(0) }
 
     val lifecycleOwner = LocalLifecycleOwner.current
     DisposableEffect(lifecycleOwner) {
@@ -58,70 +61,97 @@ fun MainScreen(viewModel: MainViewModel = viewModel()) {
     }
 
     Scaffold { padding ->
-        LazyColumn(
+        Column(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(padding)
-                .padding(horizontal = 16.dp),
-            verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
-            item {
-                Spacer(Modifier.height(8.dp))
-                Text(
-                    text = "OYI",
-                    style = MaterialTheme.typography.headlineMedium,
-                    fontWeight = FontWeight.Bold,
+            TabRow(selectedTabIndex = tab) {
+                Tab(
+                    selected = tab == 0,
+                    onClick = { tab = 0 },
+                    text = { Text("Setup") },
                 )
-                Text(
-                    text = "Your phone, your assistant. Overlay, usage tracking and phone control.",
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
-
-            item {
-                PermissionsCard(
-                    state = state,
-                    onOpenOverlay = {
-                        context.startActivity(
-                            Intent(
-                                Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
-                                Uri.parse("package:${context.packageName}"),
-                            ),
-                        )
-                    },
-                    onOpenUsage = {
-                        context.startActivity(Intent(Settings.ACTION_USAGE_ACCESS_SETTINGS))
-                    },
-                    onOpenAccessibility = {
-                        context.startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
-                    },
+                Tab(
+                    selected = tab == 1,
+                    onClick = { tab = 1 },
+                    text = { Text("Chat") },
                 )
             }
-
-            item {
-                GatewayCard(
-                    state = state,
-                    onSave = { url, token -> viewModel.saveGateway(url, token) },
-                )
+            if (tab == 0) {
+                SetupList(state = state, viewModel = viewModel)
+            } else {
+                ChatScreen()
             }
+        }
+    }
+}
 
-            item {
-                RunCard(
-                    enabled = state.overlayEnabled,
-                    autoStart = state.autoStart,
-                    onToggle = { viewModel.setOverlayEnabled(it) },
-                    onAutoStart = { viewModel.setAutoStart(it) },
-                )
-            }
+@Composable
+private fun SetupList(state: UiState, viewModel: MainViewModel) {
+    val context = LocalContext.current
+    LazyColumn(
+        modifier = Modifier
+            .fillMaxSize()
+            .padding(horizontal = 16.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        item {
+            Spacer(Modifier.height(8.dp))
+            Text(
+                text = "OYI",
+                style = MaterialTheme.typography.headlineMedium,
+                fontWeight = FontWeight.Bold,
+            )
+            Text(
+                text = "Your phone, your assistant. Overlay, usage tracking and phone control.",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
 
-            item {
-                UsageCard(state = state)
-            }
+        item {
+            PermissionsCard(
+                state = state,
+                onOpenOverlay = {
+                    context.startActivity(
+                        Intent(
+                            Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
+                            Uri.parse("package:${context.packageName}"),
+                        ),
+                    )
+                },
+                onOpenUsage = {
+                    context.startActivity(Intent(Settings.ACTION_USAGE_ACCESS_SETTINGS))
+                },
+                onOpenAccessibility = {
+                    context.startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
+                },
+            )
+        }
 
-            item {
-                Spacer(Modifier.height(24.dp))
-            }
+        item {
+            GatewayCard(
+                state = state,
+                onSave = { url, token -> viewModel.saveGateway(url, token) },
+            )
+        }
+
+        item {
+            RunCard(
+                enabled = state.overlayEnabled,
+                autoStart = state.autoStart,
+                onToggle = { viewModel.setOverlayEnabled(it) },
+                onAutoStart = { viewModel.setAutoStart(it) },
+            )
+        }
+
+        item {
+            UsageCard(state = state)
+        }
+
+        item {
+            Spacer(Modifier.height(24.dp))
         }
     }
 }

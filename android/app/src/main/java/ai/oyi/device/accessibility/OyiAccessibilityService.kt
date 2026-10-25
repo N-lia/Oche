@@ -28,7 +28,9 @@ class OyiAccessibilityService : AccessibilityService() {
         if (event == null) return
         if (event.eventType != AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED) return
         val packageName = event.packageName?.toString() ?: return
-        runtime.onForeground(packageName, event.eventTime.takeIf { it > 0 } ?: System.currentTimeMillis())
+        // event.eventTime is uptimeMillis (time since boot), not wall clock, so
+        // it must not be used as the "since" timestamp.
+        runtime.onForeground(packageName, System.currentTimeMillis())
     }
 
     override fun onInterrupt() = Unit
