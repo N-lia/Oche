@@ -87,9 +87,6 @@ fi
 say "Make sure the device environment is set"
 [ -f "$ENV_FILE" ] || die "no $ENV_FILE"
 
-DOMAIN=$(read_env WEBAPP_DOMAIN)
-[ -n "$DOMAIN" ] || die "WEBAPP_DOMAIN is missing from $ENV_FILE"
-
 set_env() {  # set_env <KEY> <value>
   local key="$1" value="$2"
   if grep -qE "^[[:space:]]*$key[[:space:]]*=" "$ENV_FILE"; then
@@ -104,6 +101,9 @@ read_env() {  # read_env <KEY> -> value ("" when absent)
   grep -E "^[[:space:]]*$1[[:space:]]*=" "$ENV_FILE" 2>/dev/null \
     | cut -d= -f2- | tr -d ' ' || true
 }
+
+DOMAIN=$(read_env WEBAPP_DOMAIN)
+[ -n "$DOMAIN" ] || die "WEBAPP_DOMAIN is missing from $ENV_FILE"
 
 TOKEN=$(read_env OYI_DEVICE_TOKEN)
 if [ -z "$TOKEN" ]; then
