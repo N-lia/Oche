@@ -185,9 +185,22 @@ check "overlay permission granted" "$ADB shell appops get $PKG SYSTEM_ALERT_WIND
 
 say "4. Launch the app"
 $ADB logcat -c
+# The package manager can take a moment to register a freshly installed app.
+for _ in $(seq 1 6); do
+  if $ADB shell am start -W -n "$PKG/ai.oyi.device.MainActivity" 2>&1 | grep -q "Error type 3"; then
+    sleep 5
+    continue
+  fi
+  break
+done
 $ADB shell am start -W -n "$PKG/ai.oyi.device.MainActivity" 2>&1 | tail -3
 sleep 5
-check "app process is running" "$ADB shell pidof $PKG | grep -q ."
+app_running() { $ADB shell pidof $PKG 2>/dev/null | grep -q .; }
+for _ in $(seq 1 10); do
+  app_running && break
+  sleep 2
+done
+check "app process is running" "app_running"
 check "no fatal exception at startup" "! $ADB logcat -d -s AndroidRuntime:E | grep -q 'FATAL EXCEPTION'"
 
 # The emulator's default route can point at a dead interface, so the device
