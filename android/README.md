@@ -157,3 +157,16 @@ Telegram, the voice webapp, or the live chat.
 - The token is stored in an `EncryptedSharedPreferences` file.
 - v1 is a sideloaded personal app: it uses `PACKAGE_USAGE_STATS` and an
   accessibility service, which are not Play-store friendly.
+
+## Known Android behaviour
+
+- **The bubble is hidden while the Settings app is open.** Android's Settings
+  app sets `HIDE_NON_SYSTEM_OVERLAY_WINDOWS` on its window, which makes the
+  system hide every third-party `TYPE_APPLICATION_OVERLAY` window. This is
+  deliberate platform behaviour (it keeps permission dialogs readable), not
+  an OYI bug — the bubble is drawn over every other app, including the
+  launcher.
+- The overlay uses `FLAG_NOT_FOCUSABLE | FLAG_LAYOUT_IN_SCREEN`. It must not
+  use `FLAG_LAYOUT_NO_LIMITS`: that leaves the display bounds unbounded and
+  the bubble's surface is then never shown.
+

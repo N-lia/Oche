@@ -99,8 +99,12 @@ class OverlayController(
             WindowManager.LayoutParams.WRAP_CONTENT,
             WindowManager.LayoutParams.WRAP_CONTENT,
             type,
+            // NOT_FOCUSABLE keeps the keyboard and the app behind us usable;
+            // LAYOUT_IN_SCREEN keeps the bubble inside the visible display
+            // (FLAG_LAYOUT_NO_LIMITS leaves the display unbounded and the
+            // surface is then never shown).
             WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
-                WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
+                WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
             PixelFormat.TRANSLUCENT,
         ).apply {
             gravity = Gravity.TOP or Gravity.START
