@@ -178,6 +178,18 @@ def strip_telegram_html(text: str) -> str:
     return html.unescape(re.sub(r"<[^>]+>", "", text)).strip()
 
 
+def strip_telegram_html_fragment(text: str) -> str:
+    """Strip Telegram HTML from one streaming chunk.
+
+    Unlike :func:`strip_telegram_html` this keeps the surrounding whitespace:
+    a streamed chunk such as ``" Sir"`` must not lose its leading space, or
+    the words run together.
+    """
+    if not text:
+        return ""
+    return html.unescape(re.sub(r"<[^>]+>", "", text))
+
+
 # ---------------------------------------------------------------------------
 # Native HTML pass-through: the model authors Telegram HTML directly.
 # ---------------------------------------------------------------------------

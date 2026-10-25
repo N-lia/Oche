@@ -80,15 +80,18 @@ class LiveVoiceController(
         if (_active.value) return
         val url = chat.voiceUrl()
         if (url == null) {
+            Log.w(TAG, "no gateway URL configured")
             scope.launch { _events.emit(Event.Failed("Set the OYI gateway URL first")) }
             return
         }
+        Log.i(TAG, "starting live voice on $url")
 
         val minBuffer = AudioRecord.getMinBufferSize(
             SAMPLE_RATE,
             AudioFormat.CHANNEL_IN_MONO,
             AudioFormat.ENCODING_PCM_16BIT,
         )
+        Log.i(TAG, "AudioRecord min buffer: $minBuffer")
         if (minBuffer <= 0) {
             scope.launch { _events.emit(Event.Failed("Microphone is not available")) }
             return
@@ -106,11 +109,13 @@ class LiveVoiceController(
                 minBuffer * 2,
             )
         } catch (error: Exception) {
+            Log.w(TAG, "AudioRecord failed: ${error.message}")
             scope.launch { _events.emit(Event.Failed("Cannot open the microphone: ${error.message}")) }
             return
         }
 
         if (record.state != AudioRecord.STATE_INITIALIZED) {
+            Log.w(TAG, "AudioRecord state ${record.state}")
             record.release()
             scope.launch { _events.emit(Event.Failed("Cannot open the microphone")) }
             return
@@ -118,14 +123,18 @@ class LiveVoiceController(
 
         recorder = record
         record.startRecording()
+        Log.i(TAG, "microphone recording at $SAMPLE_RATE Hz")
         _active.value = true
 
         recordJob = scope.launch(Dispatchers.IO) {
             val buffer = ByteArray(minBuffer)
+            var sent = 0L
             while (true) {
                 val read = runCatching { record.read(buffer, 0, buffer.size) }.getOrDefault(-1)
                 if (read <= 0) continue
                 socket?.send(buffer.toByteString(0, read))
+                sent += read
+                if (sent % 320_000 < read) Log.i(TAG, "sent ${sent / 1000} kB of audio")
             }
         }
 
@@ -136,12 +145,14 @@ class LiveVoiceController(
             put("mode", "agent")
             put("mood", "normal")
             put("thread_id", threadId)
+            put("plain_text", true)
         }
         socket?.send(control.toString())
     }
 
     /** Stops the microphone and closes the socket. */
     fun stop() {
+        Log.i(TAG, "stopping live voice")
         _active.value = false
         recordJob?.cancel()
         recordJob = null
@@ -152,7 +163,7 @@ class LiveVoiceController(
         socket?.close(1000, "stopped")
         socket = null
         stopPlayback()
-        scope.cancel()
+        // The scope stays alive so the session can be started again.
     }
 
     /** Plays a filler/backchannel clip (an MP3 URL). */
@@ -209,12 +220,15 @@ class LiveVoiceController(
         override fun onMessage(webSocket: WebSocket, text: String) {
             val payload = runCatching { JSONObject(text) }.getOrNull() ?: return
             when (payload.optString("type")) {
-                "ready" -> emit(
-                    Event.Ready(
-                        sampleRate = payload.optInt("sample_rate", SAMPLE_RATE),
-                        smartTurn = payload.optBoolean("smart_turn", false),
+                "ready" -> {
+                    Log.i(TAG, "server ready: ${payload.optString("sample_rate")} Hz")
+                    emit(
+                        Event.Ready(
+                            sampleRate = payload.optInt("sample_rate", SAMPLE_RATE),
+                            smartTurn = payload.optBoolean("smart_turn", false),
+                        )
                     )
-                )
+                }
                 "partial" -> emit(Event.Partial(payload.optString("text")))
                 "user_text" -> emit(Event.UserText(payload.optString("text")))
                 "bot_text_delta" -> emit(Event.BotText(payload.optString("text")))
@@ -223,11 +237,15 @@ class LiveVoiceController(
                         android.util.Base64.decode(payload.optString("audio"), android.util.Base64.DEFAULT)
                     }.getOrNull()
                     if (audio != null) {
+                        Log.i(TAG, "reply audio: ${audio.size} bytes")
                         emit(Event.BotAudio(payload.optString("text"), audio))
                     }
                 }
                 "filler" -> emit(Event.Filler(payload.optString("phrase"), payload.optString("url")))
-                "error" -> emit(Event.Failed(payload.optString("message", "Voice error")))
+                "error" -> {
+                    Log.w(TAG, "server error: ${payload.optString("message")}")
+                    emit(Event.Failed(payload.optString("message", "Voice error")))
+                }
                 "turn_end" -> emit(Event.TurnEnded)
                 "interrupted" -> stopPlayback()
             }

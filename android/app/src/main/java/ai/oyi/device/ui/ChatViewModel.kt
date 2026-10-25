@@ -164,7 +164,8 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         _state.update { current ->
             val last = current.messages.lastOrNull()
             val messages = if (last != null && last.role == ChatRole.AGENT && last.pending) {
-                current.messages.dropLast(1) + last.copy(text = last.text + delta, pending = false)
+                // Keep the bubble pending while the reply is still streaming.
+                current.messages.dropLast(1) + last.copy(text = last.text + delta)
             } else {
                 current.messages + ChatMessage(role = ChatRole.AGENT, text = delta, pending = true)
             }

@@ -36,6 +36,7 @@ from device_gateway import (
     device_gateway,
 )
 from device_protocol import CommandRequest, DeviceHello
+from telegram_format import strip_telegram_html, strip_telegram_html_fragment
 from backchannel import (
     CATEGORIES,
     all_phrases,
@@ -148,6 +149,9 @@ class TranscribeRequest(BaseModel):
 class ChatRequest(BaseModel):
     prompt: str
     thread_id: str = "webapp"
+    # The agent writes Telegram HTML. Native clients (the Android app) ask for
+    # plain text so they do not have to render markup.
+    plain: bool = False
 
 
 class VoiceTurnRequest(BaseModel):
@@ -337,8 +341,9 @@ async def api_chat(req: ChatRequest):
     try:
         chunks: list[str] = []
         async for chunk in agent_service.astream(req.prompt, req.thread_id):
-            chunks.append(chunk)
-        return {"response": "".join(chunks)}
+            chunks.append(strip_telegram_html_fragment(chunk) if req.plain else chunk)
+        reply = "".join(chunks)
+        return {"response": reply.strip() if req.plain else reply}
     except Exception as exc:
         LOGGER.exception("Agent chat failed")
         raise HTTPException(status_code=500, detail=str(exc))
@@ -357,7 +362,9 @@ async def api_chat_stream(req: ChatRequest):
     async def generate():
         try:
             async for chunk in agent_service.astream(req.prompt, req.thread_id):
-                yield json.dumps({"text": chunk}) + "\n"
+                yield json.dumps(
+                    {"text": strip_telegram_html_fragment(chunk) if req.plain else chunk}
+                ) + "\n"
         except Exception as exc:  # noqa: BLE001 - reported to the client
             LOGGER.exception("Agent chat stream failed")
             yield json.dumps({"error": str(exc)}) + "\n"

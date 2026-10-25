@@ -63,6 +63,8 @@ class ChatClient(private val settings: SettingsStore) {
         val payload = JSONObject().apply {
             put("prompt", prompt)
             put("thread_id", threadId)
+            // The agent writes Telegram HTML; the app wants plain text.
+            put("plain", true)
         }
         val request = Request.Builder()
             .url("$base/api/chat")
@@ -98,6 +100,7 @@ class ChatClient(private val settings: SettingsStore) {
         val payload = JSONObject().apply {
             put("prompt", prompt)
             put("thread_id", threadId)
+            put("plain", true)
         }
         val request = Request.Builder()
             .url("$base/api/chat/stream")

@@ -95,8 +95,12 @@ class DeviceClient(
 
     private fun reconnect(config: ai.oyi.device.model.DeviceSettings) {
         reconnectJob?.cancel()
-        webSocket?.close(1000, "reconnecting")
+        // Detach the old socket first: its close callback must not schedule a
+        // reconnect, otherwise every reconnect would trigger the next one and
+        // the link would flap once per second.
+        val previous = webSocket
         webSocket = null
+        previous?.close(1000, "reconnecting")
 
         val url = config.gatewayUrl
         val token = config.token
@@ -132,7 +136,11 @@ class DeviceClient(
 
     private val listener = object : WebSocketListener() {
 
+        /** Ignores callbacks from a socket we already replaced. */
+        private fun isCurrent(webSocket: WebSocket): Boolean = webSocket === this@DeviceClient.webSocket
+
         override fun onOpen(webSocket: WebSocket, response: Response) {
+            if (!isCurrent(webSocket)) return
             reconnectAttempt = 0
             runtime.setConnection(ConnectionState.CONNECTED)
             Log.i(TAG, "connected to $targetUrl")
@@ -158,10 +166,12 @@ class DeviceClient(
         }
 
         override fun onMessage(webSocket: WebSocket, text: String) {
+            if (!isCurrent(webSocket)) return
             scope.launch { handleMessage(text) }
         }
 
         override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
+            if (!isCurrent(webSocket)) return
             val reason = describe(t)
             Log.w(TAG, "connection failed: $reason", t)
             runtime.setConnection(ConnectionState.ERROR, reason)
@@ -169,6 +179,7 @@ class DeviceClient(
         }
 
         override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
+            if (!isCurrent(webSocket)) return
             Log.i(TAG, "connection closed: $code $reason")
             runtime.setConnection(ConnectionState.DISCONNECTED, reason)
             scheduleReconnect()

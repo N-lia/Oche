@@ -27,7 +27,7 @@ import numpy as np
 
 from asr_client import AsyncTranscribeStream, ascore_turn
 from backchannel import BackchannelController, clip_path
-from telegram_format import strip_telegram_html
+from telegram_format import strip_telegram_html, strip_telegram_html_fragment
 from turn_policy import classify_turn
 
 LOGGER = logging.getLogger("oyi.voice.session")
@@ -136,6 +136,9 @@ class VoiceSession:
         self.mood = "normal"
         self.thread_id = "webapp"
         self.speak_text_replies = True
+        # Native clients (the Android app) ask for plain text instead of the
+        # Telegram HTML the agent writes.
+        self.plain_text = False
         self.state = SESSION_IDLE
         self.text = ""
         # Monotonic turn counter. Every message carries the id of the turn it
@@ -182,6 +185,7 @@ class VoiceSession:
             self.mood = data.get("mood", "normal")
             self.thread_id = str(data.get("thread_id") or self.thread_id)
             self.speak_text_replies = bool(data.get("speak_text_replies", self.speak_text_replies))
+            self.plain_text = bool(data.get("plain_text", self.plain_text))
             await self.send(
                 {
                     "type": "ready",
@@ -370,9 +374,16 @@ class VoiceSession:
                     return  # superseded by a newer turn
                 etype = event.get("type")
                 if etype == "token" and event.get("text"):
-                    chunks.append(event["text"])
+                    text_chunk = event["text"]
+                    chunks.append(text_chunk)
                     await self.send(
-                        {"type": "bot_text_delta", "text": event["text"], "turn_id": turn_id}
+                        {
+                            "type": "bot_text_delta",
+                            "text": strip_telegram_html_fragment(text_chunk)
+                            if self.plain_text
+                            else text_chunk,
+                            "turn_id": turn_id,
+                        }
                     )
                 elif etype in ("status", "tool"):
                     await self.send({**event, "turn_id": turn_id})
