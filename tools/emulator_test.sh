@@ -133,8 +133,11 @@ check "gateway is up" "curl -s -o /dev/null -w '%{http_code}' -H 'Authorization:
 
 say "1. Boot the Android 14 emulator"
 system_ready() {
+  # sys.boot_completed flips before every system service is up, so wait for
+  # the ones this test actually needs.
   [ "$($ADB shell getprop init.svc.bootanim 2>/dev/null | tr -d '\r')" = "stopped" ] &&
-  $ADB shell service check activity 2>/dev/null | grep -q "found"
+  $ADB shell service check activity 2>/dev/null | grep -q "found" &&
+  $ADB shell service check package 2>/dev/null | grep -q "found"
 }
 
 if $ADB devices | grep -q "emulator-"; then
@@ -159,7 +162,15 @@ $ADB shell settings put global animator_duration_scale 0
 
 say "2. Install the APK"
 $ADB uninstall $PKG >/dev/null 2>&1
-$ADB install -r "$APK" 2>&1 | tail -2
+for attempt in 1 2 3; do
+  if $ADB install -r "$APK" 2>&1 | tail -2 | grep -q "Success"; then break; fi
+  echo "  (install attempt $attempt failed, waiting for the package service)"
+  for _ in $(seq 1 20); do
+    $ADB shell service check package 2>/dev/null | grep -q "found" && break
+    sleep 3
+  done
+  sleep 5
+done
 check "package installed" "$ADB shell pm list packages | grep -q $PKG"
 
 say "3. Grant permissions"
