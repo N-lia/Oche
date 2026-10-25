@@ -17,7 +17,8 @@ class BootReceiver : BroadcastReceiver() {
         }
 
         val settings = (context.applicationContext as OyiApplication).container.settings.settings.value
-        if (!settings.overlayEnabled) return
+        // Only start after a reboot when the user asked for it.
+        if (!settings.autoStart || !settings.overlayEnabled) return
 
         try {
             ContextCompat.startForegroundService(

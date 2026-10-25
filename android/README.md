@@ -99,6 +99,20 @@ adb logcat -s OyiLink:I
 human-readable reason in the app ("Cannot reach the gateway", "Gateway host
 not found", "TLS handshake failed") instead of a raw socket error.
 
+## Chat with OYI
+
+The app has a **Chat** tab next to **Setup**:
+
+- **Text** — `POST /api/chat/stream` on the same webapp; the reply is rendered
+  token by token. Quick actions: *On my screen?*, *Time today*, *Open Settings*.
+- **Live voice** — `WS /ws/voice`, the same protocol as the browser live chat:
+  16 kHz mono PCM16 microphone frames up, base64 MP3 replies played locally.
+  The agent's tools work here too, so you can say "open WhatsApp on my phone".
+
+The agent runs on the server, so the phone needs the gateway configured
+(**Setup → Link to OYI**) and the server needs `OYI_DEVICE_GATEWAY_URL` and
+`OYI_DEVICE_API_TOKEN` for the `control_phone` tool.
+
 ## End-to-end test on an emulator
 
 `tools/emulator_test.sh` runs the whole product loop on a real Android 14

@@ -2,8 +2,11 @@ package ai.oyi.device
 
 import android.content.Intent
 import android.os.Bundle
+import android.provider.Settings
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import androidx.core.content.ContextCompat
+import ai.oyi.device.service.OyiService
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.darkColorScheme
@@ -17,10 +20,25 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         applyDebugOverrides(intent)
+        ensureOyiServiceRunning()
         setContent {
             OyiTheme {
                 MainScreen()
             }
+        }
+    }
+
+    /**
+     * The overlay service is a foreground service, but the system still kills
+     * it when the app is updated or force-stopped. Bring it back so the bubble
+     * does not silently disappear.
+     */
+    private fun ensureOyiServiceRunning() {
+        val settings = (application as OyiApplication).container.settings.settings.value
+        if (!settings.overlayEnabled) return
+        if (!Settings.canDrawOverlays(this)) return
+        runCatching {
+            ContextCompat.startForegroundService(this, Intent(this, OyiService::class.java))
         }
     }
 
