@@ -2,6 +2,7 @@ package ai.oyi.device.net
 
 import android.content.Context
 import android.os.Build
+import android.util.Log
 import ai.oyi.device.BuildConfig
 import ai.oyi.device.data.SettingsStore
 import ai.oyi.device.data.UsageRepository
@@ -60,6 +61,7 @@ class DeviceClient(
     private var stopped = false
     private var connectedUrl: String? = null
     private var connectedToken: String? = null
+    private var targetUrl: String = ""
 
     private var activeCommand: ActiveCommand? = null
 
@@ -115,7 +117,9 @@ class DeviceClient(
 
         connectedUrl = url
         connectedToken = token
+        targetUrl = target
         runtime.setConnection(ConnectionState.CONNECTING)
+        Log.i(TAG, "connecting to $target")
 
         val request = Request.Builder()
             .url(target)
@@ -131,6 +135,7 @@ class DeviceClient(
         override fun onOpen(webSocket: WebSocket, response: Response) {
             reconnectAttempt = 0
             runtime.setConnection(ConnectionState.CONNECTED)
+            Log.i(TAG, "connected to $targetUrl")
             send(
                 JSONObject().apply {
                     put("type", "hello")
@@ -157,14 +162,25 @@ class DeviceClient(
         }
 
         override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
-            runtime.setConnection(ConnectionState.ERROR, t.message ?: "Connection failed")
+            val reason = describe(t)
+            Log.w(TAG, "connection failed: $reason", t)
+            runtime.setConnection(ConnectionState.ERROR, reason)
             scheduleReconnect()
         }
 
         override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
+            Log.i(TAG, "connection closed: $code $reason")
             runtime.setConnection(ConnectionState.DISCONNECTED, reason)
             scheduleReconnect()
         }
+    }
+
+    /** Turns transport exceptions into something a person can act on. */
+    private fun describe(error: Throwable): String = when (error) {
+        is java.net.UnknownHostException -> "Gateway host not found"
+        is java.net.ConnectException -> "Cannot reach the gateway"
+        is javax.net.ssl.SSLException -> "TLS handshake failed"
+        else -> error.message?.takeIf { it.isNotBlank() } ?: "Connection failed"
     }
 
     private fun scheduleReconnect() {
@@ -372,6 +388,7 @@ class DeviceClient(
     )
 
     companion object {
+        private const val TAG = "OyiLink"
         private const val ACTION_SETTLE_MS = 700L
 
         /** Converts a user-entered base URL into the device WebSocket URL. */

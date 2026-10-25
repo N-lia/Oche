@@ -81,12 +81,14 @@ class VisionAgent:
         base_url: str | None = None,
         model: str | None = None,
         timeout_s: float = 75.0,
+        retries: int = 1,
         client: httpx.AsyncClient | None = None,
     ) -> None:
         self.api_key = (api_key if api_key is not None else os.getenv("NEBIUS_API_KEY", "")).strip()
         self.base_url = (base_url or os.getenv("OYI_DEVICE_VISION_BASE_URL", DEFAULT_BASE_URL)).rstrip("/")
         self.model = (model or os.getenv("OYI_DEVICE_VISION_MODEL", DEFAULT_MODEL)).strip()
         self.timeout_s = timeout_s
+        self.retries = max(0, retries)
         self._client = client
         self._owns_client = client is None
         self._client_loop: asyncio.AbstractEventLoop | None = None
@@ -128,7 +130,7 @@ class VisionAgent:
         self._closed = False
         return httpx.AsyncClient(
             timeout=httpx.Timeout(
-                connect=10.0,
+                connect=30.0,
                 read=self.timeout_s,
                 write=20.0,
                 pool=10.0,
@@ -155,32 +157,48 @@ class VisionAgent:
             step=step,
             history=history or [],
         )
-        client = self._get_client()
-        try:
-            response = await client.post(
-                f"{self.base_url}/chat/completions",
-                headers={
-                    "Authorization": f"Bearer {self.api_key}",
-                    "Content-Type": "application/json",
-                },
-                json=payload,
-            )
-            response.raise_for_status()
-            data = response.json()
-        except httpx.HTTPStatusError as exc:
-            detail = _safe_error_body(exc.response)
-            raise VisionAgentError(f"Nebius vision request failed ({exc.response.status_code}): {detail}") from exc
-        except httpx.HTTPError as exc:
-            raise VisionAgentError(f"Nebius vision request failed: {exc}") from exc
-        except ValueError as exc:
-            raise VisionAgentError("Nebius returned a non-JSON response") from exc
 
-        content = _extract_content(data)
-        try:
-            return parse_action(content)
-        except ActionParseError as exc:
-            LOGGER.warning("Vision model returned an invalid action: %s", exc)
-            raise VisionAgentError(str(exc)) from exc
+        last_error: Exception | None = None
+        for attempt in range(self.retries + 1):
+            if attempt:
+                # A transient DNS/TCP hiccup should not abort a phone command.
+                await asyncio.sleep(1.5 * attempt)
+                LOGGER.warning("Retrying the vision request (attempt %s)", attempt + 1)
+            try:
+                response = await self._get_client().post(
+                    f"{self.base_url}/chat/completions",
+                    headers={
+                        "Authorization": f"Bearer {self.api_key}",
+                        "Content-Type": "application/json",
+                    },
+                    json=payload,
+                )
+                response.raise_for_status()
+                data = response.json()
+            except httpx.HTTPStatusError as exc:
+                detail = _safe_error_body(exc.response)
+                raise VisionAgentError(
+                    f"Nebius vision request failed ({exc.response.status_code}): {detail}"
+                ) from exc
+            except httpx.HTTPError as exc:
+                last_error = exc
+                LOGGER.warning("Vision transport error: %s", exc)
+                continue
+            except ValueError as exc:
+                raise VisionAgentError("Nebius returned a non-JSON response") from exc
+
+            content = _extract_content(data)
+            try:
+                return parse_action(content)
+            except ActionParseError as exc:
+                LOGGER.warning("Vision model returned an invalid action: %s", exc)
+                raise VisionAgentError(str(exc)) from exc
+
+        detail = last_error.__class__.__name__ if last_error else "unknown error"
+        message = str(last_error).strip() if last_error else ""
+        raise VisionAgentError(
+            f"Nebius vision request failed ({detail}): {message or 'no response'}"
+        )
 
     def _request_payload(
         self,

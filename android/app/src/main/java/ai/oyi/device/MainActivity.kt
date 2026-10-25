@@ -1,5 +1,6 @@
 package ai.oyi.device
 
+import android.content.Intent
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -15,11 +16,38 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        applyDebugOverrides(intent)
         setContent {
             OyiTheme {
                 MainScreen()
             }
         }
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        applyDebugOverrides(intent)
+    }
+
+    /**
+     * Debug builds accept the gateway settings as intent extras so a device can
+     * be paired from a terminal:
+     *
+     *   adb shell am start -n ai.oyi.device.debug/ai.oyi.device.MainActivity \
+     *     --es oyi_gateway_url http://10.0.2.2:8099 --es oyi_token <token>
+     *
+     * Release builds ignore this completely.
+     */
+    private fun applyDebugOverrides(intent: Intent?) {
+        if (!BuildConfig.DEBUG) return
+        val url = intent?.getStringExtra(EXTRA_GATEWAY_URL) ?: return
+        val token = intent?.getStringExtra(EXTRA_TOKEN) ?: return
+        (application as OyiApplication).container.settings.saveGateway(url, token)
+    }
+
+    private companion object {
+        const val EXTRA_GATEWAY_URL = "oyi_gateway_url"
+        const val EXTRA_TOKEN = "oyi_token"
     }
 }
 
