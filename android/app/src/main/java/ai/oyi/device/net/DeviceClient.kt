@@ -241,6 +241,11 @@ class DeviceClient(
         val command = activeCommand ?: return
         if (payload.optString("command_id") != command.id) return
 
+        // The server labels an action with the observation step it came from.
+        // Ignoring anything else prevents a retried action from running twice.
+        val actionStep = payload.optInt("step", command.step)
+        if (actionStep != command.step) return
+
         val action = payload.optJSONObject("action") ?: return
         scope.launch {
             val controller = runtime.controller
@@ -321,6 +326,13 @@ class DeviceClient(
         val command = activeCommand ?: return
         scope.launch {
             val controller = runtime.controller
+            if (controller == null) {
+                // Without the accessibility service there is no screen to look
+                // at; report that instead of sending an empty observation the
+                // model would have to guess about.
+                command.lastActionOk = false
+                command.lastError = "The OYI accessibility service is not enabled."
+            }
             val snapshot = try {
                 controller?.snapshot()
             } catch (error: Exception) {

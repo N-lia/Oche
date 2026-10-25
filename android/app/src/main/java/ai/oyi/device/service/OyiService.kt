@@ -166,7 +166,7 @@ class OyiService : Service() {
             .setContentTitle(getString(R.string.notification_title))
             .setContentText("Overlay, usage tracking and the OYI link are running.")
             .setContentIntent(openIntent)
-            .addAction(0, getString(R.string.notification_stop), stopIntent)
+            .addAction(R.drawable.ic_stat_oyi, getString(R.string.notification_stop), stopIntent)
             .setOngoing(true)
             .setPriority(NotificationCompat.PRIORITY_LOW)
             .build()

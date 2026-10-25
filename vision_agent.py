@@ -11,6 +11,8 @@ the transport.
 
 from __future__ import annotations
 
+import asyncio
+import base64
 import json
 import logging
 import os
@@ -87,27 +89,51 @@ class VisionAgent:
         self.timeout_s = timeout_s
         self._client = client
         self._owns_client = client is None
+        self._client_loop: asyncio.AbstractEventLoop | None = None
         self._closed = False
 
     async def aclose(self) -> None:
         if self._client is not None and self._owns_client:
-            await self._client.aclose()
+            try:
+                await self._client.aclose()
+            except Exception:  # noqa: BLE001 - best effort
+                pass
             self._client = None
         self._closed = True
 
     def _get_client(self) -> httpx.AsyncClient:
+        """Return a client bound to the running event loop.
+
+        httpx.AsyncClient is tied to the loop it was created on. The gateway
+        may be driven from a different loop (tests, a reloaded server), so an
+        owned client that no longer matches is replaced.
+        """
         if self._client is None or self._closed:
-            self._client = httpx.AsyncClient(
-                timeout=httpx.Timeout(
-                    connect=10.0,
-                    read=self.timeout_s,
-                    write=20.0,
-                    pool=10.0,
-                )
-            )
-            self._owns_client = True
-            self._closed = False
+            self._client = self._new_client()
+            return self._client
+        if self._owns_client:
+            try:
+                running = asyncio.get_running_loop()
+            except RuntimeError:
+                running = None
+            if running is not None and self._client_loop is not running:
+                self._client = self._new_client()
         return self._client
+
+    def _new_client(self) -> httpx.AsyncClient:
+        try:
+            self._client_loop = asyncio.get_running_loop()
+        except RuntimeError:
+            self._client_loop = None
+        self._closed = False
+        return httpx.AsyncClient(
+            timeout=httpx.Timeout(
+                connect=10.0,
+                read=self.timeout_s,
+                write=20.0,
+                pool=10.0,
+            )
+        )
 
     async def next_action(
         self,
@@ -198,7 +224,7 @@ class VisionAgent:
             if screenshot.startswith("data:image/"):
                 image_url = screenshot
             else:
-                image_url = f"data:image/jpeg;base64,{screenshot}"
+                image_url = f"data:{_image_mime(screenshot)};base64,{screenshot}"
             content.append({"type": "image_url", "image_url": {"url": image_url}})
 
         return {
@@ -210,6 +236,27 @@ class VisionAgent:
             "temperature": 0.1,
             "max_tokens": 700,
         }
+
+
+def _image_mime(base64_payload: str) -> str:
+    """Detect the image type from the payload's magic bytes.
+
+    Nebius validates that the declared MIME type matches the data, so a
+    mislabelled screenshot is rejected with a confusing 400.
+    """
+    try:
+        header = base64.b64decode(base64_payload[:32], validate=False)
+    except Exception:  # noqa: BLE001 - fall back to the phone's default
+        return "image/jpeg"
+    if header.startswith(b"\xff\xd8\xff"):
+        return "image/jpeg"
+    if header.startswith(b"\x89PNG\r\n\x1a\n"):
+        return "image/png"
+    if header.startswith(b"RIFF") and header[8:12] == b"WEBP":
+        return "image/webp"
+    if header.startswith(b"GIF8"):
+        return "image/gif"
+    return "image/jpeg"
 
 
 def _extract_content(data: dict[str, Any]) -> str:

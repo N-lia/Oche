@@ -2,6 +2,7 @@ package ai.oyi.device.data
 
 import android.content.Context
 import android.content.SharedPreferences
+import android.util.Log
 import androidx.security.crypto.EncryptedSharedPreferences
 import androidx.security.crypto.MasterKey
 import ai.oyi.device.BuildConfig
@@ -21,17 +22,27 @@ class SettingsStore(context: Context) {
 
     private val appContext = context.applicationContext
 
-    private val masterKey: MasterKey = MasterKey.Builder(appContext)
-        .setKeyScheme(MasterKey.KeyScheme.AES256_GCM)
-        .build()
-
-    private val securePrefs: SharedPreferences = EncryptedSharedPreferences.create(
-        appContext,
-        "oyi_secure",
-        masterKey,
-        EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV,
-        EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM,
-    )
+    /**
+     * The pairing token lives in encrypted preferences. Some devices refuse to
+     * create the Keystore master key (locked keystore, vendor bug); falling
+     * back to plain preferences keeps the app usable instead of crashing on
+     * startup.
+     */
+    private val securePrefs: SharedPreferences = try {
+        val masterKey = MasterKey.Builder(appContext)
+            .setKeyScheme(MasterKey.KeyScheme.AES256_GCM)
+            .build()
+        EncryptedSharedPreferences.create(
+            appContext,
+            "oyi_secure",
+            masterKey,
+            EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV,
+            EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM,
+        )
+    } catch (error: Exception) {
+        Log.w("OyiSettings", "Encrypted preferences unavailable, using plain storage", error)
+        appContext.getSharedPreferences("oyi_secure_plain", Context.MODE_PRIVATE)
+    }
 
     private val prefs: SharedPreferences =
         appContext.getSharedPreferences("oyi_settings", Context.MODE_PRIVATE)
