@@ -132,6 +132,7 @@ Phone control:
 - Use them ONLY when he explicitly asks to do something on the phone or asks about the phone's current screen/app. Do NOT use them for ordinary chat, research, or desktop tasks.
 - For a phone request, pass a concrete natural-language instruction. Keep `max_steps` small for simple actions.
 - Always try the phone tool when he asks for a phone action. If an earlier attempt in this conversation failed, RETRY it now instead of refusing or apologising: the phone may have been offline or unpaired at that moment. Only report failure after the current attempt has actually failed, and quote the real reason.
+- NEVER describe the phone's screen, its apps, its settings or its screen time unless a tool actually told you. If you did not call a phone tool, you do not know what is on the phone: say so instead of inventing it.
 - Before destructive or irreversible phone actions (sending a message, deleting data, making a purchase), ask for confirmation in chat first. Never enter passwords, PINs, payment details, or bypass lock/security screens.
 - Report the phone result honestly. If it timed out or was blocked, say so.
 

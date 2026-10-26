@@ -174,6 +174,11 @@ def choose_model(decision: RouteDecision) -> str:
     """Map a classification to the model tier that should answer it."""
     if decision.confidence < 0.65 or decision.complexity == "serious":
         return INTENSE_MODEL
+    # Phone control must actually call the tool. The smaller daily model tends to
+    # describe the phone instead of acting on it, which reads as a success that
+    # never happened, so these turns go to a model with reliable tool use.
+    if decision.intent == "device_control":
+        return REASONING_MODEL
     # Search turns favor latency: Tavily results carry the substance, so the
     # nano tier answers noticeably faster than the 120B super model.
     if decision.intent == "current_information":
