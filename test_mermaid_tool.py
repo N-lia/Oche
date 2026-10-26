@@ -10,6 +10,7 @@ is delivered to Telegram when a sender is registered.
 from __future__ import annotations
 
 import asyncio
+import re
 from types import SimpleNamespace
 
 import mermaid_tool
@@ -145,6 +146,23 @@ def test_telegram_delivery_failure_is_reported() -> None:
     assert "telegram down" in reply, reply
 
 
+def test_empty_output_gets_a_unique_path() -> None:
+    backend = FakeBackend()
+    original = _with_backend(backend)
+    try:
+        first = run({"source": "flowchart LR\n  A --> B"})
+        second = run({"source": "flowchart LR\n  A --> B"})
+    finally:
+        sandbox_backend.get_sandbox_backend = original
+
+    assert "/tmp/oyi-diagram-" in first, first
+    assert "/tmp/oyi-diagram-" in second, second
+    first_path = re.search(r"/tmp/oyi-diagram-[0-9a-f]+\.svg", first)
+    second_path = re.search(r"/tmp/oyi-diagram-[0-9a-f]+\.svg", second)
+    assert first_path and second_path, (first, second)
+    assert first_path.group(0) != second_path.group(0), (first, second)
+
+
 def test_invalid_mermaid_is_an_error() -> None:
     backend = FakeBackend(
         exit_code=2,
@@ -236,6 +254,7 @@ if __name__ == "__main__":
     test_source_written_as_svg_is_rejected()
     test_missing_png_is_rejected()
     test_relative_output_is_workspace_relative()
+    test_empty_output_gets_a_unique_path()
     test_output_path_is_confined()
     test_empty_source_is_rejected()
     test_missing_backend_is_reported()

@@ -52,11 +52,12 @@ class RenderMermaidInput(BaseModel):
         ),
     )
     output: str = Field(
-        default="/tmp/oyi-diagram.svg",
+        default="",
         description=(
             "Path for the SVG: absolute under /tmp/ or /workspace/, or "
-            "relative to /workspace/. Defaults to /tmp/oyi-diagram.svg. "
-            "The PNG is written next to it with the same name and a .png suffix."
+            "relative to /workspace/. Leave empty for a unique "
+            "/tmp/oyi-diagram-<id>.svg. The PNG is written next to it with the "
+            "same name and a .png suffix."
         ),
     )
     caption: str = Field(
@@ -102,7 +103,7 @@ def _clean_caption(caption: str) -> str:
 @tool("render_mermaid", args_schema=RenderMermaidInput)
 async def render_mermaid(
     source: str,
-    output: str = "/tmp/oyi-diagram.svg",
+    output: str = "",
     caption: str = "Mermaid diagram",
 ) -> str:
     """Render Mermaid text to a verified SVG and PNG and deliver the image.
@@ -119,6 +120,8 @@ async def render_mermaid(
     if len(source) > MAX_SOURCE_CHARS:
         return f"Error: the Mermaid source exceeds {MAX_SOURCE_CHARS} characters."
 
+    if not output.strip():
+        output = f"/tmp/oyi-diagram-{uuid.uuid4().hex[:8]}.svg"
     try:
         path = _validated_output(output)
     except ValueError as exc:
