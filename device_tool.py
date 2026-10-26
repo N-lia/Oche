@@ -24,9 +24,9 @@ class ControlPhoneInput(BaseModel):
         description="Optional paired device id. Leave empty when only one phone is online.",
     )
     max_steps: int = Field(
-        default=8,
+        default=12,
         ge=1,
-        le=15,
+        le=24,
         description="Maximum UI actions for this task. Keep small for simple tasks.",
     )
 
@@ -50,7 +50,7 @@ def _api_token() -> str:
 
 
 @tool(args_schema=ControlPhoneInput)
-async def control_phone(request: str, device_id: str = "", max_steps: int = 8) -> str:
+async def control_phone(request: str, device_id: str = "", max_steps: int = 12) -> str:
     """Control Sir Mario's paired Android phone with a vision-guided agent.
 
     Use ONLY when he explicitly asks to do something on his phone or asks what

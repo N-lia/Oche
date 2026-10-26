@@ -61,6 +61,10 @@ Targeting rules (Dynamic-First, Coordinate-Fallback):
   element matches the target, e.g. a custom-drawn canvas. Never invent an
   index that is not in the list.
 - To type, target the text field: {"type":"type","target":5,"text":"hello"}.
+- "scroll" with direction "down" reveals the content BELOW the current
+  screen; "up" reveals the content above. Each scroll moves about half a
+  screen, so repeat it while the item you want is still not listed.
+- To read the screen, do not act: use "done" with the answer in "message".
 
 Other rules:
 - One action per response. The next screenshot arrives after it executes.

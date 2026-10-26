@@ -182,15 +182,60 @@ class DeviceController(private val service: AccessibilityService) {
 
     // -------------------------------------------------------------- scrolling
 
+    /**
+     * Scrolls the content.
+     *
+     * Model semantics: "down" reveals the content *below* the current
+     * viewport. The gesture is a slow drag (not a fling) that keeps a large
+     * overlap with the previous viewport, so no row is skipped and the screen
+     * never keeps moving after the action - the same approach ARTEMIS uses
+     * for directional scrolling.
+     */
     private fun scroll(direction: String, distance: Float, target: Int?): ExecutionResult {
-        val forward = direction == "down" || direction == "right"
+        val metrics = service.resources.displayMetrics
+        val width = metrics.widthPixels.toFloat()
+        val height = metrics.heightPixels.toFloat()
+        val reach = (0.48f * distance.coerceIn(0.25f, 1f))
+
+        val path = Path()
+        when (direction) {
+            // Reveal the content below: drag the finger upwards.
+            "down" -> {
+                val startY = height * 0.78f
+                path.moveTo(width / 2f, startY)
+                path.lineTo(width / 2f, startY - height * reach)
+            }
+            // Reveal the content above: drag the finger downwards.
+            "up" -> {
+                val startY = height * 0.30f
+                path.moveTo(width / 2f, startY)
+                path.lineTo(width / 2f, startY + height * reach)
+            }
+            "left" -> {
+                val startX = width * 0.80f
+                path.moveTo(startX, height / 2f)
+                path.lineTo(startX - width * 0.48f * distance.coerceIn(0.25f, 1f), height / 2f)
+            }
+            else -> {
+                val startX = width * 0.20f
+                path.moveTo(startX, height / 2f)
+                path.lineTo(startX + width * 0.48f * distance.coerceIn(0.25f, 1f), height / 2f)
+            }
+        }
+
+        val gesture = Builder().addStroke(StrokeDescription(path, 0, SCROLL_DURATION_MS)).build()
+        if (service.dispatchGesture(gesture, null, null)) {
+            return ExecutionResult(true, "Scrolled $direction")
+        }
+
+        // Fallback: ask a scrollable container to scroll itself.
         val node = if (target != null) {
             currentElements.firstOrNull { it.index == target }?.node
         } else {
             findScrollable()
         }
         if (node != null) {
-            val action = if (forward) {
+            val action = if (direction == "down" || direction == "right") {
                 AccessibilityNodeInfo.ACTION_SCROLL_FORWARD
             } else {
                 AccessibilityNodeInfo.ACTION_SCROLL_BACKWARD
@@ -199,42 +244,7 @@ class DeviceController(private val service: AccessibilityService) {
                 return ExecutionResult(true, "Scrolled $direction")
             }
         }
-        return swipe(direction, distance).let { ok ->
-            if (ok) ExecutionResult(true, "Swiped $direction")
-            else ExecutionResult(false, "Could not scroll")
-        }
-    }
-
-    private fun swipe(direction: String, distance: Float): Boolean {
-        val metrics = service.resources.displayMetrics
-        val width = metrics.widthPixels.toFloat()
-        val height = metrics.heightPixels.toFloat()
-        val amount = distance.coerceIn(0.1f, 1f)
-        val path = Path()
-        when (direction) {
-            "up" -> {
-                val startY = height * 0.75f
-                path.moveTo(width / 2f, startY)
-                path.lineTo(width / 2f, startY - height * 0.4f * amount)
-            }
-            "down" -> {
-                val startY = height * 0.3f
-                path.moveTo(width / 2f, startY)
-                path.lineTo(width / 2f, startY + height * 0.4f * amount)
-            }
-            "left" -> {
-                val startX = width * 0.8f
-                path.moveTo(startX, height / 2f)
-                path.lineTo(startX - width * 0.5f * amount, height / 2f)
-            }
-            else -> {
-                val startX = width * 0.2f
-                path.moveTo(startX, height / 2f)
-                path.lineTo(startX + width * 0.5f * amount, height / 2f)
-            }
-        }
-        val gesture = Builder().addStroke(StrokeDescription(path, 0, 300)).build()
-        return service.dispatchGesture(gesture, null, null)
+        return ExecutionResult(false, "Could not scroll $direction")
     }
 
     // --------------------------------------------------------------- helpers
@@ -340,5 +350,8 @@ class DeviceController(private val service: AccessibilityService) {
         const val MAX_NODES = 2000
         const val MAX_SCREEN_EDGE = 1280
         const val JPEG_QUALITY = 60
+
+        /** A slow drag instead of a fling, so the viewport settles predictably. */
+        const val SCROLL_DURATION_MS = 700L
     }
 }

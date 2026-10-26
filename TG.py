@@ -318,7 +318,7 @@ async def device_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                 headers={"Authorization": f"Bearer {token}"},
                 json={
                     "text": text,
-                    "max_steps": 8,
+                    "max_steps": 12,
                     "timeout_s": 220,
                     "thread_id": conversation_thread_id(update.effective_chat.id),
                 },

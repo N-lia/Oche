@@ -119,7 +119,7 @@ class CommandRequest(BaseModel):
 
     text: str = Field(min_length=1, max_length=4000)
     device_id: str = Field(default="", max_length=128)
-    max_steps: int = Field(default=8, ge=1, le=16)
+    max_steps: int = Field(default=16, ge=1, le=32)
     timeout_s: float = Field(default=180.0, ge=10.0, le=300.0)
     thread_id: str = Field(default="device", max_length=128)
 

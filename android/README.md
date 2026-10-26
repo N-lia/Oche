@@ -99,6 +99,46 @@ adb logcat -s OyiLink:I
 human-readable reason in the app ("Cannot reach the gateway", "Gateway host
 not found", "TLS handshake failed") instead of a raw socket error.
 
+## How the phone is controlled
+
+The control loop follows **Google ARTEMIS** (the phone-use framework behind
+AndroidWorld's SOTA results) rather than asking a model to guess pixels:
+
+1. **Observation** — the phone publishes the visible, labelled elements of the
+   screen as a numbered index, in ARTEMIS' *Visible UI Elements* format:
+
+   ```
+   [1] Text: 'Wi-Fi' | Bounds: [42,332][700,360] | id: wifi_title
+   [2] Text: 'Battery' | Bounds: [42,520][700,548]
+   ```
+
+   Duplicates are collapsed, off-screen and unlabelled nodes are dropped, and
+   the screenshot travels alongside it.
+
+2. **Action** — the planner targets an element by its 1-based `target` index:
+
+   ```json
+   {"type": "tap", "target": 3}
+   ```
+
+   Raw `x`/`y` (0..1000) remain available only as a fallback for custom-drawn
+   UI that exposes no accessible element — ARTEMIS' *Dynamic-First,
+   Coordinate-Fallback* rule.
+
+3. **Execution** — the *device* resolves the index against the live node it
+   captured, so the tap lands on the element the model meant. If that node no
+   longer accepts the click, the recorded centre is used as the fallback.
+
+4. **Recovery** — a blocked action (the element moved, the tap missed) is
+   handed back to the planner together with the reason instead of ending the
+   task.
+
+5. **Scrolling** is a slow drag that keeps a large overlap with the previous
+   viewport, so no row is skipped and the screen settles where it was left.
+
+The model never invents an index that is not in the list, and it is told when
+the previous action failed so it can correct itself.
+
 ## Chat with OYI
 
 The app has a **Chat** tab next to **Setup**:

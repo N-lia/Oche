@@ -513,6 +513,12 @@ class DeviceGateway:
             return
 
         command.last_action = action
+        LOGGER.info(
+            "command=%s step=%s action=%s",
+            command.command_id,
+            observation.step,
+            action_for_device(action),
+        )
         command.history.append(
             {
                 "step": observation.step,

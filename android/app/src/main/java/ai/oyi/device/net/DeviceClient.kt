@@ -369,6 +369,11 @@ class DeviceClient(
             }
 
             val foreground = runtime.foreground.value
+            Log.i(
+                TAG,
+                "step=${command.step} elements=${snapshot?.elements?.size ?: 0} " +
+                    "list=${snapshot?.elementText?.lineSequence()?.take(3)?.joinToString(" | ")}",
+            )
             val message = JSONObject().apply {
                 put("type", "observation")
                 put("command_id", command.id)
