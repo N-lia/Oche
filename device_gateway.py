@@ -185,6 +185,11 @@ class DeviceGateway:
                 "error",
                 "Phone reconnected; previous command was interrupted.",
             )
+            await self._finish_device_jobs(
+                previous.hello.device_id,
+                "error",
+                "Phone reconnected; previous command was interrupted.",
+            )
         LOGGER.info(
             "Device connected id=%s name=%s sdk=%s",
             connection.hello.device_id,
@@ -193,15 +198,24 @@ class DeviceGateway:
         )
 
     async def unregister(self, connection: DeviceConnection) -> None:
+        removed = False
         async with self._lock:
             if self._devices.get(connection.hello.device_id) is connection:
                 self._devices.pop(connection.hello.device_id, None)
+                removed = True
         connection.connected = False
-        await self._finish_device_commands(
-            connection.hello.device_id,
-            "error",
-            "Phone disconnected before the command finished.",
-        )
+        connection.active_command_id = ""
+        if removed:
+            await self._finish_device_commands(
+                connection.hello.device_id,
+                "error",
+                "Phone disconnected before the command finished.",
+            )
+            await self._finish_device_jobs(
+                connection.hello.device_id,
+                "error",
+                "Phone disconnected before the command finished.",
+            )
         LOGGER.info("Device disconnected id=%s", connection.hello.device_id)
 
     def get(self, device_id: str) -> DeviceConnection | None:
@@ -238,6 +252,8 @@ class DeviceGateway:
     ) -> DeviceJob:
         """Register a job that an external planner will drive."""
         connection = self._choose_device(device_id)
+        if connection.active_command_id:
+            raise DeviceGatewayError("The phone is already running another command.")
         job = DeviceJob(
             id=f"job_{uuid.uuid4().hex[:12]}",
             device_id=connection.hello.device_id,
@@ -247,6 +263,10 @@ class DeviceGateway:
         job.result = asyncio.get_running_loop().create_future()
         self._jobs[job.id] = job
         self._job_by_device[job.device_id] = job.id
+        # Claim the phone before the first await, so two concurrent commands
+        # cannot both pass the guard.  The phone uses the same id in its
+        # observations, and finish_job uses it to release the phone.
+        connection.active_command_id = job.id
         # The phone runs its own command loop; we only replace the planner.
         try:
             await connection.send(
@@ -291,6 +311,8 @@ class DeviceGateway:
         job = self._jobs.get(job_id)
         if job is None:
             raise DeviceGatewayError(f"Unknown job {job_id}")
+        if job.done:
+            return {"finished": True, "status": job.status, "message": job.message}
         try:
             action = parse_action(raw)
         except ActionParseError as error:
@@ -299,11 +321,13 @@ class DeviceGateway:
             return {"finished": False, "error": str(error)}
 
         if action.type in {"done", "ask_user"}:
-            job.status = "completed"
-            job.done = True
-            job.message = action.message or (
+            message = action.message or (
                 "Done." if action.type == "done" else "I need more information to continue."
             )
+            # Finish here rather than waiting for the planner's final POST:
+            # the phone is still waiting for an action or command_done, and a
+            # dead planner must not leave it permanently busy.
+            await self.finish_job(job.id, status="completed", message=message)
             return {"finished": True, "status": job.status, "message": job.message}
 
         job.step += 1
@@ -321,9 +345,12 @@ class DeviceGateway:
         job = self._jobs.get(job_id)
         if job is None:
             raise DeviceGatewayError(f"Unknown job {job_id}")
+        if job.done:
+            return {"ok": True}
         job.status = status
         job.message = message
         job.done = True
+        self._job_by_device.pop(job.device_id, None)
         if job.result is not None and not job.result.done():
             job.result.set_result(
                 CommandResult(
@@ -334,7 +361,33 @@ class DeviceGateway:
                     steps=job.step,
                 )
             )
-        self._job_by_device.pop(job.device_id, None)
+        # Wake the two possible waiters: the planner long-polling for the next
+        # screen and the phone handler waiting for the planner's action.
+        job.observations.put_nowait(
+            {"finished": True, "status": job.status, "message": job.message}
+        )
+        job.actions.put_nowait({"finished": True})
+
+        # The phone blocks new commands until it receives command_done.  A
+        # sandbox job used to finish only on the server, leaving the phone's
+        # activeCommand set, so the next job was rejected as "busy" and then
+        # timed out.  Release the claimed command explicitly.
+        connection = self._devices.get(job.device_id)
+        if connection is not None and connection.active_command_id == job.id:
+            connection.active_command_id = ""
+            try:
+                await connection.send(
+                    {
+                        "type": "command_done",
+                        "command_id": job.id,
+                        "status": job.status,
+                        "message": job.message,
+                    }
+                )
+            except Exception:  # noqa: BLE001 - phone may have disconnected
+                LOGGER.debug(
+                    "Could not deliver command_done for job %s", job.id, exc_info=True
+                )
         return {"ok": True}
 
     async def job_result(self, job_id: str, timeout: float = 300.0) -> CommandResult:
@@ -345,20 +398,12 @@ class DeviceGateway:
         try:
             return await asyncio.wait_for(job.result, timeout=timeout)
         except asyncio.TimeoutError:
-            job.done = True
-            job.status = "timeout"
-            job.message = "The sandbox planner did not finish in time."
-            if job.result is not None and not job.result.done():
-                job.result.set_result(
-                    CommandResult(
-                        command_id=job.id,
-                        device_id=job.device_id,
-                        status="timeout",
-                        message=job.message,
-                        steps=job.step,
-                    )
-                )
-            return job.result
+            await self.finish_job(
+                job.id,
+                status="timeout",
+                message="The sandbox planner did not finish in time.",
+            )
+            return await job.result
 
     # ------------------------------------------------------------------
     # Command execution
@@ -470,6 +515,17 @@ class DeviceGateway:
         if connection is not None:
             connection.active_command_id = ""
 
+    async def _finish_device_jobs(self, device_id: str, status: str, message: str) -> None:
+        """Resolve sandbox-driven jobs when their phone goes away.
+
+        The planner long-polls for an observation for up to two minutes.  If
+        the phone disconnects, leaving the job running makes the caller wait
+        out that timeout even though the command can never finish.
+        """
+        for job in list(self._jobs.values()):
+            if job.device_id == device_id and not job.done:
+                await self.finish_job(job.id, status=status, message=message)
+
     # ------------------------------------------------------------------
     # Status requests
     # ------------------------------------------------------------------
@@ -533,13 +589,29 @@ class DeviceGateway:
                 return
             await self.on_observation(connection, observation)
         elif message_type == "command_done":
-            command = self._commands.get(str(payload.get("command_id", "")))
+            command_id = str(payload.get("command_id", ""))
+            command = self._commands.get(command_id)
             if command is not None:
                 command.finish(
                     "completed",
                     message=str(payload.get("message", "Phone stopped the command.")),
                 )
-                connection.active_command_id = ""
+                if connection.active_command_id == command.command_id:
+                    connection.active_command_id = ""
+                return
+
+            # The phone reports "busy" when it still has an activeCommand.
+            # Without this branch the job was left to time out, because jobs
+            # are not in self._commands.
+            job = self._jobs.get(command_id)
+            if job is not None and not job.done:
+                message = str(payload.get("message") or "Phone stopped the command.")
+                status = str(payload.get("status") or "completed").lower()
+                await self.finish_job(
+                    job.id,
+                    status="error" if status in {"busy", "error", "failed"} else "completed",
+                    message=message,
+                )
         elif message_type == "status_response":
             request_id = str(payload.get("request_id", ""))
             waiter = self._status_waiters.pop(request_id, None)
@@ -742,6 +814,11 @@ class DeviceGateway:
             )
             return
 
+        # finish_job pushes a sentinel into this queue to wake a handler that
+        # is still waiting after the phone disconnected or the job ended.
+        if job.done or "finished" in item:
+            return
+
         if "error" in item:
             job.history.append(
                 {
@@ -792,13 +869,22 @@ class DeviceGateway:
                 }
             )
         except Exception as exc:  # noqa: BLE001 - transport error
-            await self._finish_command(
-                command,
-                connection,
-                "error",
-                message=f"Could not send action to phone: {exc}",
-                error=str(exc),
-            )
+            message = f"Could not send action to phone: {exc}"
+            job = self._jobs.get(command_id)
+            if job is not None:
+                await self.finish_job(job.id, status="error", message=message)
+                return
+            command = self._commands.get(command_id)
+            if command is not None:
+                await self._finish_command(
+                    command,
+                    connection,
+                    "error",
+                    message=message,
+                    error=str(exc),
+                )
+                return
+            LOGGER.warning("Could not deliver action for unknown command %s", command_id)
 
     async def _finish_command(
         self,
@@ -828,6 +914,11 @@ class DeviceGateway:
         for command in list(self._commands.values()):
             if command.status == "running":
                 command.finish("cancelled", message="Server shutting down.")
+        for job in list(self._jobs.values()):
+            if not job.done:
+                await self.finish_job(
+                    job.id, status="cancelled", message="Server shutting down."
+                )
         for connection in list(self._devices.values()):
             try:
                 await connection.websocket.close(code=1001, reason="server shutdown")
