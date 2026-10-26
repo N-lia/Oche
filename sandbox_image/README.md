@@ -8,6 +8,8 @@ It needs the toolchains the agent actually uses:
 | Python 3.12 | deepagents' file tools (`read_file`, `write_file`, `grep`, …) execute Python snippets |
 | Node 20 | [Pele](https://pele.run) requires Node >= 20 |
 | `pele@1.10.1` | renders Mermaid text to SVG |
+| `sharp@0.33.5` | rasterizes the SVG to PNG for Telegram photos |
+| `fontconfig` + DejaVu | sharp/librsvg needs a real font for diagram labels |
 | `render-mermaid` | the supported command; Pele itself is a **library**, not a CLI |
 
 ## Why the old call failed
@@ -31,12 +33,16 @@ render-mermaid /tmp/input.mmd -o /tmp/diagram.svg
 
 # from stdin
 printf 'flowchart LR\n  A[Mermaid] --> B[SVG]\n' | render-mermaid -o /tmp/diagram.svg
+
+# also rasterize a PNG for chat delivery
+render-mermaid /tmp/input.mmd -o /tmp/diagram.svg --png /tmp/diagram.png
 ```
 
 It writes an SVG and prints the byte count and viewBox to stderr:
 
 ```
 render-mermaid: wrote /tmp/diagram.svg (2916 bytes, viewBox 0 0 223 324)
+render-mermaid: wrote /tmp/diagram.png (17427 bytes, PNG)
 ```
 
 Invalid Mermaid exits non-zero with the parser error. Verify the result:
@@ -44,6 +50,15 @@ Invalid Mermaid exits non-zero with the parser error. Verify the result:
 ```sh
 test -s /tmp/diagram.svg && head -c 100 /tmp/diagram.svg
 ```
+
+### Why the PNG needs a CSS pass first
+
+Pele emits `fill="var(--_s)"` and a style block of `--_*` definitions so a
+browser can re-theme without re-rendering. librsvg (inside sharp) does not
+resolve CSS variables, so a naive rasterization fills every node black and the
+text disappears. `render-mermaid` resolves those variables to concrete colors
+for the PNG only. The SVG on disk keeps its variables and stays themeable in a
+browser.
 
 ## Build
 
@@ -59,8 +74,10 @@ Then point the app at it:
 OYI_SANDBOX_IMAGE=oyi-sandbox:latest
 ```
 
-The build runs a smoke test: it renders a small diagram, checks for `<svg>`,
-checks Node >= 20, and checks Python >= 3.11. A broken image cannot be tagged.
+The build runs a smoke test: it renders a small diagram, checks the SVG starts
+with `<svg>`, checks the PNG starts with the PNG signature, checks that a
+DejaVu font is available, checks Node >= 20, and checks Python >= 3.11. A
+broken image cannot be tagged.
 
 ## Using Pele directly
 

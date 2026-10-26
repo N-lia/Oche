@@ -284,14 +284,16 @@ printf 'flowchart LR\n  A[Mermaid] --> B[SVG]\n' | render-mermaid -o /tmp/diagra
 
 Invalid Mermaid exits non-zero with the parser error. The agent has a typed
 `render_mermaid` tool that writes the source, runs the renderer, downloads the
-SVG back, and verifies it starts with `<svg>` before reporting success. It
-never returns the SVG body to chat: Pele output can contain markup and
-`<script>` elements, so the agent reports only the verified one-line result.
-The shell command remains available for advanced work.
+SVG and PNG back, verifies both signatures, and only then reports success. On
+Telegram it also sends the PNG to the chat as a photo, because a sandbox path
+alone is not something the user can see. It never returns the SVG body to
+chat: Pele output can contain markup and `<script>` elements, so the agent
+reports only the verified one-line result. The shell command remains available
+for advanced work.
 
 `test_mermaid_tool.py` covers the tool with a fake backend (no Nebius access).
-The live test `test_sandbox_image.py` checks file rendering, stdin rendering,
-invalid input, and deepagents' file tools:
+The live test `test_sandbox_image.py` checks file rendering (SVG + PNG), stdin
+rendering, invalid input, and deepagents' file tools:
 
 ```sh
 OYI_LIVE_SANDBOX=1 NEBIUS_API_KEY=... NEBIUS_PROJECT_ID=... \

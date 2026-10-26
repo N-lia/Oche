@@ -60,10 +60,13 @@ contree run -D --use "$TAG" -- sh -c '
   set -e
   node -v
   python3 -V
-  printf "flowchart LR\n  A[Mermaid] --> B[SVG]\n" | render-mermaid -o /tmp/smoke.svg
+  printf "flowchart LR\n  A[Mermaid] --> B[SVG]\n" | render-mermaid -o /tmp/smoke.svg --png /tmp/smoke.png
   test -s /tmp/smoke.svg
   grep -q "<svg" /tmp/smoke.svg
-  echo "sandbox render: OK"
+  test "$(od -An -tx1 -N8 /tmp/smoke.png | tr -d "[:space:]")" = "89504e470d0a1a0a"
+  test "$(wc -c < /tmp/smoke.png)" -gt 2000
+  fc-match sans-serif | grep -qi dejavu
+  echo "sandbox render: OK (SVG + PNG)"
 ' || die "the image was built but the smoke test failed"
 
 say "Ready"

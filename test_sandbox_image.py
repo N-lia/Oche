@@ -34,22 +34,25 @@ CHECK_SCRIPT = textwrap.dedent(
 
     printf 'flowchart TD\n  A[Mermaid text] --> B{Flowchart?}\n  B -- Yes --> C[Pele]\n  B -- No --> D[Mermaid]\n' \
       > /tmp/input.mmd
-    render-mermaid /tmp/input.mmd -o /tmp/diagram.svg
+    render-mermaid /tmp/input.mmd -o /tmp/diagram.svg --png /tmp/diagram.png
     test -s /tmp/diagram.svg
     grep -q '<svg' /tmp/diagram.svg
     grep -q 'pele-flowchart' /tmp/diagram.svg
-    echo "file_render=ok bytes=$(wc -c < /tmp/diagram.svg)"
+    python3 -c 'import pathlib; d=pathlib.Path("/tmp/diagram.png").read_bytes(); assert d[:8] == b"\x89PNG\r\n\x1a\n", d[:8]; assert len(d) > 2000, len(d)'
+    echo "file_render=ok bytes=$(wc -c < /tmp/diagram.svg) png=$(wc -c < /tmp/diagram.png)"
 
-    printf 'flowchart LR\n  X[stdin] --> Y[SVG]\n' | render-mermaid -o /tmp/stdin.svg
+    printf 'flowchart LR\n  X[stdin] --> Y[SVG]\n' | render-mermaid -o /tmp/stdin.svg --png /tmp/stdin.png
     test -s /tmp/stdin.svg
     grep -q '<svg' /tmp/stdin.svg
+    python3 -c 'import pathlib; d=pathlib.Path("/tmp/stdin.png").read_bytes(); assert d[:8] == b"\x89PNG\r\n\x1a\n"'
     echo "stdin_render=ok"
 
-    if printf 'flowchart TD\n  A -->\n' | render-mermaid -o /tmp/bad.svg 2>/tmp/bad.err; then
+    if printf 'flowchart TD\n  A -->\n' | render-mermaid -o /tmp/bad.svg --png /tmp/bad.png 2>/tmp/bad.err; then
       echo "invalid_mermaid=unexpected_success"
       exit 9
     fi
     test ! -s /tmp/bad.svg
+    test ! -s /tmp/bad.png
     grep -q 'invalid Mermaid' /tmp/bad.err
     echo "invalid_mermaid=rejected"
     """
@@ -85,14 +88,16 @@ def run_backend_check() -> None:
 
     result = backend.execute(
         "set -e; printf 'flowchart LR\\n  A[deepagents] --> B[render]\\n' "
-        "| render-mermaid -o /tmp/backend.svg; test -s /tmp/backend.svg; "
-        "grep -q '<svg' /tmp/backend.svg; echo BACKEND_RENDER_OK"
+        "| render-mermaid -o /tmp/backend.svg --png /tmp/backend.png; "
+        "test -s /tmp/backend.svg; grep -q '<svg' /tmp/backend.svg; "
+        "python3 -c 'import pathlib; d=pathlib.Path(\"/tmp/backend.png\").read_bytes(); assert d[:8] == b\"\\x89PNG\\r\\n\\x1a\\n\"'; "
+        "echo BACKEND_RENDER_OK"
     )
     assert result.exit_code == 0, (
         f"backend execute failed: exit={result.exit_code}\n{result.output}"
     )
     assert "BACKEND_RENDER_OK" in (result.output or ""), result.output
-    print("backend: file tools + execute render OK")
+    print("backend: file tools + execute render (SVG + PNG) OK")
 
 
 async def main() -> None:

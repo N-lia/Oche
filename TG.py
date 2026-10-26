@@ -36,6 +36,7 @@ from asr_client import atranscribe
 from channels import ChannelRegistry, TelegramChannel
 from main import astream_chat_agent
 from memory import reconcile_preferences
+from mermaid_tool import register_telegram_photo_sender
 from subagent import register_telegram_notifier
 from voice import register_telegram_voice_sender
 from telegram_support import (
@@ -603,6 +604,20 @@ async def _on_post_init(application: Application) -> None:
             raise
 
     register_telegram_voice_sender(deliver_voice_message)
+
+    async def deliver_photo_message(chat_id: int | str, png_bytes: bytes, caption: str = "") -> None:
+        target_chat_id = int(chat_id) if str(chat_id).lstrip("-").isdigit() else chat_id
+        try:
+            await application.bot.send_photo(
+                chat_id=target_chat_id,
+                photo=io.BytesIO(png_bytes),
+                caption=caption or None,
+            )
+        except Exception:
+            LOGGER.exception("Failed to deliver diagram photo to chat_id=%s", chat_id)
+            raise
+
+    register_telegram_photo_sender(deliver_photo_message)
 
     channels = application.bot_data.get("channels")
     if channels is None:
