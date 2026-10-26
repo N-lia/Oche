@@ -9,7 +9,7 @@ environment (with its own copy of the model credentials).
 Environment:
     NEBIUS_API_KEY        token factory key (used inside the sandbox)
     NEBIUS_PROJECT_ID     project that runs Sandboxes
-    OYI_SANDBOX_IMAGE     base image (default: python:3.12-slim)
+    OYI_SANDBOX_IMAGE     sandbox image (default: oyi-sandbox:latest)
     OYI_SANDBOX_AGENT     path of the in-sandbox agent program
 """
 
@@ -20,10 +20,11 @@ import os
 from pathlib import Path
 from typing import Any
 
+from sandbox_image_contract import BUILD_HINT, image_ref as configured_image
+
 LOGGER = logging.getLogger("oyi.sandbox.planner")
 
 AGENT_SCRIPT = Path(__file__).with_name("sandbox_agent") / "phone_agent.py"
-DEFAULT_IMAGE = "python:3.12-slim"
 
 
 def sandbox_planner_enabled() -> bool:
@@ -61,10 +62,11 @@ async def run_sandbox_planner(
     from contree_sdk import Contree
 
     client = Contree()
-    image = await client.images.use(
-        os.getenv("OYI_SANDBOX_IMAGE", DEFAULT_IMAGE),
-        strict=True,
-    )
+    ref = configured_image()
+    try:
+        image = await client.images.use(ref, strict=True)
+    except Exception as exc:  # noqa: BLE001 - make a missing image actionable
+        raise RuntimeError(f"Sandbox image {ref!r} is unavailable. {BUILD_HINT}") from exc
 
     env = {
         "OYI_GATEWAY_URL": gateway_url,
@@ -100,5 +102,5 @@ def describe_environment() -> str:
     return (
         f"planner={'sandbox' if sandbox_planner_enabled() else 'in-process'} "
         f"project={os.getenv('NEBIUS_PROJECT_ID', '-')} "
-        f"image={os.getenv('OYI_SANDBOX_IMAGE', DEFAULT_IMAGE)}"
+        f"image={configured_image()}"
     )

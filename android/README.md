@@ -256,3 +256,44 @@ Two optional integrations, both driven by `NEBIUS_PROJECT_ID` (plus
 
    The sandbox reaches the gateway over the public URL, so set
    `OYI_PUBLIC_URL` to the host's public address.
+
+### Sandbox image and Mermaid diagrams
+
+Both integrations use `oyi-sandbox:latest`, built from
+`sandbox_image/Dockerfile`. The image contains the two toolchains the sandbox
+actually needs: Python 3.12 for deepagents' file tools, and Node 20 + Pele for
+Mermaid. Build it once per Nebius project:
+
+```sh
+export NEBIUS_PROJECT_ID=aiproject-...
+tools/build_sandbox_image.sh
+```
+
+`tools/build_sandbox_image.sh` tags the image and runs a render smoke test
+before it reports success.
+
+**Pele is a JavaScript library, not a CLI.** Running
+`node .../pele/dist/pele.js render ...` or `npx pele` exits 0 and writes
+nothing, which looks like success until the missing file is noticed. The image
+ships the supported command:
+
+```sh
+render-mermaid /tmp/input.mmd -o /tmp/diagram.svg
+printf 'flowchart LR\n  A[Mermaid] --> B[SVG]\n' | render-mermaid -o /tmp/diagram.svg
+```
+
+Invalid Mermaid exits non-zero with the parser error. The agent has a typed
+`render_mermaid` tool that writes the source, runs the renderer, downloads the
+SVG back, and verifies it starts with `<svg>` before reporting success. It
+never returns the SVG body to chat: Pele output can contain markup and
+`<script>` elements, so the agent reports only the verified one-line result.
+The shell command remains available for advanced work.
+
+`test_mermaid_tool.py` covers the tool with a fake backend (no Nebius access).
+The live test `test_sandbox_image.py` checks file rendering, stdin rendering,
+invalid input, and deepagents' file tools:
+
+```sh
+OYI_LIVE_SANDBOX=1 NEBIUS_API_KEY=... NEBIUS_PROJECT_ID=... \
+  .venv/bin/python test_sandbox_image.py
+```

@@ -34,7 +34,7 @@ RUN --mount=type=cache,target=/root/.cache/uv \
 COPY config.py main.py agent_service.py memory.py privacy.py router.py \
      telegram_support.py telegram_format.py TG.py voice.py subagent.py tool.py \
      device_tool.py device_gateway.py device_protocol.py vision_agent.py \
-     sandbox_backend.py sandbox_planner.py \
+     sandbox_backend.py sandbox_planner.py sandbox_image_contract.py mermaid_tool.py \
      asr_client.py oyi_asr_pb2.py oyi_asr_pb2_grpc.py \
      webapp_server.py voice_session.py backchannel.py turn_policy.py ./
 COPY channels/ ./channels/

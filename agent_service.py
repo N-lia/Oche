@@ -40,6 +40,7 @@ from router import (
 from subagent import SUBAGENT_TOOLS
 from tool import TAVILY_TOOLS
 from device_tool import DEVICE_TOOLS
+from mermaid_tool import MERMAID_TOOLS
 from voice import VOICE_TOOLS
 
 load_dotenv(override=True)
@@ -53,18 +54,19 @@ os.makedirs(WORKSPACE_DIR, exist_ok=True)
 # Where the agent's code and files live. With a Nebius Sandbox the shell
 # 'execute' tool becomes safe (the code runs in an isolated Nebius
 # environment), so it is only disabled for the local filesystem backend.
-from sandbox_backend import build_sandbox_backend, sandbox_configured, sandbox_requested  # noqa: E402
+from sandbox_backend import get_sandbox_backend, sandbox_configured, sandbox_requested  # noqa: E402
 
 _SANDBOX_BACKEND: object | None = None
 if sandbox_requested() and sandbox_configured():
     try:
-        _SANDBOX_BACKEND = build_sandbox_backend()
+        _SANDBOX_BACKEND = get_sandbox_backend()
     except Exception:  # noqa: BLE001 - fall back to the local backend
         LOGGER.exception("Nebius sandbox backend unavailable; using the local backend")
         _SANDBOX_BACKEND = None
 
 _BACKEND = _SANDBOX_BACKEND or FilesystemBackend(root_dir=WORKSPACE_DIR, virtual_mode=True)
 _ALLOW_EXECUTE = _SANDBOX_BACKEND is not None
+_SANDBOX_TOOLS = [*MERMAID_TOOLS] if _ALLOW_EXECUTE else []
 
 # Register DeepAgents harness profile for OpenAI-compatible providers:
 # 1. Disable the auto-added synchronous 'general-purpose' subagent and drop 'task' tool,
@@ -211,6 +213,29 @@ Reply formatting — Telegram HTML (STRICT):
 - Keep code blocks complete and concise inside <pre><code>…</code></pre>, and note the language in the class attribute.
 """
 
+SANDBOX_PROMPT = """
+Sandbox shell:
+- Your `execute` tool runs in an isolated Linux sandbox with Python 3.12 and Node 20.
+- Mermaid diagrams: when Sir Mario asks you to render, draw, or produce a Mermaid
+  diagram, you MUST call the `render_mermaid` tool. Do NOT create the SVG with
+  write_file and do NOT use a shell redirection for it. The tool writes the
+  source safely, runs the renderer, reads the result back, and verifies that it
+  starts with <svg> before reporting success.
+- Report only the one-line verified result the tool returns. Never read, cat,
+  quote, or paste the SVG into chat: it can contain markup and <script> elements.
+  If the tool returns an error, relay the real error; never claim a diagram
+  exists when the tool failed.
+- Advanced shell use: the same renderer is available as `render-mermaid`.
+      render-mermaid /tmp/input.mmd -o /tmp/diagram.svg
+      printf 'flowchart LR\\n  A[Mermaid] --> B[SVG]\\n' | render-mermaid -o /tmp/diagram.svg
+- NEVER run `node .../pele/dist/pele.js render ...` or `npx pele`. Those commands
+  exit 0 and write no file, because Pele has no command-line entry point. If you
+  need the API directly, import it from /opt/oyi/node_modules/pele/dist/pele.js.
+"""
+
+if _ALLOW_EXECUTE:
+    SYSTEM_PROMPT += SANDBOX_PROMPT
+
 
 class AgentService:
     """Own the model cascade and the agent's request lifecycle."""
@@ -226,6 +251,7 @@ class AgentService:
         "spawn_subagent": "Spinning up a subagent",
         "control_phone": "Controlling your phone",
         "phone_status": "Checking your phone",
+        "render_mermaid": "Rendering diagram",
     }
 
     def __init__(self) -> None:
@@ -258,7 +284,14 @@ class AgentService:
     def _agent_for_model(self, model_name: str):
         return create_deep_agent(
             model=self._model(model_name),
-            tools=[*TAVILY_TOOLS, *PREFERENCE_TOOLS, *SUBAGENT_TOOLS, *VOICE_TOOLS, *DEVICE_TOOLS],
+            tools=[
+                *TAVILY_TOOLS,
+                *PREFERENCE_TOOLS,
+                *SUBAGENT_TOOLS,
+                *VOICE_TOOLS,
+                *DEVICE_TOOLS,
+                *_SANDBOX_TOOLS,
+            ],
             system_prompt=SYSTEM_PROMPT,
             backend=_BACKEND,
             checkpointer=self._checkpointer,

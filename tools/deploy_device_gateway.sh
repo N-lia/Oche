@@ -130,6 +130,10 @@ if [ -n "${NEBIUS_PROJECT_ID:-}" ]; then
   set_env NEBIUS_PROJECT_ID "$NEBIUS_PROJECT_ID"
   # The sandbox reaches the gateway over the public URL.
   set_env OYI_PUBLIC_URL "https://${DOMAIN}"
+  # Python + Node 20 + Pele. Build it with tools/build_sandbox_image.sh.
+  SANDBOX_IMAGE="${OYI_SANDBOX_IMAGE:-oyi-sandbox:latest}"
+  set_env OYI_SANDBOX_IMAGE "$SANDBOX_IMAGE"
+  echo "sandbox image: $SANDBOX_IMAGE"
   if [ "${OYI_SANDBOX_PLANNER:-1}" = "1" ]; then
     set_env OYI_SANDBOX_PLANNER "1"
     echo "enabled: the phone-use planner will run in a Nebius Sandbox"

@@ -17,7 +17,11 @@ Required environment:
 Optional:
 
     OYI_SANDBOX_BACKEND   "1" to use the sandbox backend (default: off)
-    OYI_SANDBOX_IMAGE     base image for the sandbox (default: python:3.12-slim)
+    OYI_SANDBOX_IMAGE     sandbox image (default: oyi-sandbox:latest)
+
+The image must provide both toolchains the sandbox actually uses: Python 3
+for deepagents' file tools, and Node >= 20 with Pele for Mermaid rendering.
+Build it with tools/build_sandbox_image.sh (source: sandbox_image/Dockerfile).
 
 See https://docs.tokenfactory.nebius.com/sandboxes/start/python-quickstart
 """
@@ -28,9 +32,9 @@ import logging
 import os
 from typing import Any
 
-LOGGER = logging.getLogger("oyi.sandbox")
+from sandbox_image_contract import BUILD_HINT, image_ref as configured_image
 
-DEFAULT_IMAGE = "python:3.12-slim"
+LOGGER = logging.getLogger("oyi.sandbox")
 
 
 def sandbox_configured() -> bool:
@@ -50,7 +54,22 @@ def build_sandbox_backend(image_ref: str | None = None) -> Any:
     from contree_sdk.langchain.sandbox import ContreeSandbox
     from contree_sdk.sdk.objects.session import ContreeSession
 
+    ref = image_ref or configured_image()
     client = ContreeSync()
-    image = client.images.use(image_ref or DEFAULT_IMAGE, strict=True)
-    LOGGER.info("Nebius sandbox backend ready (image=%s)", image_ref or DEFAULT_IMAGE)
+    try:
+        image = client.images.use(ref, strict=True)
+    except Exception as exc:  # noqa: BLE001 - make a missing image actionable
+        raise RuntimeError(f"Sandbox image {ref!r} is unavailable. {BUILD_HINT}") from exc
+    LOGGER.info("Nebius sandbox backend ready (image=%s)", ref)
     return ContreeSandbox(ContreeSession(image))
+
+
+_CACHED_BACKEND: Any | None = None
+
+
+def get_sandbox_backend() -> Any:
+    """One backend per process, shared by the agent and the sandbox tools."""
+    global _CACHED_BACKEND
+    if _CACHED_BACKEND is None:
+        _CACHED_BACKEND = build_sandbox_backend()
+    return _CACHED_BACKEND
