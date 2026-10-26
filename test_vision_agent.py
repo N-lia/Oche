@@ -123,6 +123,12 @@ def test_request_payload_and_parsing() -> None:
     assert "Open Network & internet" in user_content[0]["text"]
     assert user_content[1]["image_url"]["url"].startswith("data:image/png;base64,")
     assert body["messages"][0]["role"] == "system"
+    # Nemotron spends the whole completion budget on reasoning unless the
+    # chat template turns thinking off; content then comes back as null.
+    assert body["chat_template_kwargs"] == {"enable_thinking": False}
+    system_prompt = body["messages"][0]["content"]
+    for action in ("back", "home", "recents", "ask_user"):
+        assert f'"action_type":"{action}"' in system_prompt, action
 
 
 def test_missing_api_key_is_reported() -> None:

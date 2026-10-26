@@ -68,6 +68,10 @@ def call_model(messages: list[dict]) -> str:
         "messages": messages,
         "temperature": 0.1,
         "max_tokens": 700,
+        # Nemotron is a reasoning model. This request needs one JSON action,
+        # not a chain of thought; otherwise it can spend all 700 tokens in
+        # reasoning_content and return a null content field.
+        "chat_template_kwargs": {"enable_thinking": False},
     }
     req = urllib.request.Request(
         f"{BASE_URL}/chat/completions",

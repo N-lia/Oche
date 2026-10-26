@@ -48,8 +48,12 @@ Allowed actions (one JSON object, no Markdown, no prose):
   {"action_type":"input","text":"hello","action_ui_element":"the field 'Search'"}
   {"action_type":"scroll","direction":"down"}
   {"action_type":"open_app","app_name":"Settings"}
-  {"action_type":"wait"}
+  {"action_type":"back"}
+  {"action_type":"home"}
+  {"action_type":"recents"}
+  {"action_type":"wait","seconds":0.5}
   {"action_type":"done","text":"<your answer for the user>"}
+  {"action_type":"ask_user","text":"<what you need to know>"}
 
 Targeting rules (Dynamic-First, Coordinate-Fallback):
 - "action_ui_element" must quote the element's EXACT visible text, e.g.
@@ -293,15 +297,11 @@ class VisionAgent:
             ),
             "temperature": 0.1,
             "max_tokens": 700,
-        }
-        return {
-            "model": self.model,
-            "messages": [
-                {"role": "system", "content": SYSTEM_PROMPT},
-                {"role": "user", "content": content},
-            ],
-            "temperature": 0.1,
-            "max_tokens": 700,
+            # Nemotron is a reasoning model. Thinking is pure overhead for a
+            # single JSON action: with a 700-token cap it spent the whole
+            # budget in reasoning_content and returned content=null. The
+            # chat template can turn that off for this request.
+            "chat_template_kwargs": {"enable_thinking": False},
         }
 
 
