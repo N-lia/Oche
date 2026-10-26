@@ -670,10 +670,15 @@ class VoiceSession:
         )
         try:
             chunks: list[str] = []
+            plain = PlainTextStream() if self.plain_text else None
             async for chunk in self._agent_streamer(user_text, turn_id):
                 if chunk:
                     chunks.append(chunk)
-                    await self.send({"type": "bot_text_delta", "text": chunk, "turn_id": turn_id})
+                    visible = plain.feed(chunk) if plain is not None else chunk
+                    if visible:
+                        await self.send(
+                            {"type": "bot_text_delta", "text": visible, "turn_id": turn_id}
+                        )
             if plain is not None:
                 tail = plain.flush()
                 if tail:
