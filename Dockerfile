@@ -18,7 +18,7 @@ COPY pyproject.toml uv.lock ./
 RUN --mount=type=cache,target=/root/.cache/uv \
     uv sync --locked --no-dev --no-install-project
 
-COPY config.py main.py agent_service.py memory.py privacy.py router.py telegram_support.py telegram_format.py TG.py voice.py subagent.py tool.py device_tool.py asr_client.py oyi_asr_pb2.py oyi_asr_pb2_grpc.py docker-entrypoint.sh ./
+COPY config.py main.py agent_service.py memory.py privacy.py router.py telegram_support.py telegram_format.py TG.py voice.py subagent.py tool.py device_tool.py sandbox_backend.py asr_client.py oyi_asr_pb2.py oyi_asr_pb2_grpc.py docker-entrypoint.sh ./
 COPY channels/ ./channels/
 COPY --chown=65532:65532 tavily_response/ ./tavily_response/
 

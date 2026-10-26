@@ -120,9 +120,25 @@ grep -qE "^[[:space:]]*NEBIUS_API_KEY[[:space:]]*=.+" "$ENV_FILE" || \
 set_env OYI_DEVICE_TOKEN "$TOKEN"
 set_env OYI_DEVICE_API_TOKEN "$API_TOKEN"
 set_env OYI_DEVICE_VISION_MODEL "nvidia/Nemotron-3.5-Super-VL"
-# The agent runs inside the webapp, so its control_phone tool needs to know
-# where the gateway lives as well.
+# The agent runs inside the webapp, so its tool needs to know where the
+# gateway lives as well.
 set_env OYI_DEVICE_GATEWAY_URL "https://${DOMAIN}"
+
+# Nebius Sandboxes (optional). The project must have Sandboxes enabled; check
+# with: contree auth ls  ->  STATUS ok
+if [ -n "${NEBIUS_PROJECT_ID:-}" ]; then
+  set_env NEBIUS_PROJECT_ID "$NEBIUS_PROJECT_ID"
+  # The sandbox reaches the gateway over the public URL.
+  set_env OYI_PUBLIC_URL "https://${DOMAIN}"
+  if [ "${OYI_SANDBOX_PLANNER:-1}" = "1" ]; then
+    set_env OYI_SANDBOX_PLANNER "1"
+    echo "enabled: the phone-use planner will run in a Nebius Sandbox"
+  fi
+  if [ "${OYI_SANDBOX_BACKEND:-1}" = "1" ]; then
+    set_env OYI_SANDBOX_BACKEND "1"
+    echo "enabled: the agent's shell tool will run in a Nebius Sandbox"
+  fi
+fi
 
 # --------------------------------------------------------------------------
 # 4. Rebuild
