@@ -224,3 +224,17 @@ Telegram, the voice webapp, or the live chat.
   use `FLAG_LAYOUT_NO_LIMITS`: that leaves the display bounds unbounded and
   the bubble's surface is then never shown.
 
+
+### The planner speaks the phone-use dialect
+
+`nvidia/Nemotron-3.5-Super-VL` is trained on phone-use data and answers in the
+mobile-use/ARTEMIS vocabulary:
+
+```json
+{"action_type": "click", "action": "the text 'Wi-Fi' in the list",
+ "action_ui_element": "the text 'Wi-Fi' in the list", "x": 0.42, "y": 0.51}
+```
+
+Both that and the index form (`{"type": "tap", "target": 3}`) are accepted and
+normalised to one internal action. The device then resolves the element
+against the live screen, so the model never has to be right about pixels.
