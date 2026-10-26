@@ -26,6 +26,11 @@ LOGGER = logging.getLogger("oyi.sandbox.planner")
 
 AGENT_SCRIPT = Path(__file__).with_name("sandbox_agent") / "phone_agent.py"
 
+# /tmp always exists in the image. /home/agent does not: Contree only creates
+# the Dockerfile WORKDIR when a container starts, and the planner runs as a
+# plain image command, so uploading there would fail before the agent starts.
+AGENT_REMOTE_PATH = "/tmp/oyi_phone_agent.py"
+
 
 def sandbox_planner_enabled() -> bool:
     return (
@@ -43,7 +48,7 @@ def _agent_source() -> str:
 
 
 def _command() -> str:
-    return "python3 -u /home/agent/phone_agent.py"
+    return f"python3 -u {AGENT_REMOTE_PATH}"
 
 
 async def run_sandbox_planner(
@@ -77,23 +82,33 @@ async def run_sandbox_planner(
         "NEBIUS_API_KEY": os.environ["NEBIUS_API_KEY"],
     }
 
+    # The SDK treats a str file value as a local path to upload, so passing the
+    # program text raised "File name too long" and the planner never started.
+    # Bytes are uploaded as the file's contents.
     operation = image.run(
         shell=_command(),
         env=env,
-        files={"/home/agent/phone_agent.py": _agent_source()},
+        files={AGENT_REMOTE_PATH: _agent_source().encode("utf-8")},
         disposable=True,
         timeout=timeout_s,
     )
     result = await operation
-    LOGGER.info(
-        "sandbox planner for job %s finished: exit=%s",
-        job_id,
-        getattr(result, "exit_code", "?"),
-    )
+    exit_code = getattr(result, "exit_code", None)
+    stdout = (getattr(result, "stdout", "") or "")[-4000:]
+    stderr = (getattr(result, "stderr", "") or "")[-4000:]
+    if exit_code == 0:
+        LOGGER.info("sandbox planner for job %s finished: exit=0", job_id)
+    else:
+        LOGGER.error(
+            "sandbox planner for job %s failed: exit=%s stderr=%s",
+            job_id,
+            exit_code,
+            stderr[-1000:],
+        )
     return {
-        "exit_code": getattr(result, "exit_code", None),
-        "stdout": (getattr(result, "stdout", "") or "")[-4000:],
-        "stderr": (getattr(result, "stderr", "") or "")[-4000:],
+        "exit_code": exit_code,
+        "stdout": stdout,
+        "stderr": stderr,
     }
 
 

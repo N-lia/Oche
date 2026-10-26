@@ -356,7 +356,7 @@ async def _run_command_in_sandbox(req: CommandRequest) -> dict:
     )
     LOGGER.info("running command %s in a Nebius Sandbox", job.id)
 
-    task = asyncio.create_task(
+    planner_task = asyncio.create_task(
         run_sandbox_planner(
             gateway_url=public_url,
             gateway_token=_device_api_token(),
@@ -366,11 +366,47 @@ async def _run_command_in_sandbox(req: CommandRequest) -> dict:
             timeout_s=req.timeout_s + 120.0,
         )
     )
+    result_task = asyncio.create_task(
+        device_gateway.job_result(job.id, timeout=req.timeout_s + 60.0)
+    )
     try:
-        result = await device_gateway.job_result(job.id, timeout=req.timeout_s + 60.0)
+        # Wait for whichever finishes first. If the planner process dies before
+        # the phone job finishes, finish the job with the real error instead of
+        # leaving the request to wait out the full timeout.
+        done, _ = await asyncio.wait(
+            {planner_task, result_task},
+            return_when=asyncio.FIRST_COMPLETED,
+        )
+        if result_task in done:
+            return result_task.result().model_dump()
+
+        if planner_task.cancelled():
+            detail = "Sandbox planner was cancelled."
+        else:
+            error = planner_task.exception()
+            if error is not None:
+                LOGGER.error(
+                    "sandbox planner for job %s failed", job.id, exc_info=error
+                )
+                detail = f"Sandbox planner failed: {error}"
+            else:
+                info = planner_task.result() or {}
+                output = (info.get("stderr") or info.get("stdout") or "").strip()
+                LOGGER.error(
+                    "sandbox planner for job %s exited without a result: exit=%s %s",
+                    job.id,
+                    info.get("exit_code"),
+                    output[-1000:],
+                )
+                detail = f"Sandbox planner exited without a result (exit {info.get('exit_code')})."
+                if output:
+                    detail = f"{detail} {output[-500:]}"
+
+        await device_gateway.finish_job(job.id, status="error", message=detail)
+        return (await result_task).model_dump()
     finally:
-        task.cancel()
-    return result.model_dump()
+        planner_task.cancel()
+        result_task.cancel()
 
 
 @app.post("/api/device/cancel/{command_id}")

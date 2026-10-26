@@ -30,6 +30,8 @@ CHECK_SCRIPT = textwrap.dedent(
     set -e
     node -e 'if (Number(process.versions.node.split(".")[0]) < 20) process.exit(1)'
     python3 -c 'import sys; assert sys.version_info >= (3, 11)'
+    test -d /workspace
+    test -d /home/agent
     echo "node=$(node -v) python=$(python3 -V 2>&1)"
 
     printf 'flowchart TD\n  A[Mermaid text] --> B{Flowchart?}\n  B -- Yes --> C[Pele]\n  B -- No --> D[Mermaid]\n' \

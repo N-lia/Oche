@@ -33,6 +33,11 @@ RUN apt-get update \
  && rm /tmp/node.tar.gz \
  && rm -rf /var/lib/apt/lists/*
 
+# WORKDIR is not guaranteed to create the directory in every builder, and the
+# agent's file tools expect /workspace to exist. /home/agent is kept for
+# backwards compatibility with older planner uploads.
+RUN mkdir -p /workspace /home/agent
+
 # Pele is a library. Install it at a fixed path so a sandbox run never has to
 # reach npm, and add a real command-line wrapper for the agent to call.
 # sharp rasterizes the SVG to PNG: Telegram photos cannot display SVG, and a
