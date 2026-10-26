@@ -25,7 +25,6 @@ from pydantic import BaseModel, Field, ValidationError, field_validator, model_v
 
 ActionType = Literal[
     "tap",
-    "tap_text",
     "type",
     "scroll",
     "back",
@@ -62,12 +61,18 @@ class Observation(BaseModel):
     step: int = Field(ge=0, le=64)
     package: str = Field(default="", max_length=255)
     app_label: str = Field(default="", max_length=120)
-    tree: list[dict[str, Any]] = Field(default_factory=list)
+    # The visible element index (ARTEMIS style): index -> {text, kind, class,
+    # id, bounds}.  The phone resolves an index against the live node it
+    # captured, so the model never has to guess pixel coordinates.
+    elements: list[dict[str, Any]] = Field(default_factory=list)
+    # The same list pre-formatted for the model.
+    element_text: str = ""
     screenshot: str = ""
     width: int = Field(default=0, ge=0, le=10_000)
     height: int = Field(default=0, ge=0, le=10_000)
     last_action_ok: bool = True
     error: str = Field(default="", max_length=1000)
+    action_result: str = Field(default="", max_length=1000)
 
     @field_validator("screenshot")
     @classmethod
@@ -78,9 +83,16 @@ class Observation(BaseModel):
 
 
 class Action(BaseModel):
-    """A single UI action chosen by the vision planner."""
+    """A single UI action chosen by the vision planner.
+
+    Targets follow ARTEMIS' "Dynamic-First, Coordinate-Fallback" rule: give
+    the 1-based ``target`` index of a visible element whenever there is one,
+    and use ``x``/``y`` (0..1000 normalized) only for custom-drawn UI that
+    exposes no accessible element.
+    """
 
     type: ActionType
+    target: int | None = Field(default=None, ge=1, le=1000)
     x: int | None = Field(default=None, ge=0, le=1000)
     y: int | None = Field(default=None, ge=0, le=1000)
     text: str | None = Field(default=None, max_length=4000)
@@ -93,10 +105,10 @@ class Action(BaseModel):
 
     @model_validator(mode="after")
     def _require_action_arguments(self) -> "Action":
-        if self.type == "tap" and (self.x is None or self.y is None):
-            raise ValueError("tap requires normalized x and y coordinates")
-        if self.type in {"tap_text", "type"} and not (self.text or "").strip():
-            raise ValueError(f"{self.type} requires text")
+        if self.type == "tap" and self.target is None and (self.x is None or self.y is None):
+            raise ValueError("tap needs a target element index or x/y coordinates")
+        if self.type == "type" and not (self.text or "").strip():
+            raise ValueError("type requires text")
         if self.type == "open_app" and not (self.package or "").strip():
             raise ValueError("open_app requires a package")
         return self

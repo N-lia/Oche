@@ -1,15 +1,15 @@
 package ai.oyi.device.accessibility
 
 import android.accessibilityservice.AccessibilityService
-import android.accessibilityservice.GestureDescription
-import android.accessibilityservice.GestureDescription.Builder
-import android.accessibilityservice.GestureDescription.StrokeDescription
 import android.graphics.Bitmap
+import android.graphics.Path
 import android.graphics.Rect
-import android.os.Bundle
 import android.util.Base64
 import android.view.Display
 import android.view.accessibility.AccessibilityNodeInfo
+import android.accessibilityservice.GestureDescription
+import android.accessibilityservice.GestureDescription.Builder
+import android.accessibilityservice.GestureDescription.StrokeDescription
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.suspendCancellableCoroutine
@@ -22,10 +22,18 @@ import kotlin.coroutines.resume
 /** A screen snapshot sent to the vision planner. */
 data class ScreenSnapshot(
     val packageName: String,
-    val tree: JSONArray,
+    val elements: List<ScreenElement>,
+    val elementJson: JSONArray,
+    val elementText: String,
     val screenshot: String,
     val width: Int,
     val height: Int,
+)
+
+/** Outcome of one action, including why it was refused. */
+data class ExecutionResult(
+    val ok: Boolean,
+    val message: String = "",
 )
 
 /**
@@ -33,77 +41,100 @@ data class ScreenSnapshot(
  *
  * Every action runs on the main thread because accessibility APIs must be
  * called from the UI thread.
+ *
+ * Targets are resolved dynamically first: an element index from the current
+ * screen index is executed against the live node it refers to. Raw coordinates
+ * are the fallback for custom-drawn UI that exposes no accessible element.
  */
 class DeviceController(private val service: AccessibilityService) {
 
-    suspend fun snapshot(): ScreenSnapshot? = withContext(Dispatchers.Main) {
+    /** The elements of the most recent snapshot, used to resolve indices. */
+    private var currentElements: List<ScreenElement> = emptyList()
+
+    suspend fun snapshot(): ScreenSnapshot = withContext(Dispatchers.Main) {
         val root = service.rootInActiveWindow
         val metrics = service.resources.displayMetrics
-        val tree = UiTreeSerializer.serialize(root)
-        val packageName = root?.packageName?.toString().orEmpty()
+        val width = metrics.widthPixels
+        val height = metrics.heightPixels
+
+        val elements = ScreenElements.collect(root, width, height)
+        currentElements = elements
+
         val bitmap = captureScreenshot()
         ScreenSnapshot(
-            packageName = packageName,
-            tree = tree,
+            packageName = root?.packageName?.toString().orEmpty(),
+            elements = elements,
+            elementJson = ScreenElements.toJson(elements),
+            elementText = ScreenElements.format(elements, width, height),
             screenshot = bitmap?.toJpegBase64().orEmpty(),
-            width = metrics.widthPixels,
-            height = metrics.heightPixels,
+            width = width,
+            height = height,
         )
     }
 
-    suspend fun execute(action: JSONObject): Boolean = withContext(Dispatchers.Main) {
+    suspend fun execute(action: JSONObject): ExecutionResult = withContext(Dispatchers.Main) {
         when (action.optString("type")) {
-            "tap" -> tap(action.optInt("x", 500), action.optInt("y", 500))
-            "tap_text" -> tapText(action.optString("text"))
-            "type" -> typeText(action.optString("text"))
+            "tap" -> tap(action)
+            "type" -> typeText(action)
             "scroll" -> scroll(
                 action.optString("direction", "down"),
                 action.optDouble("distance", 0.6).toFloat(),
+                action.optInt("target", -1).takeIf { it > 0 },
             )
-            "back" -> service.performGlobalAction(AccessibilityService.GLOBAL_ACTION_BACK)
-            "home" -> service.performGlobalAction(AccessibilityService.GLOBAL_ACTION_HOME)
-            "recents" -> service.performGlobalAction(AccessibilityService.GLOBAL_ACTION_RECENTS)
+            "back" -> global(AccessibilityService.GLOBAL_ACTION_BACK, "back")
+            "home" -> global(AccessibilityService.GLOBAL_ACTION_HOME, "home")
+            "recents" -> global(AccessibilityService.GLOBAL_ACTION_RECENTS, "recents")
             "open_app" -> openApp(action.optString("package"))
             "wait" -> {
                 delay((action.optDouble("seconds", 1.0) * 1000).toLong())
-                true
+                ExecutionResult(true)
             }
-            else -> false
+            else -> ExecutionResult(false, "Unsupported action '${action.optString("type")}'")
         }
     }
 
     // ---------------------------------------------------------------- taps
 
-    private fun tap(xNormalized: Int, yNormalized: Int): Boolean {
-        val metrics = service.resources.displayMetrics
-        val x = (xNormalized.coerceIn(0, 1000) / 1000f) * metrics.widthPixels
-        val y = (yNormalized.coerceIn(0, 1000) / 1000f) * metrics.heightPixels
-        val path = android.graphics.Path().apply { moveTo(x, y) }
-        val gesture = Builder()
-            .addStroke(StrokeDescription(path, 0, 80))
-            .build()
-        return service.dispatchGesture(gesture, null, null)
-    }
+    private fun tap(action: JSONObject): ExecutionResult {
+        val target = action.optInt("target", -1).takeIf { it > 0 }
+        if (target != null) {
+            val element = currentElements.firstOrNull { it.index == target }
+            if (element == null) {
+                return ExecutionResult(
+                    false,
+                    "Element $target is no longer on screen. Take a new look before acting.",
+                )
+            }
+            // Dynamic-first: ask the node itself to act.
+            if (element.node.isClickable && element.node.performAction(AccessibilityNodeInfo.ACTION_CLICK)) {
+                return ExecutionResult(true, "Clicked '${element.label}'")
+            }
+            val parent = element.node.parent?.takeIf { it.isClickable }
+            if (parent != null && parent.performAction(AccessibilityNodeInfo.ACTION_CLICK)) {
+                return ExecutionResult(true, "Clicked '${element.label}'")
+            }
+            // Coordinate fallback for the same element.
+            return tapAtPixels(element.centerX.toFloat(), element.centerY.toFloat())
+                .let { ok ->
+                    if (ok) ExecutionResult(true, "Tapped '${element.label}'")
+                    else ExecutionResult(false, "Could not tap '${element.label}'")
+                }
+        }
 
-    private fun tapText(text: String): Boolean {
-        val target = text.trim()
-        if (target.isEmpty()) return false
-        val node = findNode(target) ?: return false
-        if (node.isClickable && node.performAction(AccessibilityNodeInfo.ACTION_CLICK)) {
-            return true
+        if (action.has("x") && action.has("y")) {
+            return tapAtPixels(
+                (action.optInt("x") / 1000f) * service.resources.displayMetrics.widthPixels,
+                (action.optInt("y") / 1000f) * service.resources.displayMetrics.heightPixels,
+            ).let { ok ->
+                if (ok) ExecutionResult(true, "Tapped coordinates")
+                else ExecutionResult(false, "Could not tap the coordinates")
+            }
         }
-        val clickable = node.parent?.takeIf { it.isClickable }
-        if (clickable != null && clickable.performAction(AccessibilityNodeInfo.ACTION_CLICK)) {
-            return true
-        }
-        val rect = Rect()
-        node.getBoundsInScreen(rect)
-        if (rect.width() <= 0 || rect.height() <= 0) return false
-        return tapAtPixels(rect.centerX().toFloat(), rect.centerY().toFloat())
+        return ExecutionResult(false, "No target given: use an element index or x/y")
     }
 
     private fun tapAtPixels(x: Float, y: Float): Boolean {
-        val path = android.graphics.Path().apply { moveTo(x, y) }
+        val path = Path().apply { moveTo(x, y) }
         val gesture = Builder()
             .addStroke(StrokeDescription(path, 0, 80))
             .build()
@@ -112,39 +143,66 @@ class DeviceController(private val service: AccessibilityService) {
 
     // --------------------------------------------------------------- typing
 
-    private fun typeText(text: String): Boolean {
-        if (text.isEmpty()) return false
-        var node = service.rootInActiveWindow?.findFocus(AccessibilityNodeInfo.FOCUS_INPUT)
-        if (node == null) {
-            node = findFirstEditable()
-            if (node != null) {
-                node.performAction(AccessibilityNodeInfo.ACTION_FOCUS)
+    private fun typeText(action: JSONObject): ExecutionResult {
+        val text = action.optString("text")
+        if (text.isEmpty()) return ExecutionResult(false, "No text to type")
+
+        val target = action.optInt("target", -1).takeIf { it > 0 }
+        val node: AccessibilityNodeInfo = when {
+            target != null -> {
+                val element = currentElements.firstOrNull { it.index == target }
+                if (element == null) {
+                    return ExecutionResult(
+                        false,
+                        "Element $target is no longer on screen. Take a new look before acting.",
+                    )
+                }
+                element.node
             }
+            else -> service.rootInActiveWindow?.findFocus(AccessibilityNodeInfo.FOCUS_INPUT)
+                ?: findFirstEditable()
+        } ?: return ExecutionResult(false, "No text field is focused")
+
+        if (!node.isEditable) {
+            node.performAction(AccessibilityNodeInfo.ACTION_FOCUS)
         }
-        val target = node ?: return false
-        val arguments = Bundle().apply {
+        val arguments = android.os.Bundle().apply {
             putCharSequence(
                 AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE,
                 text,
             )
         }
-        return target.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, arguments)
+        val ok = node.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, arguments)
+        return if (ok) {
+            ExecutionResult(true, "Typed the text")
+        } else {
+            ExecutionResult(false, "The text field refused the input")
+        }
     }
 
     // -------------------------------------------------------------- scrolling
 
-    private fun scroll(direction: String, distance: Float): Boolean {
+    private fun scroll(direction: String, distance: Float, target: Int?): ExecutionResult {
         val forward = direction == "down" || direction == "right"
-        val node = findScrollable()?.also { scrollTarget = it }
+        val node = if (target != null) {
+            currentElements.firstOrNull { it.index == target }?.node
+        } else {
+            findScrollable()
+        }
         if (node != null) {
             val action = if (forward) {
                 AccessibilityNodeInfo.ACTION_SCROLL_FORWARD
             } else {
                 AccessibilityNodeInfo.ACTION_SCROLL_BACKWARD
             }
-            if (node.performAction(action)) return true
+            if (node.performAction(action)) {
+                return ExecutionResult(true, "Scrolled $direction")
+            }
         }
-        return swipe(direction, distance)
+        return swipe(direction, distance).let { ok ->
+            if (ok) ExecutionResult(true, "Swiped $direction")
+            else ExecutionResult(false, "Could not scroll")
+        }
     }
 
     private fun swipe(direction: String, distance: Float): Boolean {
@@ -152,7 +210,7 @@ class DeviceController(private val service: AccessibilityService) {
         val width = metrics.widthPixels.toFloat()
         val height = metrics.heightPixels.toFloat()
         val amount = distance.coerceIn(0.1f, 1f)
-        val path = android.graphics.Path()
+        val path = Path()
         when (direction) {
             "up" -> {
                 val startY = height * 0.75f
@@ -181,10 +239,23 @@ class DeviceController(private val service: AccessibilityService) {
 
     // --------------------------------------------------------------- helpers
 
-    private var scrollTarget: AccessibilityNodeInfo? = null
+    private fun global(action: Int, name: String): ExecutionResult =
+        if (service.performGlobalAction(action)) {
+            ExecutionResult(true, "Pressed $name")
+        } else {
+            ExecutionResult(false, "Could not press $name")
+        }
+
+    private fun openApp(packageName: String): ExecutionResult {
+        if (packageName.isBlank()) return ExecutionResult(false, "No package given")
+        val intent = service.packageManager.getLaunchIntentForPackage(packageName)
+            ?: return ExecutionResult(false, "$packageName is not installed")
+        intent.addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
+        service.startActivity(intent)
+        return ExecutionResult(true, "Opened $packageName")
+    }
 
     private fun findScrollable(): AccessibilityNodeInfo? {
-        scrollTarget = null
         val root = service.rootInActiveWindow ?: return null
         val queue = ArrayDeque<AccessibilityNodeInfo>()
         queue.add(root)
@@ -214,39 +285,6 @@ class DeviceController(private val service: AccessibilityService) {
             }
         }
         return null
-    }
-
-    private fun findNode(text: String): AccessibilityNodeInfo? {
-        val needle = text.lowercase()
-        val root = service.rootInActiveWindow ?: return null
-        val queue = ArrayDeque<AccessibilityNodeInfo>()
-        queue.add(root)
-        var visited = 0
-        while (queue.isNotEmpty() && visited < MAX_NODES) {
-            val node = queue.removeFirst()
-            visited++
-            val label = node.text?.toString()?.lowercase()
-            val description = node.contentDescription?.toString()?.lowercase()
-            val id = node.viewIdResourceName?.lowercase()
-            if (label?.contains(needle) == true ||
-                description?.contains(needle) == true ||
-                id?.contains(needle) == true
-            ) {
-                return node
-            }
-            for (index in 0 until node.childCount) {
-                node.getChild(index)?.let { queue.add(it) }
-            }
-        }
-        return null
-    }
-
-    private fun openApp(packageName: String): Boolean {
-        if (packageName.isBlank()) return false
-        val intent = service.packageManager.getLaunchIntentForPackage(packageName) ?: return false
-        intent.addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
-        service.startActivity(intent)
-        return true
     }
 
     private suspend fun captureScreenshot(): Bitmap? =

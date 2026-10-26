@@ -31,7 +31,7 @@ class StubVision:
     async def next_action(self, **kwargs) -> Action:
         self.calls += 1
         if self.calls == 1:
-            return Action(type="tap_text", text="Wi-Fi", reason="open Wi-Fi")
+            return Action(type="tap", target=1, reason="open Wi-Fi")
         return Action(type="done", message="Opened Wi-Fi settings.")
 
     async def aclose(self) -> None:
@@ -97,7 +97,17 @@ def _run() -> None:
                         "step": 0,
                         "package": "com.android.settings",
                         "app_label": "Settings",
-                        "tree": [{"text": "Wi-Fi"}],
+                        "elements": [
+                            {
+                                "index": 1,
+                                "text": "Wi-Fi",
+                                "kind": "Text",
+                                "class": "android.widget.TextView",
+                                "id": "",
+                                "bounds": [0, 100, 720, 200],
+                            }
+                        ],
+                        "element_text": "[1] Text: 'Wi-Fi' | Bounds: [0,62][1000,125]",
                         "screenshot": "",
                         "width": 720,
                         "height": 1600,
@@ -105,7 +115,7 @@ def _run() -> None:
                 )
                 action_frame = socket.receive_json()
                 assert action_frame["type"] == "action", action_frame
-                assert action_frame["action"]["type"] == "tap_text", action_frame
+                assert action_frame["action"]["type"] == "tap", action_frame
                 socket.send_json(
                     {
                         "type": "observation",
@@ -113,7 +123,17 @@ def _run() -> None:
                         "step": 1,
                         "package": "com.android.settings",
                         "app_label": "Settings",
-                        "tree": [{"text": "Wi-Fi"}],
+                        "elements": [
+                            {
+                                "index": 1,
+                                "text": "Wi-Fi",
+                                "kind": "Text",
+                                "class": "android.widget.TextView",
+                                "id": "",
+                                "bounds": [0, 100, 720, 200],
+                            }
+                        ],
+                        "element_text": "[1] Text: 'Wi-Fi' | Bounds: [0,62][1000,125]",
                         "screenshot": "",
                         "width": 720,
                         "height": 1600,

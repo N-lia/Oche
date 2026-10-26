@@ -55,7 +55,17 @@ def _observation(screenshot: str = "") -> Observation:
         step=0,
         package="com.android.settings",
         app_label="Settings",
-        tree=[{"text": "Network & internet", "clickable": True}],
+        elements=[
+            {
+                "index": 1,
+                "text": "Network & internet",
+                "kind": "Text",
+                "class": "android.widget.TextView",
+                "id": "",
+                "bounds": [0, 100, 720, 200],
+            }
+        ],
+        element_text="[1] Text: 'Network & internet' | Bounds: [0,62][1000,125]",
         screenshot=screenshot,
         width=720,
         height=1600,
@@ -81,7 +91,7 @@ def test_request_payload_and_parsing() -> None:
                 "choices": [
                     {
                         "message": {
-                            "content": '```json\n{"type":"tap_text","text":"Network & internet"}\n```'
+                            "content": '```json\n{"type":"tap","target":1,"reason":"open it"}\n```'
                         }
                     }
                 ]
@@ -101,8 +111,8 @@ def test_request_payload_and_parsing() -> None:
         )
     )
 
-    assert action.type == "tap_text"
-    assert action.text == "Network & internet"
+    assert action.type == "tap"
+    assert action.target == 1
 
     assert captured["url"].endswith("/chat/completions")
     assert captured["auth"] == "Bearer test-key"
@@ -157,7 +167,7 @@ def test_live_nebius_roundtrip() -> None:
     action = asyncio.run(run())
     assert action.type in {
         "tap",
-        "tap_text",
+        "tap",
         "scroll",
         "type",
         "back",

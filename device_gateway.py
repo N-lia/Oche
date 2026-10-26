@@ -425,13 +425,36 @@ class DeviceGateway:
 
         connection.last_seen = time.time()
         if observation.error:
-            await self._finish_command(
-                command,
-                connection,
-                "error",
-                message=f"Phone error: {observation.error}",
-                error=observation.error,
+            # A blocked action (the element moved, the tap missed) is handed
+            # back to the planner so it can re-observe and choose again, the
+            # way ARTEMIS recovers from a failed action. Only a broken
+            # accessibility service ends the command.
+            if "accessibility" in observation.error.lower():
+                await self._finish_command(
+                    command,
+                    connection,
+                    "error",
+                    message=f"Phone error: {observation.error}",
+                    error=observation.error,
+                )
+                return
+            command.history.append(
+                {
+                    "step": observation.step,
+                    "action": {},
+                    "ok": False,
+                    "error": observation.error,
+                    "result": observation.action_result or observation.error,
+                }
             )
+            command.last_observation_step = observation.step
+            if observation.step >= command.max_steps:
+                await self._finish_command(
+                    command,
+                    connection,
+                    "completed",
+                    message=f"Stopped after the {command.max_steps}-step limit.",
+                )
             return
 
         # Duplicate/retry: resend the last action instead of asking the model
@@ -496,6 +519,7 @@ class DeviceGateway:
                 "action": action_for_device(action),
                 "ok": observation.last_action_ok,
                 "error": observation.error,
+                "result": observation.action_result,
             }
         )
         await self._send_action(connection, command, action)

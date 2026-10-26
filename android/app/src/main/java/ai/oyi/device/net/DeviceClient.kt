@@ -4,6 +4,7 @@ import android.content.Context
 import android.os.Build
 import android.util.Log
 import ai.oyi.device.BuildConfig
+import ai.oyi.device.accessibility.ExecutionResult
 import ai.oyi.device.data.SettingsStore
 import ai.oyi.device.data.UsageRepository
 import ai.oyi.device.model.ConnectionState
@@ -285,12 +286,11 @@ class DeviceClient(
             val ok = try {
                 controller.execute(action)
             } catch (error: Exception) {
-                command.lastActionOk = false
-                command.lastError = error.message ?: "Action failed"
-                false
+                ExecutionResult(false, error.message ?: "Action failed")
             }
-            command.lastActionOk = ok
-            command.lastError = if (ok) "" else (command.lastError.ifBlank { "Action failed" })
+            command.lastActionOk = ok.ok
+            command.lastError = if (ok.ok) "" else ok.message
+            command.lastResult = ok.message
             command.step += 1
             delay(ACTION_SETTLE_MS)
             sendObservation()
@@ -375,12 +375,14 @@ class DeviceClient(
                 put("step", command.step)
                 put("package", snapshot?.packageName ?: foreground?.packageName.orEmpty())
                 put("app_label", foreground?.label.orEmpty())
-                put("tree", snapshot?.tree ?: org.json.JSONArray())
+                put("elements", snapshot?.elementJson ?: JSONArray())
+                put("element_text", snapshot?.elementText.orEmpty())
                 put("screenshot", snapshot?.screenshot.orEmpty())
                 put("width", snapshot?.width ?: 0)
                 put("height", snapshot?.height ?: 0)
                 put("last_action_ok", command.lastActionOk)
                 put("error", command.lastError)
+                put("action_result", command.lastResult)
             }
             send(message)
         }
@@ -396,6 +398,7 @@ class DeviceClient(
         var step: Int = 0,
         var lastActionOk: Boolean = true,
         var lastError: String = "",
+        var lastResult: String = "",
     )
 
     companion object {

@@ -68,7 +68,7 @@ async def _run() -> None:
     socket = FakeSocket()
     vision = FakeVision(
         [
-            Action(type="tap_text", text="Wi-Fi", reason="open Wi-Fi"),
+            Action(type="tap", target=1, reason="open Wi-Fi"),
             Action(type="done", message="Opened Wi-Fi settings."),
         ]
     )
@@ -84,8 +84,8 @@ async def _run() -> None:
     await gateway.on_observation(connection, _observation(session.command_id, 0))
     action_frame = socket.sent[-1]
     assert action_frame["type"] == "action"
-    assert action_frame["action"]["type"] == "tap_text"
-    assert action_frame["action"]["text"] == "Wi-Fi"
+    assert action_frame["action"]["type"] == "tap"
+    assert action_frame["action"]["target"] == 1
 
     await gateway.on_observation(connection, _observation(session.command_id, 1))
     done_frame = socket.sent[-1]
