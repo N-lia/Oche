@@ -36,6 +36,7 @@ from device_gateway import (
     device_gateway,
 )
 from device_protocol import CommandRequest, DeviceHello
+from sandbox_planner import run_sandbox_planner, sandbox_planner_enabled
 from telegram_format import PlainTextStream, strip_telegram_html
 from backchannel import (
     CATEGORIES,
@@ -244,6 +245,71 @@ async def api_device_status(
         raise HTTPException(status_code=409, detail=str(exc)) from exc
 
 
+@app.post("/api/device/job")
+async def api_device_job(
+    req: CommandRequest,
+    authorization: str | None = Header(default=None),
+):
+    """Start a phone command whose planner runs outside this process.
+
+    Used by the Nebius Sandbox planner: the sandbox drives the decision loop
+    and the gateway stays the transport hub for the phone.
+    """
+    _require_device_api(authorization)
+    job = await device_gateway.create_job(
+        device_id=req.device_id,
+        instruction=req.text,
+        max_steps=req.max_steps,
+    )
+    return {"job_id": job.id, "device_id": job.device_id}
+
+
+@app.get("/api/device/job/{job_id}/observation")
+async def api_device_job_observation(
+    job_id: str,
+    authorization: str | None = Header(default=None),
+):
+    """The next screen for the planner (long poll)."""
+    _require_device_api(authorization)
+    try:
+        return await device_gateway.next_observation(job_id)
+    except DeviceGatewayError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@app.post("/api/device/job/{job_id}/action")
+async def api_device_job_action(
+    job_id: str,
+    payload: dict,
+    authorization: str | None = Header(default=None),
+):
+    """The planner's raw model output; the gateway validates and executes it."""
+    _require_device_api(authorization)
+    raw = str(payload.get("raw") or "")
+    try:
+        return await device_gateway.submit_action(job_id, raw)
+    except DeviceGatewayError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@app.post("/api/device/job/{job_id}/result")
+async def api_device_job_result(
+    job_id: str,
+    payload: dict,
+    authorization: str | None = Header(default=None),
+):
+    """The planner's final answer."""
+    _require_device_api(authorization)
+    try:
+        return await device_gateway.finish_job(
+            job_id,
+            status=str(payload.get("status") or "completed"),
+            message=str(payload.get("message") or ""),
+        )
+    except DeviceGatewayError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
 @app.post("/api/device/command")
 async def api_device_command(
     req: CommandRequest,
@@ -254,8 +320,13 @@ async def api_device_command(
     The endpoint is intentionally synchronous from the caller's point of view:
     Telegram sends one request and gets a final message.  The phone itself sends
     observations/actions asynchronously over ``/ws/device``.
+
+    With OYI_SANDBOX_PLANNER=1 the decision loop runs inside a Nebius
+    Sandbox and this process only relays frames.
     """
     _require_device_api(authorization)
+    if sandbox_planner_enabled():
+        return await _run_command_in_sandbox(req)
     try:
         result = await device_gateway.execute_command(
             text=req.text,
@@ -266,6 +337,39 @@ async def api_device_command(
         )
     except (DeviceGatewayError, DeviceOfflineError) as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return result.model_dump()
+
+
+async def _run_command_in_sandbox(req: CommandRequest) -> dict:
+    """Drive the phone from a Nebius Sandbox instead of from this process."""
+    public_url = os.getenv("OYI_PUBLIC_URL", "").strip().rstrip("/")
+    if not public_url:
+        raise HTTPException(
+            status_code=500,
+            detail="OYI_PUBLIC_URL must be set so the sandbox can reach the gateway.",
+        )
+
+    job = await device_gateway.create_job(
+        device_id=req.device_id,
+        instruction=req.text,
+        max_steps=req.max_steps,
+    )
+    LOGGER.info("running command %s in a Nebius Sandbox", job.id)
+
+    task = asyncio.create_task(
+        run_sandbox_planner(
+            gateway_url=public_url,
+            gateway_token=_device_api_token(),
+            job_id=job.id,
+            model=os.getenv("OYI_DEVICE_VISION_MODEL", "nvidia/Nemotron-3.5-Super-VL"),
+            max_steps=req.max_steps,
+            timeout_s=req.timeout_s + 120.0,
+        )
+    )
+    try:
+        result = await device_gateway.job_result(job.id, timeout=req.timeout_s + 60.0)
+    finally:
+        task.cancel()
     return result.model_dump()
 
 

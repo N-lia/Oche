@@ -86,6 +86,62 @@ class VisionAgentError(RuntimeError):
     """The vision model could not produce a usable action."""
 
 
+def build_messages(
+    *,
+    instruction: str,
+    observation: Observation,
+    step: int,
+    history: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Render the planner prompt for one step.
+
+    Shared by the in-process planner and by the Nebius Sandbox planner, so the
+    prompt lives in exactly one place.
+    """
+    elements = observation.element_text.strip()
+    if not elements and observation.elements:
+        elements = _format_elements(observation.elements)
+
+    history_lines = []
+    for item in history[-4:]:
+        action = item.get("action", {})
+        history_lines.append(
+            f"- step {item.get('step', '?')}: {json.dumps(action, ensure_ascii=False)}"
+            f" -> {'ok' if item.get('ok', True) else 'failed'}"
+            + (f": {item.get('result')}" if item.get("result") else "")
+        )
+
+    text = (
+        "USER REQUEST:\n"
+        f"{instruction.strip()}\n\n"
+        f"STEP: {step}\n"
+        f"CURRENT PACKAGE: {observation.package or '(unknown)'}\n"
+        f"APP LABEL: {observation.app_label or '(unknown)'}\n"
+        f"SCREEN: {observation.width}x{observation.height}\n"
+        f"PREVIOUS ACTION: {'ok' if observation.last_action_ok else 'failed'}\n"
+        f"PREVIOUS RESULT: {observation.action_result or observation.error or '(none)'}\n\n"
+        "RECENT ACTIONS:\n"
+        f"{chr(10).join(history_lines) if history_lines else '(none)'}\n\n"
+        "--- Visible UI Elements ---\n"
+        f"{elements or '(no accessible elements found)'}\n\n"
+        "Reply with one JSON action only."
+    )
+
+    content: list[dict[str, Any]] = [{"type": "text", "text": text}]
+    screenshot = (observation.screenshot or "").strip()
+    if screenshot:
+        if screenshot.startswith("data:image/"):
+            image_url = screenshot
+        else:
+            image_url = f"data:{_image_mime(screenshot)};base64,{screenshot}"
+        content.append({"type": "image_url", "image_url": {"url": image_url}})
+
+    return [
+        {"role": "system", "content": SYSTEM_PROMPT},
+        {"role": "user", "content": content},
+    ]
+
+
 class VisionAgent:
     """Small async client for Nebius' OpenAI-compatible chat-completions API."""
 
@@ -227,44 +283,17 @@ class VisionAgent:
         step: int,
         history: list[dict[str, Any]],
     ) -> dict[str, Any]:
-        elements = observation.element_text.strip()
-        if not elements and observation.elements:
-            elements = _format_elements(observation.elements)
-
-        history_lines = []
-        for item in history[-4:]:
-            action = item.get("action", {})
-            history_lines.append(
-                f"- step {item.get('step', '?')}: {json.dumps(action, ensure_ascii=False)}"
-                f" -> {'ok' if item.get('ok', True) else 'failed'}"
-                + (f": {item.get('result')}" if item.get("result") else "")
-            )
-
-        text = (
-            "USER REQUEST:\n"
-            f"{instruction.strip()}\n\n"
-            f"STEP: {step}\n"
-            f"CURRENT PACKAGE: {observation.package or '(unknown)'}\n"
-            f"APP LABEL: {observation.app_label or '(unknown)'}\n"
-            f"SCREEN: {observation.width}x{observation.height}\n"
-            f"PREVIOUS ACTION: {'ok' if observation.last_action_ok else 'failed'}\n"
-            f"PREVIOUS RESULT: {observation.action_result or observation.error or '(none)'}\n\n"
-            "RECENT ACTIONS:\n"
-            f"{chr(10).join(history_lines) if history_lines else '(none)'}\n\n"
-            "--- Visible UI Elements ---\n"
-            f"{elements or '(no accessible elements found)'}\n\n"
-            "Reply with one JSON action only."
-        )
-
-        content: list[dict[str, Any]] = [{"type": "text", "text": text}]
-        screenshot = (observation.screenshot or "").strip()
-        if screenshot:
-            if screenshot.startswith("data:image/"):
-                image_url = screenshot
-            else:
-                image_url = f"data:{_image_mime(screenshot)};base64,{screenshot}"
-            content.append({"type": "image_url", "image_url": {"url": image_url}})
-
+        return {
+            "model": self.model,
+            "messages": build_messages(
+                instruction=instruction,
+                observation=observation,
+                step=step,
+                history=history,
+            ),
+            "temperature": 0.1,
+            "max_tokens": 700,
+        }
         return {
             "model": self.model,
             "messages": [

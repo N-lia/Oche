@@ -26,13 +26,15 @@ from typing import Any, Protocol
 
 from device_protocol import (
     Action,
+    ActionParseError,
     CommandResult,
     DeviceHello,
     DeviceSummary,
     Observation,
     action_for_device,
+    parse_action,
 )
-from vision_agent import VisionAgent
+from vision_agent import VisionAgent, build_messages
 
 LOGGER = logging.getLogger("oyi.device")
 
@@ -126,11 +128,36 @@ class CommandSession:
         )
 
 
+@dataclass
+class DeviceJob:
+    """One phone command driven from outside the process (a Nebius Sandbox).
+
+    The gateway stays the transport hub: the sandbox asks for the next
+    observation, posts the raw model output back, and the gateway validates it
+    and forwards the action to the phone.
+    """
+
+    id: str
+    device_id: str
+    instruction: str
+    max_steps: int
+    observations: asyncio.Queue = field(default_factory=asyncio.Queue)
+    actions: asyncio.Queue = field(default_factory=asyncio.Queue)
+    result: asyncio.Future = field(default=None)  # type: ignore[assignment]
+    done: bool = False
+    status: str = "running"
+    message: str = ""
+    history: list[dict[str, Any]] = field(default_factory=list)
+    step: int = 0
+
+
 class DeviceGateway:
     def __init__(self, vision: VisionAgent | None = None) -> None:
         self._vision = vision
         self._devices: dict[str, DeviceConnection] = {}
         self._commands: dict[str, CommandSession] = {}
+        self._jobs: dict[str, DeviceJob] = {}
+        self._job_by_device: dict[str, str] = {}
         self._status_waiters: dict[str, asyncio.Future[dict[str, Any]]] = {}
         self._lock = asyncio.Lock()
 
@@ -197,6 +224,141 @@ class DeviceGateway:
             ids = ", ".join(connection.hello.device_id for connection in online)
             raise DeviceGatewayError(f"Multiple phones are connected; specify device_id ({ids}).")
         return online[0]
+
+    # ------------------------------------------------------------------
+    # Jobs (the planner runs outside the process, e.g. in a Nebius Sandbox)
+    # ------------------------------------------------------------------
+
+    async def create_job(
+        self,
+        *,
+        device_id: str,
+        instruction: str,
+        max_steps: int = 16,
+    ) -> DeviceJob:
+        """Register a job that an external planner will drive."""
+        connection = self._choose_device(device_id)
+        job = DeviceJob(
+            id=f"job_{uuid.uuid4().hex[:12]}",
+            device_id=connection.hello.device_id,
+            instruction=instruction,
+            max_steps=max_steps,
+        )
+        job.result = asyncio.get_running_loop().create_future()
+        self._jobs[job.id] = job
+        self._job_by_device[job.device_id] = job.id
+        # The phone runs its own command loop; we only replace the planner.
+        try:
+            await connection.send(
+                {
+                    "type": "command",
+                    "command_id": job.id,
+                    "text": instruction,
+                    "max_steps": max_steps,
+                }
+            )
+        except Exception as exc:  # noqa: BLE001 - the phone is not reachable
+            await self.finish_job(
+                job.id,
+                status="error",
+                message=f"Could not reach the phone: {exc}",
+            )
+            raise DeviceGatewayError(f"Could not reach the phone: {exc}") from exc
+        LOGGER.info("job %s created for device %s", job.id, job.device_id)
+        return job
+
+    def get_job(self, job_id: str) -> DeviceJob | None:
+        return self._jobs.get(job_id)
+
+    async def next_observation(self, job_id: str, timeout: float = 120.0) -> dict[str, Any]:
+        """Hand the next screen to the planner (long poll)."""
+        job = self._jobs.get(job_id)
+        if job is None:
+            raise DeviceGatewayError(f"Unknown job {job_id}")
+        if job.done:
+            return {"finished": True, "status": job.status, "message": job.message}
+        try:
+            return await asyncio.wait_for(job.observations.get(), timeout=timeout)
+        except asyncio.TimeoutError:
+            return {
+                "finished": True,
+                "status": "timeout",
+                "message": "The phone did not respond.",
+            }
+
+    async def submit_action(self, job_id: str, raw: str) -> dict[str, Any]:
+        """Accept the planner's raw model output and turn it into an action."""
+        job = self._jobs.get(job_id)
+        if job is None:
+            raise DeviceGatewayError(f"Unknown job {job_id}")
+        try:
+            action = parse_action(raw)
+        except ActionParseError as error:
+            LOGGER.warning("job %s produced an invalid action: %s", job_id, error)
+            await job.actions.put({"error": str(error)})
+            return {"finished": False, "error": str(error)}
+
+        if action.type in {"done", "ask_user"}:
+            job.status = "completed"
+            job.done = True
+            job.message = action.message or (
+                "Done." if action.type == "done" else "I need more information to continue."
+            )
+            return {"finished": True, "status": job.status, "message": job.message}
+
+        job.step += 1
+        job.history.append({"step": job.step, "action": action_for_device(action)})
+        await job.actions.put({"action": action_for_device(action)})
+        return {"finished": False, "step": job.step}
+
+    async def finish_job(
+        self,
+        job_id: str,
+        *,
+        status: str,
+        message: str,
+    ) -> dict[str, Any]:
+        job = self._jobs.get(job_id)
+        if job is None:
+            raise DeviceGatewayError(f"Unknown job {job_id}")
+        job.status = status
+        job.message = message
+        job.done = True
+        if job.result is not None and not job.result.done():
+            job.result.set_result(
+                CommandResult(
+                    command_id=job.id,
+                    device_id=job.device_id,
+                    status=status,  # type: ignore[arg-type]
+                    message=message,
+                    steps=job.step,
+                )
+            )
+        self._job_by_device.pop(job.device_id, None)
+        return {"ok": True}
+
+    async def job_result(self, job_id: str, timeout: float = 300.0) -> CommandResult:
+        job = self._jobs.get(job_id)
+        if job is None:
+            raise DeviceGatewayError(f"Unknown job {job_id}")
+        assert job.result is not None
+        try:
+            return await asyncio.wait_for(job.result, timeout=timeout)
+        except asyncio.TimeoutError:
+            job.done = True
+            job.status = "timeout"
+            job.message = "The sandbox planner did not finish in time."
+            if job.result is not None and not job.result.done():
+                job.result.set_result(
+                    CommandResult(
+                        command_id=job.id,
+                        device_id=job.device_id,
+                        status="timeout",
+                        message=job.message,
+                        steps=job.step,
+                    )
+                )
+            return job.result
 
     # ------------------------------------------------------------------
     # Command execution
@@ -399,6 +561,12 @@ class DeviceGateway:
             )
 
     async def on_observation(self, connection: DeviceConnection, observation: Observation) -> None:
+        # A job (sandbox planner) takes over the decision loop for this device.
+        job = self._job_for_device(connection.hello.device_id)
+        if job is not None and not job.done:
+            await self._drive_job(connection, job, observation)
+            return
+
         command = self._commands.get(observation.command_id)
         if command is None:
             await connection.send(
@@ -424,6 +592,7 @@ class DeviceGateway:
             return
 
         connection.last_seen = time.time()
+
         recovering = False
         if observation.error:
             # A blocked action (the element moved, the tap missed) is handed
@@ -535,18 +704,89 @@ class DeviceGateway:
         )
         await self._send_action(connection, command, action)
 
+    def _job_for_device(self, device_id: str) -> DeviceJob | None:
+        job_id = self._job_by_device.get(device_id)
+        if not job_id:
+            return None
+        return self._jobs.get(job_id)
+
+    async def _drive_job(
+        self,
+        connection: DeviceConnection,
+        job: DeviceJob,
+        observation: Observation,
+    ) -> None:
+        """Hand a screen to the external planner and send its action back."""
+        messages = build_messages(
+            instruction=job.instruction,
+            observation=observation,
+            step=observation.step,
+            history=job.history,
+        )
+        await job.observations.put(
+            {
+                "messages": messages,
+                "step": observation.step,
+                "package": observation.package,
+                "elements": observation.elements,
+            }
+        )
+
+        try:
+            item = await asyncio.wait_for(job.actions.get(), timeout=180.0)
+        except asyncio.TimeoutError:
+            await self.finish_job(
+                job.id,
+                status="timeout",
+                message="The planner did not answer in time.",
+            )
+            return
+
+        if "error" in item:
+            job.history.append(
+                {
+                    "step": observation.step,
+                    "action": {},
+                    "ok": False,
+                    "error": item["error"],
+                    "result": item["error"],
+                }
+            )
+            return
+
+        action = Action.model_validate(item["action"])
+        job.history.append(
+            {
+                "step": observation.step,
+                "action": action_for_device(action),
+                "ok": observation.last_action_ok,
+                "error": observation.error,
+                "result": observation.action_result,
+            }
+        )
+        await self._send_action_to(connection, job.id, observation.step, action)
+
     async def _send_action(
         self,
         connection: DeviceConnection,
         command: CommandSession,
         action: Action,
     ) -> None:
+        await self._send_action_to(connection, command.command_id, command.last_observation_step, action)
+
+    async def _send_action_to(
+        self,
+        connection: DeviceConnection,
+        command_id: str,
+        step: int,
+        action: Action,
+    ) -> None:
         try:
             await connection.send(
                 {
                     "type": "action",
-                    "command_id": command.command_id,
-                    "step": command.last_observation_step,
+                    "command_id": command_id,
+                    "step": step,
                     "action": action_for_device(action),
                     "message": action.reason,
                 }

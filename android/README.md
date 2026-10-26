@@ -238,3 +238,21 @@ mobile-use/ARTEMIS vocabulary:
 Both that and the index form (`{"type": "tap", "target": 3}`) are accepted and
 normalised to one internal action. The device then resolves the element
 against the live screen, so the model never has to be right about pixels.
+
+## Nebius Sandboxes
+
+Two optional integrations, both driven by `NEBIUS_PROJECT_ID` (plus
+`NEBIUS_API_KEY`):
+
+1. **Agent backend** (`OYI_SANDBOX_BACKEND=1`) — the agent's shell `execute`
+   tool runs inside a Nebius Sandbox instead of the webapp process. It is
+   disabled by default; with a local filesystem backend the tool is excluded
+   from the tool set because generated code must not run in the webapp.
+2. **Phone-use planner** (`OYI_SANDBOX_PLANNER=1`) — the decision loop for a
+   phone command runs in a sandbox: the sandbox asks the gateway for the next
+   screen, calls the vision model, and posts the raw model output back. The
+   gateway still validates the action and executes it on the phone, and the
+   prompt lives in the webapp so both paths share it.
+
+   The sandbox reaches the gateway over the public URL, so set
+   `OYI_PUBLIC_URL` to the host's public address.

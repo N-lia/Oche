@@ -49,16 +49,31 @@ WORKSPACE_DIR = os.environ.get(
     "/data/oyi-memory/workspace" if os.path.isdir("/data/oyi-memory") else "./workspace",
 )
 os.makedirs(WORKSPACE_DIR, exist_ok=True)
-_FS_BACKEND = FilesystemBackend(root_dir=WORKSPACE_DIR, virtual_mode=True)
+
+# Where the agent's code and files live. With a Nebius Sandbox the shell
+# 'execute' tool becomes safe (the code runs in an isolated Nebius
+# environment), so it is only disabled for the local filesystem backend.
+from sandbox_backend import build_sandbox_backend, sandbox_configured, sandbox_requested  # noqa: E402
+
+_SANDBOX_BACKEND: object | None = None
+if sandbox_requested() and sandbox_configured():
+    try:
+        _SANDBOX_BACKEND = build_sandbox_backend()
+    except Exception:  # noqa: BLE001 - fall back to the local backend
+        LOGGER.exception("Nebius sandbox backend unavailable; using the local backend")
+        _SANDBOX_BACKEND = None
+
+_BACKEND = _SANDBOX_BACKEND or FilesystemBackend(root_dir=WORKSPACE_DIR, virtual_mode=True)
+_ALLOW_EXECUTE = _SANDBOX_BACKEND is not None
 
 # Register DeepAgents harness profile for OpenAI-compatible providers:
 # 1. Disable the auto-added synchronous 'general-purpose' subagent and drop 'task' tool,
 #    so the model exclusively uses our non-blocking 'spawn_subagent' tool.
-# 2. Exclude dummy shell 'execute' tool.
+# 2. Exclude the dummy shell 'execute' tool unless a Nebius Sandbox backs it.
 register_harness_profile(
     "openai",
     HarnessProfile(
-        excluded_tools=frozenset({"execute"}),
+        excluded_tools=frozenset() if _ALLOW_EXECUTE else frozenset({"execute"}),
         general_purpose_subagent=GeneralPurposeSubagentProfile(enabled=False),
     ),
 )
@@ -244,7 +259,7 @@ class AgentService:
             model=self._model(model_name),
             tools=[*TAVILY_TOOLS, *PREFERENCE_TOOLS, *SUBAGENT_TOOLS, *VOICE_TOOLS, *DEVICE_TOOLS],
             system_prompt=SYSTEM_PROMPT,
-            backend=_FS_BACKEND,
+            backend=_BACKEND,
             checkpointer=self._checkpointer,
         )
 
