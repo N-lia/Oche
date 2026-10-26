@@ -26,6 +26,7 @@ from __future__ import annotations
 import json
 import os
 import sys
+import time
 import urllib.error
 import urllib.request
 
@@ -115,6 +116,34 @@ def main() -> int:
             gateway_post(
                 f"/api/device/job/{JOB_ID}/result",
                 {"status": "error", "message": f"Vision model call failed: {error}"},
+            )
+            return 1
+
+        if not raw.strip():
+            # An empty completion is a transient model/API problem, not a UI
+            # action. Give the model two more chances before failing the job;
+            # otherwise the gateway sees an empty action and has to recover.
+            for attempt in range(2):
+                print(
+                    f"model returned an empty response; retrying ({attempt + 1}/2)",
+                    file=sys.stderr,
+                )
+                time.sleep(0.8)
+                try:
+                    raw = call_model(messages)
+                except Exception as error:  # noqa: BLE001 - reported below
+                    print(f"model retry failed: {error}", file=sys.stderr)
+                    raw = ""
+                    break
+                if raw.strip():
+                    break
+
+        if not raw.strip():
+            message = "The vision model returned an empty response."
+            print(message, file=sys.stderr)
+            gateway_post(
+                f"/api/device/job/{JOB_ID}/result",
+                {"status": "error", "message": message},
             )
             return 1
 

@@ -829,6 +829,12 @@ class DeviceGateway:
                     "result": item["error"],
                 }
             )
+            # The phone is waiting for an action, not a new observation.  A
+            # wait has no UI side effects and makes the device send a fresh
+            # screen, so the planner can correct an unparseable answer instead
+            # of stalling until the two-minute observation timeout.
+            retry = Action(type="wait", seconds=0.2)
+            await self._send_action_to(connection, job.id, observation.step, retry)
             return
 
         action = Action.model_validate(item["action"])

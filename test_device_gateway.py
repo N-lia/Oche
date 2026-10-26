@@ -225,6 +225,47 @@ async def _run_action_send_failure() -> None:
     await gateway.aclose()
 
 
+async def _run_invalid_action_retry() -> None:
+    """An unparseable model answer must not leave the phone waiting."""
+
+    socket = FakeSocket()
+    gateway = DeviceGateway(vision=FakeVision([]))  # type: ignore[arg-type]
+    connection = DeviceConnection(websocket=socket, hello=_hello())  # type: ignore[arg-type]
+    await gateway.register(connection)
+    job = await gateway.create_job(
+        device_id="dev_test", instruction="open settings", max_steps=4
+    )
+
+    observation_task = asyncio.create_task(
+        gateway.on_observation(connection, _observation(job.id, 0))
+    )
+    await asyncio.sleep(0.01)
+    verdict = await gateway.submit_action(job.id, "this is not an action")
+    assert verdict["finished"] is False, verdict
+    assert "error" in verdict, verdict
+    await asyncio.wait_for(observation_task, 1)
+
+    wait_frame = socket.sent[-1]
+    assert wait_frame["type"] == "action", wait_frame
+    assert wait_frame["action"]["type"] == "wait", wait_frame
+    assert wait_frame["step"] == 0, wait_frame
+    assert not job.done, "an invalid action must allow another model turn"
+
+    # The phone re-observes; a valid action on that screen still completes.
+    observation_task = asyncio.create_task(
+        gateway.on_observation(connection, _observation(job.id, 1))
+    )
+    await asyncio.sleep(0.01)
+    await gateway.submit_action(
+        job.id, json.dumps({"action_type": "done", "message": "done"})
+    )
+    await asyncio.wait_for(observation_task, 1)
+    result = await gateway.job_result(job.id, timeout=1)
+    assert result.status == "completed", result
+    await gateway.unregister(connection)
+    await gateway.aclose()
+
+
 async def _run_busy_job() -> None:
     """A phone that is already executing a command is reported, not ignored."""
 
@@ -328,6 +369,7 @@ if __name__ == "__main__":
     asyncio.run(_run_job_completion())
     asyncio.run(_run_disconnect_job())
     asyncio.run(_run_action_send_failure())
+    asyncio.run(_run_invalid_action_retry())
     asyncio.run(_run_busy_job())
     asyncio.run(_run_job_exclusivity())
     asyncio.run(_run_reconnect_job())
