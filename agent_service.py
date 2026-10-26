@@ -270,6 +270,15 @@ class AgentService:
                 "are clearly insufficient, then answer. Do not extract pages unless a "
                 "result lacks the needed detail.]"
             )
+        if decision.intent == "device_control":
+            context_lines.append(
+                "[Internal context: this is a request to act on the paired Android phone. "
+                "Call control_phone with the task as a plain instruction (for example "
+                "request='open the Settings app'). Use phone_status only to read what is "
+                "on the screen. Do NOT call send_voice_note for a phone task, and do not "
+                "answer with a voice note. If the phone reports a failure, report the "
+                "real reason and offer to retry.]"
+            )
         if decision.entities:
             entities = ", ".join(f"{key}={value}" for key, value in decision.entities.items())
             context_lines.append(f"[Internal context: extracted entities: {entities}]")

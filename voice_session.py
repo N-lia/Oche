@@ -27,7 +27,7 @@ import numpy as np
 
 from asr_client import AsyncTranscribeStream, ascore_turn
 from backchannel import BackchannelController, clip_path
-from telegram_format import strip_telegram_html, strip_telegram_html_fragment
+from telegram_format import PlainTextStream, strip_telegram_html
 from turn_policy import classify_turn
 
 LOGGER = logging.getLogger("oyi.voice.session")
@@ -367,6 +367,7 @@ class VoiceSession:
         self.response_task = asyncio.create_task(self._respond_text(text, self.turn_id, speak))
 
     async def _respond_text(self, text: str, turn_id: int, speak: bool) -> None:
+        plain = PlainTextStream() if self.plain_text else None
         try:
             chunks: list[str] = []
             async for event in self._event_streamer(text, turn_id):
@@ -376,21 +377,25 @@ class VoiceSession:
                 if etype == "token" and event.get("text"):
                     text_chunk = event["text"]
                     chunks.append(text_chunk)
-                    await self.send(
-                        {
-                            "type": "bot_text_delta",
-                            "text": strip_telegram_html_fragment(text_chunk)
-                            if self.plain_text
-                            else text_chunk,
-                            "turn_id": turn_id,
-                        }
-                    )
+                    plain_chunk = plain.feed(text_chunk) if plain is not None else text_chunk
+                    if plain_chunk:
+                        await self.send(
+                            {
+                                "type": "bot_text_delta",
+                                "text": plain_chunk,
+                                "turn_id": turn_id,
+                            }
+                        )
                 elif etype in ("status", "tool"):
                     await self.send({**event, "turn_id": turn_id})
                 elif etype == "done":
                     break
             if turn_id != self.turn_id:
                 return
+            if plain is not None:
+                tail = plain.flush()
+                if tail:
+                    await self.send({"type": "bot_text_delta", "text": tail, "turn_id": turn_id})
             reply = "".join(chunks).strip() or "I could not produce a response."
             self.expecting_answer = reply.rstrip().endswith("?")
             if speak and self.mode != "echo":
@@ -669,6 +674,10 @@ class VoiceSession:
                 if chunk:
                     chunks.append(chunk)
                     await self.send({"type": "bot_text_delta", "text": chunk, "turn_id": turn_id})
+            if plain is not None:
+                tail = plain.flush()
+                if tail:
+                    await self.send({"type": "bot_text_delta", "text": tail, "turn_id": turn_id})
             reply = "".join(chunks).strip() or "I could not produce a response."
         except asyncio.CancelledError:
             raise

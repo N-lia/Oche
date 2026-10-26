@@ -36,7 +36,7 @@ from device_gateway import (
     device_gateway,
 )
 from device_protocol import CommandRequest, DeviceHello
-from telegram_format import strip_telegram_html, strip_telegram_html_fragment
+from telegram_format import PlainTextStream, strip_telegram_html
 from backchannel import (
     CATEGORIES,
     all_phrases,
@@ -341,9 +341,12 @@ async def api_chat(req: ChatRequest):
     try:
         chunks: list[str] = []
         async for chunk in agent_service.astream(req.prompt, req.thread_id):
-            chunks.append(strip_telegram_html_fragment(chunk) if req.plain else chunk)
+            chunks.append(chunk)
         reply = "".join(chunks)
-        return {"response": reply.strip() if req.plain else reply}
+        if req.plain:
+            # Strip once on the joined text: a tag can be split across chunks.
+            reply = strip_telegram_html(reply)
+        return {"response": reply}
     except Exception as exc:
         LOGGER.exception("Agent chat failed")
         raise HTTPException(status_code=500, detail=str(exc))
@@ -360,11 +363,16 @@ async def api_chat_stream(req: ChatRequest):
         return StreamingResponse(iter(()), media_type="application/x-ndjson")
 
     async def generate():
+        plain = PlainTextStream() if req.plain else None
         try:
             async for chunk in agent_service.astream(req.prompt, req.thread_id):
-                yield json.dumps(
-                    {"text": strip_telegram_html_fragment(chunk) if req.plain else chunk}
-                ) + "\n"
+                text = plain.feed(chunk) if plain is not None else chunk
+                if text:
+                    yield json.dumps({"text": text}) + "\n"
+            if plain is not None:
+                tail = plain.flush()
+                if tail:
+                    yield json.dumps({"text": tail}) + "\n"
         except Exception as exc:  # noqa: BLE001 - reported to the client
             LOGGER.exception("Agent chat stream failed")
             yield json.dumps({"error": str(exc)}) + "\n"

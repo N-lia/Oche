@@ -105,20 +105,21 @@ class DeviceController(private val service: AccessibilityService) {
                     "Element $target is no longer on screen. Take a new look before acting.",
                 )
             }
-            // Dynamic-first: ask the node itself to act.
-            if (element.node.isClickable && element.node.performAction(AccessibilityNodeInfo.ACTION_CLICK)) {
-                return ExecutionResult(true, "Clicked '${element.label}'")
+            return clickElement(element)
+        }
+
+        // The planner may name the element in words ("the text 'Wi-Fi' ...").
+        val description = action.optString("element_text").trim()
+        if (description.isNotEmpty()) {
+            val element = resolveByDescription(description)
+            if (element == null) {
+                return ExecutionResult(
+                    false,
+                    "No element matching '$description' is on screen. " +
+                        "Take a new look and pick a listed element.",
+                )
             }
-            val parent = element.node.parent?.takeIf { it.isClickable }
-            if (parent != null && parent.performAction(AccessibilityNodeInfo.ACTION_CLICK)) {
-                return ExecutionResult(true, "Clicked '${element.label}'")
-            }
-            // Coordinate fallback for the same element.
-            return tapAtPixels(element.centerX.toFloat(), element.centerY.toFloat())
-                .let { ok ->
-                    if (ok) ExecutionResult(true, "Tapped '${element.label}'")
-                    else ExecutionResult(false, "Could not tap '${element.label}'")
-                }
+            return clickElement(element)
         }
 
         if (action.has("x") && action.has("y")) {
@@ -130,8 +131,77 @@ class DeviceController(private val service: AccessibilityService) {
                 else ExecutionResult(false, "Could not tap the coordinates")
             }
         }
-        return ExecutionResult(false, "No target given: use an element index or x/y")
+        return ExecutionResult(false, "No target given: use an element index, a description or x/y")
     }
+
+    /**
+     * Clicks the element itself (dynamic-first), falling back to its recorded
+     * centre when the node no longer accepts the click.
+     */
+    private fun clickElement(element: ScreenElement): ExecutionResult {
+        if (element.node.isClickable && element.node.performAction(AccessibilityNodeInfo.ACTION_CLICK)) {
+            return ExecutionResult(true, "Clicked '${element.label}'")
+        }
+        val parent = element.node.parent?.takeIf { it.isClickable }
+        if (parent != null && parent.performAction(AccessibilityNodeInfo.ACTION_CLICK)) {
+            return ExecutionResult(true, "Clicked '${element.label}'")
+        }
+        return tapAtPixels(element.centerX.toFloat(), element.centerY.toFloat()).let { ok ->
+            if (ok) ExecutionResult(true, "Tapped '${element.label}'")
+            else ExecutionResult(false, "Could not tap '${element.label}'")
+        }
+    }
+
+    /**
+     * Resolves a natural-language element description against the current
+     * screen, the way ARTEMIS' screen index answers a text query: exact label
+     * first, then containment, then token overlap.
+     */
+    private fun resolveByDescription(description: String): ScreenElement? {
+        val query = normalize(quotedPhrase(description) ?: description)
+        if (query.isEmpty()) return null
+        if (currentElements.isEmpty()) return null
+
+        currentElements.firstOrNull { normalize(it.label) == query }?.let { return it }
+
+        val contained = currentElements.filter { element ->
+            val label = normalize(element.label)
+            label.isNotEmpty() && (label.contains(query) || query.contains(label))
+        }
+        contained.minByOrNull { it.label.length }?.let { return it }
+
+        val queryTokens = query.split(' ').filter { it.isNotEmpty() }.toSet()
+        if (queryTokens.isEmpty()) return null
+        return currentElements
+            .mapNotNull { element ->
+                val labelTokens = normalize(element.label).split(' ').filter { it.isNotEmpty() }.toSet()
+                if (labelTokens.isEmpty()) {
+                    null
+                } else {
+                    val overlap = queryTokens.intersect(labelTokens).size.toFloat() /
+                        queryTokens.union(labelTokens).size
+                    element to overlap
+                }
+            }
+            .filter { it.second >= 0.5f }
+            .maxByOrNull { it.second }
+            ?.first
+    }
+
+    /** Picks the quoted phrase out of a description, if there is one. */
+    private fun quotedPhrase(description: String): String? {
+        val single = Regex("'([^']+)'").find(description)
+        if (single != null) return single.groupValues[1]
+        val double = Regex("\"([^\"]+)\"").find(description)
+        if (double != null) return double.groupValues[1]
+        return null
+    }
+
+    private fun normalize(value: String): String =
+        value.lowercase()
+            .replace(Regex("[^\\p{L}\\p{N} ]"), " ")
+            .replace(Regex("\\s+"), " ")
+            .trim()
 
     private fun tapAtPixels(x: Float, y: Float): Boolean {
         val path = Path().apply { moveTo(x, y) }
@@ -257,12 +327,38 @@ class DeviceController(private val service: AccessibilityService) {
         }
 
     private fun openApp(packageName: String): ExecutionResult {
-        if (packageName.isBlank()) return ExecutionResult(false, "No package given")
-        val intent = service.packageManager.getLaunchIntentForPackage(packageName)
-            ?: return ExecutionResult(false, "$packageName is not installed")
+        if (packageName.isBlank()) return ExecutionResult(false, "No app given")
+        val resolved = resolvePackage(packageName)
+            ?: return ExecutionResult(false, "'$packageName' is not installed")
+        val intent = service.packageManager.getLaunchIntentForPackage(resolved)
+            ?: return ExecutionResult(false, "'$packageName' cannot be launched")
         intent.addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
         service.startActivity(intent)
         return ExecutionResult(true, "Opened $packageName")
+    }
+
+    /**
+     * Accepts either a package name or an app label ("Settings"), so the
+     * planner can name an app the way a person would.
+     */
+    private fun resolvePackage(name: String): String? {
+        if (name.contains('.')) {
+            return if (service.packageManager.getLaunchIntentForPackage(name) != null) name else null
+        }
+        val manager = service.packageManager
+        val installed = runCatching { manager.getInstalledApplications(0) }.getOrNull() ?: return null
+        val exact = installed.firstOrNull { app ->
+            runCatching { manager.getApplicationLabel(app).toString() }
+                .getOrNull()
+                ?.equals(name, ignoreCase = true) == true
+        }
+        if (exact != null) return exact.packageName
+        val partial = installed.firstOrNull { app ->
+            runCatching { manager.getApplicationLabel(app).toString() }
+                .getOrNull()
+                ?.contains(name, ignoreCase = true) == true
+        }
+        return partial?.packageName
     }
 
     private fun findScrollable(): AccessibilityNodeInfo? {

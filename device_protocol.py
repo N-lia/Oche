@@ -85,14 +85,15 @@ class Observation(BaseModel):
 class Action(BaseModel):
     """A single UI action chosen by the vision planner.
 
-    Targets follow ARTEMIS' "Dynamic-First, Coordinate-Fallback" rule: give
-    the 1-based ``target`` index of a visible element whenever there is one,
-    and use ``x``/``y`` (0..1000 normalized) only for custom-drawn UI that
-    exposes no accessible element.
+    Targets follow the mobile-use/ARTEMIS convention: the planner names the
+    element it wants (``element_text``) or its index (``target``), and the
+    device resolves it against the live screen. Raw ``x``/``y`` (0..1000) are
+    only a fallback for custom-drawn UI that exposes no accessible element.
     """
 
     type: ActionType
     target: int | None = Field(default=None, ge=1, le=1000)
+    element_text: str | None = Field(default=None, max_length=500)
     x: int | None = Field(default=None, ge=0, le=1000)
     y: int | None = Field(default=None, ge=0, le=1000)
     text: str | None = Field(default=None, max_length=4000)
@@ -105,13 +106,53 @@ class Action(BaseModel):
 
     @model_validator(mode="after")
     def _require_action_arguments(self) -> "Action":
-        if self.type == "tap" and self.target is None and (self.x is None or self.y is None):
-            raise ValueError("tap needs a target element index or x/y coordinates")
+        if self.type == "tap" and not (
+            self.target is not None
+            or (self.element_text or "").strip()
+            or (self.x is not None and self.y is not None)
+        ):
+            raise ValueError("tap needs an element index, an element description or x/y")
         if self.type == "type" and not (self.text or "").strip():
             raise ValueError("type requires text")
         if self.type == "open_app" and not (self.package or "").strip():
             raise ValueError("open_app requires a package")
         return self
+
+
+# The planner is a phone-use model: it naturally answers in the mobile-use /
+# ARTEMIS vocabulary. Accept it as-is and normalise it.
+_ACTION_TYPE_ALIASES: dict[str, str] = {
+    "click": "tap",
+    "tap": "tap",
+    "press": "tap",
+    "long_press": "tap",
+    "input": "type",
+    "type": "type",
+    "input_text": "type",
+    "enter_text": "type",
+    "scroll": "scroll",
+    "swipe": "scroll",
+    "drag": "scroll",
+    "open_app": "open_app",
+    "launch": "open_app",
+    "launch_app": "open_app",
+    "navigate": "open_app",
+    "back": "back",
+    "go_back": "back",
+    "home": "home",
+    "go_home": "home",
+    "recents": "recents",
+    "wait": "wait",
+    "sleep": "wait",
+    "done": "done",
+    "finish": "done",
+    "terminate": "done",
+    "complete": "done",
+    "answer": "done",
+    "ask_user": "ask_user",
+    "ask": "ask_user",
+    "clarify": "ask_user",
+}
 
 
 class CommandRequest(BaseModel):
@@ -150,11 +191,12 @@ class ActionParseError(ValueError):
 
 
 def parse_action(raw: str | dict[str, Any] | Action) -> Action:
-    """Parse a model response into a validated action.
+    """Parse a planner response into a validated action.
 
-    Vision models occasionally wrap JSON in a Markdown fence or emit an
-    ``{"action": "tap", ...}`` envelope.  Both are accepted; the result is
-    always an ``Action`` with a ``type`` field.
+    Phone-use models answer in the mobile-use / ARTEMIS vocabulary
+    (``action_type`` + ``action_ui_element`` + ``x``/``y``), while an index
+    based answer (``{"type": "tap", "target": 3}``) is also accepted. Both are
+    normalised into one :class:`Action`.
     """
 
     if isinstance(raw, Action):
@@ -176,23 +218,108 @@ def parse_action(raw: str | dict[str, Any] | Action) -> Action:
         try:
             payload = json.loads(text)
         except json.JSONDecodeError as exc:
-            raise ActionParseError(f"model did not return JSON: {exc}") from exc
+            # Phone-use models sometimes stop one character early or leave a
+            # stray quote. Repair the obvious cases instead of failing the
+            # whole phone command.
+            candidates = (
+                text,
+                text + "}",
+                text.rstrip('"') + "}",
+                text.rstrip('",') + "}",
+                text + '"}',
+                text.rstrip('"') + '"}',
+                text.rstrip('"') + "]}",
+            )
+            for candidate in candidates:
+                try:
+                    payload = json.loads(candidate)
+                    break
+                except json.JSONDecodeError:
+                    continue
+            else:
+                raise ActionParseError(f"model did not return JSON: {exc}") from exc
 
     if not isinstance(payload, dict):
         raise ActionParseError("action must be a JSON object")
 
-    # Accept the common flat shape {"action": "tap", "x": ...}.
-    if isinstance(payload.get("action"), str) and "type" not in payload:
-        payload = {**payload, "type": payload["action"]}
-        payload.pop("action", None)
-    # Also accept {"action": {"type": "tap", ...}}.
-    elif isinstance(payload.get("action"), dict):
-        payload = payload["action"]
-
     try:
-        return Action.model_validate(payload)
+        return Action.model_validate(_normalize_action(payload))
     except ValidationError as exc:
         raise ActionParseError(f"invalid action: {exc}") from exc
+
+
+def _normalize_action(payload: dict[str, Any]) -> dict[str, Any]:
+    """Map the mobile-use/ARTEMIS action shape onto our own."""
+    out = dict(payload)
+
+    raw_type = out.get("type") or out.get("action_type") or out.get("actionType")
+    if raw_type is None:
+        # The legacy envelope {"action": "open_app", ...}. In the mobile-use
+        # vocabulary "action" is a human description instead, so only treat it
+        # as a type when it names one.
+        legacy = out.get("action")
+        if isinstance(legacy, str) and legacy.strip().lower() in _ACTION_TYPE_ALIASES:
+            raw_type = legacy
+    if isinstance(raw_type, str):
+        mapped = _ACTION_TYPE_ALIASES.get(raw_type.strip().lower())
+        if mapped is None:
+            raise ActionParseError(f"unknown action type {raw_type!r}")
+        out["type"] = mapped
+
+    # The element the model wants, described in words.
+    for key in ("action_ui_element", "ui_element", "element", "element_description", "target_description"):
+        value = out.get(key)
+        if isinstance(value, str) and value.strip():
+            out["element_text"] = value.strip()
+            break
+    else:
+        # The mobile-use vocabulary sometimes puts the element description in
+        # "action" itself ("the text 'Settings' in the list").
+        legacy_description = out.get("action")
+        if (
+            isinstance(legacy_description, str)
+            and legacy_description.strip()
+            and legacy_description.strip().lower() not in _ACTION_TYPE_ALIASES
+        ):
+            out["element_text"] = legacy_description.strip()
+
+    # mobile-use emits 0..1 fractions, our protocol is 0..1000.
+    x, y = out.get("x"), out.get("y")
+    if isinstance(x, (int, float)) and isinstance(y, (int, float)):
+        if 0 <= float(x) <= 1 and 0 <= float(y) <= 1:
+            out["x"] = int(round(float(x) * 1000))
+            out["y"] = int(round(float(y) * 1000))
+        else:
+            out["x"] = int(round(float(x)))
+            out["y"] = int(round(float(y)))
+
+    # App to open.
+    for key in ("package", "app_name", "app", "package_name"):
+        value = out.get(key)
+        if isinstance(value, str) and value.strip():
+            out["package"] = value.strip()
+            break
+
+    # The final answer.
+    if out.get("type") in {"done", "ask_user"}:
+        for key in ("message", "final_answer", "answer", "text", "reason"):
+            value = out.get(key)
+            if isinstance(value, str) and value.strip():
+                out["message"] = value.strip()
+                break
+
+    # "input" carries its text; a click carries the element description.
+    if out.get("type") == "type" and not out.get("text"):
+        for key in ("input_text", "text_to_type", "value"):
+            value = out.get(key)
+            if isinstance(value, str) and value.strip():
+                out["text"] = value.strip()
+                break
+
+    out.pop("action_type", None)
+    out.pop("action_ui_element", None)
+    out.pop("action", None)
+    return out
 
 
 def action_for_device(action: Action) -> dict[str, Any]:

@@ -184,12 +184,12 @@ class DeviceGateway:
         return [connection.summary() for connection in self._devices.values()]
 
     def _choose_device(self, device_id: str) -> DeviceConnection:
-        if device_id:
-            connection = self._devices.get(device_id)
-            if connection is None or not connection.connected:
-                raise DeviceOfflineError(f"Device {device_id!r} is not connected.")
-            return connection
-
+        requested = (device_id or "").strip()
+        if requested and requested != "default":
+            connection = self._devices.get(requested)
+            if connection is not None and connection.connected:
+                return connection
+            LOGGER.warning("Unknown device id %r; falling back to the connected phone", requested)
         online = [connection for connection in self._devices.values() if connection.connected]
         if not online:
             raise DeviceOfflineError("No Android phone is connected to OYI.")
@@ -424,6 +424,7 @@ class DeviceGateway:
             return
 
         connection.last_seen = time.time()
+        recovering = False
         if observation.error:
             # A blocked action (the element moved, the tap missed) is handed
             # back to the planner so it can re-observe and choose again, the
@@ -448,6 +449,7 @@ class DeviceGateway:
                 }
             )
             command.last_observation_step = observation.step
+            command.last_action = None
             if observation.step >= command.max_steps:
                 await self._finish_command(
                     command,
@@ -455,25 +457,28 @@ class DeviceGateway:
                     "completed",
                     message=f"Stopped after the {command.max_steps}-step limit.",
                 )
-            return
+                return
+            # The planner sees PREVIOUS RESULT and picks a different action.
+            recovering = True
 
-        # Duplicate/retry: resend the last action instead of asking the model
-        # to make a new decision from the same screen.
-        if observation.step == command.last_observation_step and command.last_action is not None:
-            await self._send_action(connection, command, command.last_action)
-            return
-        if observation.step < command.last_observation_step:
-            return
-        if observation.step != command.last_observation_step + 1 and observation.step != 0:
-            LOGGER.warning(
-                "Ignoring out-of-order observation command=%s got=%s expected=%s",
-                command.command_id,
-                observation.step,
-                command.last_observation_step + 1,
-            )
-            return
+        if not recovering:
+            # Duplicate/retry: resend the last action instead of asking the model
+            # to make a new decision from the same screen.
+            if observation.step == command.last_observation_step and command.last_action is not None:
+                await self._send_action(connection, command, command.last_action)
+                return
+            if observation.step < command.last_observation_step:
+                return
+            if observation.step != command.last_observation_step + 1 and observation.step != 0:
+                LOGGER.warning(
+                    "Ignoring out-of-order observation command=%s got=%s expected=%s",
+                    command.command_id,
+                    observation.step,
+                    command.last_observation_step + 1,
+                )
+                return
 
-        command.last_observation_step = observation.step
+            command.last_observation_step = observation.step
         if observation.step >= command.max_steps:
             await self._finish_command(
                 command,

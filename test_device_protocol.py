@@ -83,6 +83,34 @@ def test_action_targets_element_index() -> None:
     assert action.x is None
 
 
+def test_mobile_use_click_is_normalised() -> None:
+    """Phone-use models answer in the mobile-use / ARTEMIS vocabulary."""
+    action = parse_action(
+        '{"action_type":"click","action":"open Display",'
+        '"action_ui_element":"the text \'Display & Brightness\' in the list",'
+        '"x":0.2257,"y":0.2556}'
+    )
+    assert action.type == "tap"
+    assert action.element_text == "the text 'Display & Brightness' in the list"
+    # 0..1 fractions become 0..1000.
+    assert action.x == 226
+    assert action.y == 256
+
+
+def test_mobile_use_types_are_normalised() -> None:
+    assert parse_action('{"action_type":"input","text":"hello"}').type == "type"
+    assert parse_action('{"action_type":"scroll","direction":"down"}').type == "scroll"
+    assert parse_action('{"action_type":"open_app","app_name":"Settings"}').package == "Settings"
+    assert parse_action('{"action_type":"go_back"}').type == "back"
+    done = parse_action('{"action_type":"done","text":"all done"}')
+    assert done.type == "done"
+    assert done.message == "all done"
+
+
+def test_unknown_action_type_is_rejected() -> None:
+    _expect_parse_error('{"action_type":"teleport"}')
+
+
 def test_tap_needs_a_target_or_coordinates() -> None:
     _expect_parse_error('{"type":"tap"}')
     action = parse_action('{"type":"tap","x":500,"y":250}')

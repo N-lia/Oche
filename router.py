@@ -34,6 +34,7 @@ class RouteDecision(BaseModel):
         "analysis",
         "creative",
         "preference",
+        "device_control",
     ]
     complexity: Literal["routine", "standard", "serious"]
     entities: dict[str, str] = Field(default_factory=dict)
@@ -86,6 +87,17 @@ _SEARCH_FAST_PATH_MARKERS = (
     "who is winning", "who won", "what happened", "was released", "release date",
 )
 
+# Wording that means "do something on the paired Android phone".
+_PHONE_CONTROL_MARKERS = (
+    "my phone",
+    "on the phone",
+    "on my device",
+    "phone screen",
+    "my screen",
+    "on the device",
+    "phone's screen",
+)
+
 
 def classify_request(user_input: str) -> RouteDecision:
     """Classify intent and extract useful entities with the fast model."""
@@ -100,6 +112,18 @@ def classify_request(user_input: str) -> RouteDecision:
             complexity="routine",
             confidence=1.0,
             reason="fast_path_greeting",
+        )
+
+    # Fast-path 2: phone-control requests (0ms).
+    # "on my phone" must not be read as "send me a voice note": these turns
+    # have to reach the control_phone tool, so they are marked explicitly and
+    # the agent prompt says so.
+    if any(marker in cleaned for marker in _PHONE_CONTROL_MARKERS):
+        return RouteDecision(
+            intent="device_control",
+            complexity="routine",
+            confidence=0.95,
+            reason="fast_path_phone_control",
         )
 
     # Fast-path 3: OBVIOUS search / current-information turns (0ms).

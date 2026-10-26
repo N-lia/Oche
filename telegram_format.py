@@ -190,6 +190,45 @@ def strip_telegram_html_fragment(text: str) -> str:
     return html.unescape(re.sub(r"<[^>]+>", "", text))
 
 
+class PlainTextStream:
+    """Turn a stream of Telegram-HTML chunks into plain text.
+
+    A tag can be split across two chunks (``"<b"`` + ``">"``), so stripping
+    each chunk on its own would leak the tag into the output. This buffers the
+    tail that might be an unfinished tag and only emits text it is sure about.
+    """
+
+    def __init__(self) -> None:
+        self._raw = ""
+        self._emitted = 0
+
+    def feed(self, chunk: str) -> str:
+        """Feed one chunk and return the plain text that can be emitted."""
+        if not chunk:
+            return ""
+        self._raw += chunk
+
+        # Hold back anything after a '<' that has no '>' yet.
+        cut = self._raw.rfind("<")
+        head = self._raw[:cut] if cut != -1 and ">" not in self._raw[cut:] else self._raw
+
+        text = strip_telegram_html_fragment(head)
+        if len(text) <= self._emitted:
+            return ""
+        out = text[self._emitted :]
+        self._emitted = len(text)
+        return out
+
+    def flush(self) -> str:
+        """Return whatever is left once the stream ends."""
+        text = strip_telegram_html_fragment(self._raw)
+        if len(text) <= self._emitted:
+            return ""
+        out = text[self._emitted :]
+        self._emitted = len(text)
+        return out
+
+
 # ---------------------------------------------------------------------------
 # Native HTML pass-through: the model authors Telegram HTML directly.
 # ---------------------------------------------------------------------------

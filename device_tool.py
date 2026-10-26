@@ -131,11 +131,17 @@ async def phone_status(device_id: str = "") -> str:
         )
 
     try:
-        async with httpx.AsyncClient(timeout=httpx.Timeout(connect=10.0, read=20.0)) as client:
+        params: dict[str, str] = {}
+        wanted = device_id.strip()
+        if wanted and wanted != "default":
+            params["device_id"] = wanted
+        async with httpx.AsyncClient(
+            timeout=httpx.Timeout(connect=10.0, read=20.0, write=20.0, pool=10.0)
+        ) as client:
             response = await client.get(
                 f"{base_url}/api/device/status",
                 headers={"Authorization": f"Bearer {token}"},
-                params={"device_id": device_id.strip()} if device_id.strip() else None,
+                params=params,
             )
             response.raise_for_status()
             data = response.json()

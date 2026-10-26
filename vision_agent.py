@@ -42,29 +42,29 @@ You receive the screen like this:
 
 Return ONLY one JSON object. No Markdown, no prose, no code fences.
 
-Allowed actions:
-  {"type":"tap","target":3,"reason":"..."}
-  {"type":"type","target":5,"text":"hello","reason":"..."}
-  {"type":"scroll","direction":"down","reason":"..."}
-  {"type":"back","reason":"..."}
-  {"type":"home","reason":"..."}
-  {"type":"recents","reason":"..."}
-  {"type":"open_app","package":"com.android.settings","reason":"..."}
-  {"type":"wait","seconds":1.0,"reason":"..."}
-  {"type":"done","message":"Short result for the user"}
-  {"type":"ask_user","message":"What you need clarified"}
+Allowed actions (one JSON object, no Markdown, no prose):
+
+  {"action_type":"click","action":"<what you are doing>","action_ui_element":"the text 'Wi-Fi' in the list","x":0.5,"y":0.5}
+  {"action_type":"input","text":"hello","action_ui_element":"the field 'Search'"}
+  {"action_type":"scroll","direction":"down"}
+  {"action_type":"open_app","app_name":"Settings"}
+  {"action_type":"wait"}
+  {"action_type":"done","text":"<your answer for the user>"}
 
 Targeting rules (Dynamic-First, Coordinate-Fallback):
-- "target" is the 1-based index of an element from the Visible UI Elements
-  list. ALWAYS prefer it: the device taps the real element it captured.
-- Only use "x" and "y" (0..1000 normalized, x right, y down) when no listed
-  element matches the target, e.g. a custom-drawn canvas. Never invent an
-  index that is not in the list.
-- To type, target the text field: {"type":"type","target":5,"text":"hello"}.
-- "scroll" with direction "down" reveals the content BELOW the current
-  screen; "up" reveals the content above. Each scroll moves about half a
-  screen, so repeat it while the item you want is still not listed.
-- To read the screen, do not act: use "done" with the answer in "message".
+- "action_ui_element" must quote the element's EXACT visible text, e.g.
+  "the text 'Network & internet' in the list". The device resolves that text
+  against the live screen and taps the real element, so an exact label is
+  what matters. Copy the label from the Visible UI Elements list.
+- You may also use {"type":"tap","target":3} with the 1-based index from the
+  Visible UI Elements list. Never invent an index that is not listed.
+- "x" and "y" are fractions from 0 to 1 of the screen. They are used only
+  when no listed element matches the target (a custom-drawn canvas).
+- "direction":"down" reveals the content BELOW the current screen; "up"
+  reveals the content above. Each scroll moves about half a screen, so repeat
+  it while the item you want is still not listed.
+- To answer a question about the screen, do not act: use "done" with the
+  answer in "text".
 
 Other rules:
 - One action per response. The next screenshot arrives after it executes.
@@ -76,8 +76,8 @@ Other rules:
   actions unless the user explicitly asked for that exact action.
 - If the previous action failed, do not repeat it blindly; choose a different
   element or scroll to find it.
-- If the goal is already achieved, use done.
-- If the request is ambiguous or blocked, use ask_user.
+- If the goal is already achieved, use done (with the answer in "text").
+- If the request is ambiguous or blocked, use ask_user with "text".
 - Keep reason/message short; they may be shown to the user.
 """
 
@@ -206,7 +206,11 @@ class VisionAgent:
             try:
                 return parse_action(content)
             except ActionParseError as exc:
-                LOGGER.warning("Vision model returned an invalid action: %s", exc)
+                LOGGER.warning(
+                    "Vision model returned an invalid action: %s | raw=%s",
+                    exc,
+                    content[:600].replace("\n", " "),
+                )
                 raise VisionAgentError(str(exc)) from exc
 
         detail = last_error.__class__.__name__ if last_error else "unknown error"

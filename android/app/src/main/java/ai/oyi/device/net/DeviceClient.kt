@@ -176,6 +176,9 @@ class DeviceClient(
             val reason = describe(t)
             Log.w(TAG, "connection failed: $reason", t)
             runtime.setConnection(ConnectionState.ERROR, reason)
+            // The link is gone, so any command in flight is dead. Keeping it
+            // would make the phone refuse every future command as "busy".
+            dropActiveCommand()
             scheduleReconnect()
         }
 
@@ -183,8 +186,16 @@ class DeviceClient(
             if (!isCurrent(webSocket)) return
             Log.i(TAG, "connection closed: $code $reason")
             runtime.setConnection(ConnectionState.DISCONNECTED, reason)
+            dropActiveCommand()
             scheduleReconnect()
         }
+    }
+
+    /** Forgets a command that cannot finish any more. */
+    private fun dropActiveCommand() {
+        activeCommand = null
+        runtime.setBusy(false)
+        runtime.setMessage("Link lost")
     }
 
     /** Turns transport exceptions into something a person can act on. */
