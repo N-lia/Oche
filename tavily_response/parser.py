@@ -103,9 +103,12 @@ def _recommendation(title: str, content: str, url: str, query: str, score: objec
 
 
 def parse_tavily_search(data: dict, query: str = "") -> str:
-    """Return ranked result summaries and practical next-step recommendations."""
+    """Return a synthesized answer, ranked source summaries, and next steps."""
     results = data.get("results") or []
+    answer = _clean(data.get("answer"), SEARCH_SNIPPET_CHARS * 3)
     if not results:
+        if answer:
+            return f"Web answer for {query!r}:\n{answer}\n\nNo source list was returned; verify this answer before relying on it."
         return f"No web results found for: {query!r}"
 
     seen_urls: set[str] = set()
@@ -123,7 +126,11 @@ def parse_tavily_search(data: dict, query: str = "") -> str:
         if len(summaries) >= SEARCH_RESULT_LIMIT:
             break
 
-    output = [f"Focused results for {query!r}:", "\n\n".join(summaries)]
+    output: list[str] = []
+    if answer:
+        output.append(f"Tavily answer for {query!r} (verify against the sources below):\n{answer}")
+    output.append(f"Focused results for {query!r}:")
+    output.append("\n\n".join(summaries))
     output.append("These are source leads, not verified conclusions. Synthesize only evidence relevant to the request.")
     return "\n\n".join(output)
 

@@ -43,8 +43,14 @@ _INLINE_CODE_RE = re.compile(r"(`{1,3})([^`\n]+?)\1")
 _HEADING_TRAILING_MARKS_RE = re.compile(r"^[ \t]{0,3}(#{1,6})[ \t]+(.+?)[ \t]*#*[ \t]*$", re.M)
 _HORIZONTAL_RULE_RE = re.compile(r"^[ \t]*(?:[-*_][ \t]*){3,}$", re.M)
 _TABLE_SEPARATOR_RE = re.compile(r"^[ \t]*\|?(?:[ \t]*:?-{2,}:?[ \t]*\|)+[ \t]*:?-{2,}:?[ \t]*\|?[ \t]*$", re.M)
+_TABLE_SEPARATOR_LINE_RE = re.compile(
+    r"^[ \t]*\|?[ \t]*:?-{2,}:?[ \t]*(?:\|[ \t]*:?-{2,}:?[ \t]*)+\|?[ \t]*$"
+)
 _BULLET_RE = re.compile(r"^([ \t]*)[-*+][ \t]+", re.M)
 _EXCESS_BLANK_RE = re.compile(r"\n{4,}")
+_IMAGE_RE = re.compile(r"!\[([^\]\n]*)\]\(([^)\n]+)\)")
+_HEADING_LINE_PREFIX_RE = re.compile(r"^[ \t]{0,3}#{1,6}[ \t]+", re.M)
+_BLOCKQUOTE_PREFIX_RE = re.compile(r"^[ \t]*(?:>[ \t]?)+", re.M)
 
 # ---------------------------------------------------------------------------
 # Inline regexes (run on ESCAPED text, where & < > are already entities).
@@ -53,11 +59,11 @@ _EXCESS_BLANK_RE = re.compile(r"\n{4,}")
 _LINK_RE = re.compile(r"\[([^\]\n]+)\]\(([^)\n]+)\)")
 _SAFE_URL_SCHEMES_RE = re.compile(r"^(https?:|tg:|mailto:|ftp:)", re.I)
 
-_STRIKE_RE = re.compile(r"~~(?=\S)([^~\n]+?)(?<=\S)~~")
-_BOLD_RE = re.compile(r"\*\*(?=\S)(.+?)(?<=\S)\*\*", re.S)
+_STRIKE_RE = re.compile(r"~~(.+?)~~", re.S)
+_BOLD_RE = re.compile(r"\*\*(.+?)\*\*", re.S)
 _ITALIC_ASTERISK_RE = re.compile(r"(?<!\*)\*(?!\s)([^*\n]+?)(?<!\s)\*(?!\*)")
 _ITALIC_UNDERSCORE_RE = re.compile(r"(?<!\w)_(?!\s)([^_\n]+?)(?<!\s)_(?!\w)")
-_SPOILER_RE = re.compile(r"\|\|(?=\S)(.+?)(?<=\S)\|\|")
+_SPOILER_RE = re.compile(r"\|\|(.+?)\|\|", re.S)
 
 # Applies to escaped text: "> quote" now looks like "> quote".
 _BLOCKQUOTE_LINE_RE = re.compile('^[ \\t]*(?:&gt;|>)[ \\t]?(.*)$')
@@ -79,6 +85,86 @@ def _language_class(lang: str) -> str:
     if not re.fullmatch(r"[a-z0-9_+\-]*", lang or ""):
         return ""
     return f' class="language-{lang}"' if lang else ""
+
+
+def _is_table_row(line: str) -> bool:
+    value = line.strip()
+    return "|" in value and value.count("|") >= 1 and not value.startswith("```")
+
+
+def _split_table_row(line: str) -> list[str]:
+    value = line.strip()
+    if value.startswith("|"):
+        value = value[1:]
+    if value.endswith("|"):
+        value = value[:-1]
+    return [cell.strip().replace("\\|", "|") for cell in re.split(r"(?<!\\)\|", value)]
+
+
+def _convert_markdown_tables(text: str, *, plain: bool = False) -> str:
+    """Turn Markdown pipe tables into chat-friendly key/value bullets.
+
+    Telegram has no table element, and a wall of ``|`` cells is unreadable on
+    a phone.  Each body row becomes one bullet:
+    ``• **Name:** Pixel 9 — **Price:** ₦95,000``.
+    """
+    lines = text.splitlines()
+    trailing = text[len(text.rstrip("\n")) :]
+    out: list[str] = []
+    index = 0
+    while index < len(lines):
+        line = lines[index]
+        if _is_table_row(line) and index + 1 < len(lines) and _TABLE_SEPARATOR_LINE_RE.match(lines[index + 1]):
+            header = _split_table_row(line)
+            index += 2
+            while index < len(lines) and _is_table_row(lines[index]) and lines[index].strip():
+                cells = _split_table_row(lines[index])
+                pieces: list[str] = []
+                for cell_index, cell in enumerate(cells):
+                    if not cell:
+                        continue
+                    label = header[cell_index] if cell_index < len(header) else ""
+                    if label and not plain:
+                        pieces.append(f"**{label}:** {cell}")
+                    elif label:
+                        pieces.append(f"{label}: {cell}")
+                    else:
+                        pieces.append(cell)
+                if pieces:
+                    out.append("• " + " — ".join(pieces))
+                index += 1
+            continue
+        if _TABLE_SEPARATOR_LINE_RE.match(line):
+            index += 1
+            continue
+        out.append(line)
+        index += 1
+    return "\n".join(out) + trailing
+
+
+def _plain_table_row(header: list[str], cells: list[str]) -> str:
+    pieces: list[str] = []
+    for cell_index, cell in enumerate(cells):
+        if not cell:
+            continue
+        label = header[cell_index] if cell_index < len(header) else ""
+        pieces.append(f"{label}: {cell}" if label else cell)
+    return "• " + " — ".join(pieces) if pieces else ""
+
+
+def _bold_replacement(match: re.Match) -> str:
+    inner = match.group(1).strip()
+    return f"<b>{inner}</b>" if inner else ""
+
+
+def _strike_replacement(match: re.Match) -> str:
+    inner = match.group(1).strip()
+    return f"<s>{inner}</s>" if inner else ""
+
+
+def _spoiler_replacement(match: re.Match) -> str:
+    inner = match.group(1).strip()
+    return f"<tg-spoiler>{inner}</tg-spoiler>" if inner else ""
 
 
 def markdown_to_telegram_html(text: str) -> str:
@@ -106,6 +192,7 @@ def markdown_to_telegram_html(text: str) -> str:
     text = _INLINE_CODE_RE.sub(lambda match: _stash(f"<code>{html.escape(match.group(2))}</code>"), text)
 
     # 3. Block-level cleanup that does not insert tags (safe pre-escape).
+    text = _convert_markdown_tables(text)
     text = _HEADING_TRAILING_MARKS_RE.sub(r"\1 \2", text)
     text = _HORIZONTAL_RULE_RE.sub("", text)
     text = _TABLE_SEPARATOR_RE.sub("", text)
@@ -116,11 +203,11 @@ def markdown_to_telegram_html(text: str) -> str:
     text = html.escape(text, quote=False)
 
     # 5. Inline transforms on the escaped text.
-    text = _STRIKE_RE.sub(r"<s>\1</s>", text)
-    text = _BOLD_RE.sub(r"<b>\1</b>", text)
+    text = _STRIKE_RE.sub(_strike_replacement, text)
+    text = _BOLD_RE.sub(_bold_replacement, text)
     text = _ITALIC_ASTERISK_RE.sub(r"<i>\1</i>", text)
     text = _ITALIC_UNDERSCORE_RE.sub(r"<i>\1</i>", text)
-    text = _SPOILER_RE.sub(r"<tg-spoiler>\1</tg-spoiler>", text)
+    text = _SPOILER_RE.sub(_spoiler_replacement, text)
 
     # 6. Line-level markup (headings, blockquotes) — wraps already-escaped lines.
     text = _wrap_line_markup(text)
@@ -188,6 +275,190 @@ def strip_telegram_html_fragment(text: str) -> str:
     if not text:
         return ""
     return html.unescape(re.sub(r"<[^>]+>", "", text))
+
+
+def _plain_link(match: re.Match, keep_urls: bool) -> str:
+    label = match.group(1).strip()
+    url = match.group(2).strip()
+    if not label or label == url:
+        return url if keep_urls else (label or url)
+    if keep_urls:
+        return f"{label} ({url})"
+    return label
+
+
+def _strip_inline_markdown(text: str) -> str:
+    text = _STRIKE_RE.sub(lambda match: match.group(1).strip(), text)
+    text = _BOLD_RE.sub(lambda match: match.group(1).strip(), text)
+    text = _ITALIC_ASTERISK_RE.sub(lambda match: match.group(1).strip(), text)
+    text = _ITALIC_UNDERSCORE_RE.sub(lambda match: match.group(1).strip(), text)
+    text = _SPOILER_RE.sub(lambda match: match.group(1).strip(), text)
+    return text
+
+
+def markdown_to_plain_text(
+    text: str,
+    *,
+    keep_urls: bool = False,
+    strip: bool = True,
+) -> str:
+    """Convert model Markdown to clean text for WebApp, Android, and TTS.
+
+    Telegram keeps its richer HTML conversion; every other channel renders
+    text with ``textContent`` or speaks it, so Markdown markers must not leak.
+    """
+    text = text or ""
+    if not text.strip():
+        return ""
+
+    placeholders: list[str] = []
+
+    def _stash(fragment: str) -> str:
+        token = f"\x00{len(placeholders)}\x00"
+        placeholders.append(fragment)
+        return token
+
+    text = _FENCED_CODE_RE.sub(lambda match: _stash(match.group(2).rstrip("\n")), text)
+    text = _INLINE_CODE_RE.sub(lambda match: _stash(match.group(2)), text)
+    text = _convert_markdown_tables(text, plain=True)
+    text = _IMAGE_RE.sub(lambda match: match.group(1).strip(), text)
+    text = _LINK_RE.sub(lambda match: _plain_link(match, keep_urls), text)
+    text = _HEADING_LINE_PREFIX_RE.sub("", text)
+    text = _BLOCKQUOTE_PREFIX_RE.sub("", text)
+    text = _HORIZONTAL_RULE_RE.sub("", text)
+    text = _BULLET_RE.sub(r"\1• ", text)
+    text = _strip_inline_markdown(text)
+    text = _PLACEHOLDER_RE.sub(
+        lambda match: placeholders[int(match.group(1))] if int(match.group(1)) < len(placeholders) else "",
+        text,
+    )
+    text = re.sub(r"`{1,3}", "", text)
+    text = re.sub(
+        r"</?(?:b|strong|i|em|u|ins|s|strike|del|code|pre|a|blockquote|tg-spoiler|br)\b[^>]*>",
+        "",
+        text,
+        flags=re.I,
+    )
+    text = html.unescape(text)
+    text = _EXCESS_BLANK_RE.sub("\n\n", text)
+    return text.strip() if strip else text
+
+
+def _inline_markers_balanced(text: str) -> bool:
+    """Return False when an inline span is still open at the end of ``text``."""
+    without_double = text.replace("**", "")
+    if without_double.count("*") % 2:
+        return False
+    if text.count("~~") % 2:
+        return False
+    if text.count("`") % 2:
+        return False
+    last_open = text.rfind("[")
+    return last_open == -1 or "](" in text[last_open:]
+
+
+class MarkdownPlainStream:
+    """Incrementally convert streamed Markdown into plain text.
+
+    Converts at line boundaries (and only holds a fenced code block until it
+    closes).  A one-line lookahead distinguishes a real Markdown table from a
+    prose line containing a pipe, so table pipes never leak into the WebApp.
+    """
+
+    def __init__(self, *, keep_urls: bool = False) -> None:
+        self._buf = ""
+        self._pending = ""
+        self._table_header: list[str] | None = None
+        self._keep_urls = keep_urls
+
+    def _convert(self, segment: str) -> str:
+        if not segment:
+            return ""
+        return markdown_to_plain_text(segment, keep_urls=self._keep_urls, strip=False)
+
+    def _emit_pending(self, out: list[str]) -> None:
+        if self._pending:
+            out.append(self._convert(self._pending))
+            self._pending = ""
+
+    def _process_line(self, line: str, out: list[str]) -> None:
+        if self._table_header is not None:
+            if _TABLE_SEPARATOR_LINE_RE.match(line):
+                return
+            if _is_table_row(line):
+                formatted = _plain_table_row(self._table_header, _split_table_row(line))
+                if formatted:
+                    out.append(formatted + "\n")
+                return
+            # Table ended; the header was already consumed.
+            self._table_header = None
+
+        if self._pending:
+            if _is_table_row(self._pending) and _TABLE_SEPARATOR_LINE_RE.match(line):
+                self._table_header = _split_table_row(self._pending)
+                self._pending = ""
+                return
+            self._emit_pending(out)
+        self._pending = line
+
+    def feed(self, chunk: str) -> str:
+        if not chunk:
+            return ""
+        self._buf += chunk
+        out: list[str] = []
+        while True:
+            if "```" in self._buf:
+                if _fence_open(self._buf):
+                    # A fence can only start after complete prose lines, so any
+                    # text before it can be emitted now instead of waiting for
+                    # the fence to close.
+                    fence_start = self._buf.find("```")
+                    prefix = self._buf[:fence_start]
+                    while True:
+                        newline = prefix.find("\n")
+                        if newline == -1:
+                            break
+                        self._process_line(prefix[: newline + 1], out)
+                        prefix = prefix[newline + 1 :]
+                    self._buf = prefix + self._buf[fence_start:]
+                    self._emit_pending(out)
+                    break
+                last_fence = self._buf.rfind("```")
+                end = self._buf.find("\n", last_fence)
+                if end == -1:
+                    break
+                self._emit_pending(out)
+                segment = self._buf[: end + 1]
+                self._buf = self._buf[end + 1 :]
+                out.append(self._convert(segment))
+                continue
+
+            newline = self._buf.find("\n")
+            if newline != -1:
+                line = self._buf[: newline + 1]
+                self._buf = self._buf[newline + 1 :]
+                self._process_line(line, out)
+                continue
+
+            # Very long single-line reply: emit at a safe word boundary so the
+            # UI still streams instead of waiting for the final newline.
+            if len(self._buf) > 1200:
+                cut = self._buf.rfind(" ", 0, 1200)
+                if cut > 100 and not self._pending and _inline_markers_balanced(self._buf[:cut]):
+                    out.append(self._convert(self._buf[: cut + 1]))
+                    self._buf = self._buf[cut + 1 :]
+                    continue
+            break
+        return "".join(out)
+
+    def flush(self) -> str:
+        out: list[str] = []
+        self._emit_pending(out)
+        if self._buf:
+            out.append(self._convert(self._buf))
+            self._buf = ""
+        self._table_header = None
+        return "".join(out)
 
 
 class PlainTextStream:
@@ -384,11 +655,11 @@ def _native_prose(fragment: str, stack: list[str]) -> str:
     escaped = _BULLET_RE.sub(r"\1• ", escaped)
     escaped = _wrap_line_markup(escaped)
     escaped = _NATIVE_CODE_SPAN_RE.sub(r"<code>\1</code>", escaped)
-    escaped = _STRIKE_RE.sub(r"<s>\1</s>", escaped)
-    escaped = _BOLD_RE.sub(r"<b>\1</b>", escaped)
+    escaped = _STRIKE_RE.sub(_strike_replacement, escaped)
+    escaped = _BOLD_RE.sub(_bold_replacement, escaped)
     escaped = _ITALIC_ASTERISK_RE.sub(r"<i>\1</i>", escaped)
     escaped = _ITALIC_UNDERSCORE_RE.sub(r"<i>\1</i>", escaped)
-    escaped = _SPOILER_RE.sub(r"<tg-spoiler>\1</tg-spoiler>", escaped)
+    escaped = _SPOILER_RE.sub(_spoiler_replacement, escaped)
     escaped = _LINK_RE.sub(_link_replacement, escaped)
     return escaped
 

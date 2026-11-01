@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import logging
+import re
 from functools import lru_cache
 from typing import Literal
 
@@ -11,6 +12,7 @@ from langchain_openai import ChatOpenAI
 from pydantic import BaseModel, Field
 
 from privacy import PrivacyVault
+from web_policy import needs_web
 
 NEBIUS_BASE_URL = "https://api.tokenfactory.nebius.com/v1/"
 ROUTER_MODEL = "nvidia/Nemotron-3_5-Lightning"
@@ -40,6 +42,9 @@ class RouteDecision(BaseModel):
     entities: dict[str, str] = Field(default_factory=dict)
     confidence: float = Field(ge=0, le=1)
     reason: str = Field(default="")
+    # Set by the deterministic web policy, not by the model.  A web turn is
+    # pre-fetched and routed to a model that can synthesise sources reliably.
+    needs_web: bool = False
 
 
 @lru_cache(maxsize=1)
@@ -73,36 +78,44 @@ COMPLEX_INDICATORS = {
 }
 
 
-# Fast path 3 markers: OBVIOUS current-information requests. Matched against
-# the cleaned input; a hit skips the structured HTTP classifier entirely
-# (its Nemotron call routinely costs 2-12s before the agent even starts).
-_SEARCH_FAST_PATH_MARKERS = (
-    # Explicit lookup verbs — the user is asking us to go find something.
-    "search", "google", "look up", "lookup", "find out",
-    # Recency wording (news-style).
-    "latest", "newest", "news", "breaking",
-    # Markets / conditions / live world state.
-    "price", "prices", "stock", "crypto", "weather", "forecast", "exchange rate",
-    # Sports scores and world events.
-    "who is winning", "who won", "what happened", "was released", "release date",
+# Wording that means "do something on the paired Android phone". A bare "my
+# phone" is not enough: "how much is my phone worth?" and "what's the weather
+# on my phone?" are normal questions, while "open Settings on my phone" must
+# reach the control_phone tool.
+_PHONE_DEVICE_RE = re.compile(
+    r"\b(?:my\s+phone|the\s+phone|my\s+device|the\s+device|my\s+screen|"
+    r"phone\s+screen|phone'?s\s+screen|on\s+the\s+phone)\b|\bcontrol\s+(?:my|the)\s+phone\b",
+    re.IGNORECASE,
+)
+_PHONE_ACTION_RE = re.compile(
+    r"\b(?:open|launch|tap|click|press|type|enter|swipe|scroll|navigate|"
+    r"control|install|uninstall|download|update|send|message|text|call|dial|play|"
+    r"pause|turn\s+(?:on|off)|enable|disable|set|change|check|find|search|"
+    r"look\s+at|read|show|take\s+a\s+(?:screenshot|photo)|record|toggle|"
+    r"reply|delete|unlock|do|use|what(?:'s|\s+is)\s+on|what\s+app|"
+    r"which\s+app|screen\s+time|phone_status)\b",
+    re.IGNORECASE,
 )
 
-# Wording that means "do something on the paired Android phone".
-_PHONE_CONTROL_MARKERS = (
-    "my phone",
-    "on the phone",
-    "on my device",
-    "phone screen",
-    "my screen",
-    "on the device",
-    "phone's screen",
-)
+
+def _is_phone_control(text: str) -> bool:
+    # "How do I ... on my phone?" asks for instructions, not for the agent to
+    # start tapping.  Explicit screen inspection ("what's on my screen") stays.
+    if re.match(
+        r"^\s*(?:how\s+(?:do|can|should)\s+i|how\s+to|"
+        r"what(?:'s|\s+is)\s+the\s+best\s+way)\b",
+        text,
+        re.IGNORECASE,
+    ):
+        return False
+    return bool(_PHONE_DEVICE_RE.search(text) and _PHONE_ACTION_RE.search(text))
 
 
 def classify_request(user_input: str) -> RouteDecision:
     """Classify intent and extract useful entities with the fast model."""
     cleaned = user_input.strip().lower()
     words = cleaned.split()
+    web = needs_web(cleaned)
 
     # Fast-path 1: Greetings & casual openers (0ms)
     first_clean = cleaned.rstrip("!.?,")
@@ -115,10 +128,11 @@ def classify_request(user_input: str) -> RouteDecision:
         )
 
     # Fast-path 2: phone-control requests (0ms).
-    # "on my phone" must not be read as "send me a voice note": these turns
-    # have to reach the control_phone tool, so they are marked explicitly and
-    # the agent prompt says so.
-    if any(marker in cleaned for marker in _PHONE_CONTROL_MARKERS):
+    # A device word alone is not enough; otherwise "how much is my phone
+    # worth?" or "what's the weather on my phone?" would be hijacked.  An
+    # action verb plus a device reference is a reliable signal, and it must
+    # beat the web policy for "open the weather app on my phone".
+    if _is_phone_control(cleaned):
         return RouteDecision(
             intent="device_control",
             complexity="routine",
@@ -127,17 +141,18 @@ def classify_request(user_input: str) -> RouteDecision:
         )
 
     # Fast-path 3: OBVIOUS search / current-information turns (0ms).
-    # Real-time questions route to the fast model family directly; the agent
-    # still decides whether to actually run Tavily.
-    if any(marker in cleaned for marker in _SEARCH_FAST_PATH_MARKERS):
+    # The deterministic policy catches factual and current questions that a
+    # token classifier would otherwise label as ordinary conversation.
+    if web:
         return RouteDecision(
             intent="current_information",
             complexity="standard",
             confidence=0.95,
-            reason="fast_path_search",
+            reason="fast_path_web_policy",
+            needs_web=True,
         )
 
-    # Fast-path 2: Short everyday queries without complex indicators (0ms)
+    # Fast-path 4: Short everyday queries without complex indicators (0ms)
     if len(words) <= 8 and not any(ind in cleaned for ind in COMPLEX_INDICATORS):
         return RouteDecision(
             intent="conversation",
@@ -158,10 +173,27 @@ def classify_request(user_input: str) -> RouteDecision:
     try:
         raw_result = _classifier().invoke(prompt)
         if isinstance(raw_result, RouteDecision):
-            return raw_result
-        return RouteDecision.model_validate(raw_result)
+            result = raw_result
+        else:
+            result = RouteDecision.model_validate(raw_result)
+        # The model's label can be wrong for short factual turns; the
+        # deterministic policy is the source of truth for web grounding.
+        result.needs_web = web
+        if web and result.intent not in {"current_information", "device_control"}:
+            result.intent = "current_information"
+            if result.complexity == "routine":
+                result.complexity = "standard"
+        return result
     except Exception as exc:
         LOGGER.warning("Fast request classification fallback to routine/base model: %s", exc)
+        if web:
+            return RouteDecision(
+                intent="current_information",
+                complexity="standard",
+                confidence=0.7,
+                reason="classifier unavailable; web policy requires search",
+                needs_web=True,
+            )
         return RouteDecision(
             intent="conversation",
             complexity="routine",
@@ -179,10 +211,11 @@ def choose_model(decision: RouteDecision) -> str:
     # never happened, so these turns go to a model with reliable tool use.
     if decision.intent == "device_control":
         return REASONING_MODEL
-    # Search turns favor latency: Tavily results carry the substance, so the
-    # nano tier answers noticeably faster than the 120B super model.
-    if decision.intent == "current_information":
-        return BASE_MODEL
+    # Web turns need synthesis, citation discipline, and instruction following.
+    # Tavily already supplied the sources; the 120B model turns them into a
+    # coherent answer instead of stopping mid-thought like the nano tier.
+    if decision.needs_web or decision.intent == "current_information":
+        return REASONING_MODEL
     if decision.complexity == "standard":
         return REASONING_MODEL
     return BASE_MODEL

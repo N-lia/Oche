@@ -27,7 +27,7 @@ import numpy as np
 
 from asr_client import AsyncTranscribeStream, ascore_turn
 from backchannel import BackchannelController, clip_path
-from telegram_format import PlainTextStream, strip_telegram_html
+from telegram_format import MarkdownPlainStream, markdown_to_plain_text
 from turn_policy import classify_turn
 
 LOGGER = logging.getLogger("oyi.voice.session")
@@ -136,9 +136,9 @@ class VoiceSession:
         self.mood = "normal"
         self.thread_id = "webapp"
         self.speak_text_replies = True
-        # Native clients (the Android app) ask for plain text instead of the
-        # Telegram HTML the agent writes.
-        self.plain_text = False
+        # Every text surface except Telegram renders ``textContent``/speaks the
+        # reply, so Markdown must be converted to plain text by default.
+        self.plain_text = True
         self.state = SESSION_IDLE
         self.text = ""
         # Monotonic turn counter. Every message carries the id of the turn it
@@ -367,7 +367,7 @@ class VoiceSession:
         self.response_task = asyncio.create_task(self._respond_text(text, self.turn_id, speak))
 
     async def _respond_text(self, text: str, turn_id: int, speak: bool) -> None:
-        plain = PlainTextStream() if self.plain_text else None
+        plain = MarkdownPlainStream(keep_urls=False) if self.plain_text else None
         try:
             chunks: list[str] = []
             async for event in self._event_streamer(text, turn_id):
@@ -670,7 +670,7 @@ class VoiceSession:
         )
         try:
             chunks: list[str] = []
-            plain = PlainTextStream() if self.plain_text else None
+            plain = MarkdownPlainStream(keep_urls=False) if self.plain_text else None
             async for chunk in self._agent_streamer(user_text, turn_id):
                 if chunk:
                     chunks.append(chunk)
@@ -695,8 +695,8 @@ class VoiceSession:
         await self._speak(reply, turn_id)
 
     async def _speak(self, text: str, turn_id: int) -> None:
-        # Agent replies are Telegram HTML now; tags must never reach TTS.
-        text = strip_telegram_html(text)
+        # Replies are Markdown; never send formatting markers to TTS.
+        text = markdown_to_plain_text(text)
         self.bot_speaking = True
         try:
             audio = await self._tts(text, self.mood)

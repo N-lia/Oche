@@ -37,7 +37,8 @@ from device_gateway import (
 )
 from device_protocol import CommandRequest, DeviceHello
 from sandbox_planner import run_sandbox_planner, sandbox_planner_enabled
-from telegram_format import PlainTextStream, strip_telegram_html
+from memory import warm_memory
+from telegram_format import MarkdownPlainStream, markdown_to_plain_text
 from backchannel import (
     CATEGORIES,
     all_phrases,
@@ -56,6 +57,16 @@ logging.basicConfig(level=logging.INFO)
 LOGGER = logging.getLogger("oyi.webapp")
 
 app = FastAPI(title="OYI Live Chat", version="2.0.0")
+
+
+@app.on_event("startup")
+async def _warm_memory_backend() -> None:
+    """Load Mem0 before the first turn so memory is present on turn one."""
+    try:
+        task = asyncio.create_task(asyncio.to_thread(warm_memory))
+    except RuntimeError:
+        return
+    app.state.memory_warmup = task
 
 
 @app.on_event("startup")
@@ -150,8 +161,8 @@ class TranscribeRequest(BaseModel):
 class ChatRequest(BaseModel):
     prompt: str
     thread_id: str = "webapp"
-    # The agent writes Telegram HTML. Native clients (the Android app) ask for
-    # plain text so they do not have to render markup.
+    # The agent writes channel-neutral Markdown. Native clients (the Android
+    # app) ask for plain text; browser clients may render Markdown themselves.
     plain: bool = False
 
 
@@ -484,8 +495,8 @@ async def api_chat(req: ChatRequest):
             chunks.append(chunk)
         reply = "".join(chunks)
         if req.plain:
-            # Strip once on the joined text: a tag can be split across chunks.
-            reply = strip_telegram_html(reply)
+            # Strip once on the joined text: markup can be split across chunks.
+            reply = markdown_to_plain_text(reply, keep_urls=True)
         return {"response": reply}
     except Exception as exc:
         LOGGER.exception("Agent chat failed")
@@ -503,7 +514,7 @@ async def api_chat_stream(req: ChatRequest):
         return StreamingResponse(iter(()), media_type="application/x-ndjson")
 
     async def generate():
-        plain = PlainTextStream() if req.plain else None
+        plain = MarkdownPlainStream(keep_urls=True) if req.plain else None
         try:
             async for chunk in agent_service.astream(req.prompt, req.thread_id):
                 text = plain.feed(chunk) if plain is not None else chunk
@@ -557,6 +568,7 @@ async def api_voice_turn(req: VoiceTurnRequest):
                 if chunk:
                     chunks.append(chunk)
             bot_text = "".join(chunks).strip() or "I could not produce a response."
+            bot_text = markdown_to_plain_text(bot_text)
             LOGGER.info("OYI LLM response: '%s'", bot_text[:100])
         except Exception as exc:
             LOGGER.exception("Agent service chat failed")

@@ -35,7 +35,7 @@ from telegram.ext import (
 from asr_client import atranscribe
 from channels import ChannelRegistry, TelegramChannel
 from main import astream_chat_agent
-from memory import reconcile_preferences
+from memory import reconcile_preferences, warm_memory
 from mermaid_tool import register_telegram_photo_sender
 from subagent import register_telegram_notifier
 from voice import register_telegram_voice_sender
@@ -570,6 +570,11 @@ async def _nightly_reconciliation_loop(application: Application) -> None:
 
 
 async def _on_post_init(application: Application) -> None:
+    application.bot_data["memory_warmup_task"] = application.create_task(
+        asyncio.to_thread(warm_memory),
+        name="oyi-memory-warmup",
+    )
+
     async def deliver_subagent_message(chat_id: int | str, task_name: str, result: str) -> None:
         header = f"🔔 <b>Subagent Task Completed: {html.escape(task_name)}</b>\n\n"
         full_text = header + result
