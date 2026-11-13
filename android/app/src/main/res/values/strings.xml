@@ -2,7 +2,7 @@
 <resources>
     <string name="app_name">OYI</string>
     <string name="accessibility_service_label">OYI device control</string>
-    <string name="accessibility_service_description">Lets OYI see the screen so it can carry out tasks you ask for in chat, and show which app is open.</string>
+    <string name="accessibility_service_description">Lets OYI see the screen so it can carry out tasks you ask for in chat, show which app is open, and block the apps and sites you chose to block.</string>
     <string name="notification_channel_name">OYI device</string>
     <string name="notification_channel_description">Keeps the OYI overlay and phone link running.</string>
     <string name="notification_title">OYI is watching</string>

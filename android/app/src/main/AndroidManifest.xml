@@ -48,6 +48,15 @@
             </intent-filter>
         </activity>
 
+        <!-- Covers a blocked app or site with the task that is due. -->
+        <activity
+            android:name=".focus.BlockActivity"
+            android:excludeFromRecents="true"
+            android:exported="false"
+            android:launchMode="singleTask"
+            android:taskAffinity="ai.oyi.device.block"
+            android:theme="@style/Theme.Oyi" />
+
         <!-- Foreground service: overlay bubble + usage tracking + device link. -->
         <service
             android:name=".service.OyiService"

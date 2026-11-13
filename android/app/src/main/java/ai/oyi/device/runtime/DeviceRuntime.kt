@@ -137,6 +137,16 @@ class DeviceRuntime(context: Context) {
         )
     }
 
+    /** A focus nudge: shown like an alert, dismissed by the user or on its own. */
+    fun showNudge(title: String, message: String) {
+        _lastMessage.value = message.ifBlank { title }
+        _island.value = IslandState(
+            kind = IslandKind.ERROR,
+            title = title,
+            subtitle = message,
+        )
+    }
+
     fun dismissIsland() {
         _island.value = IslandState(kind = IslandKind.IDLE)
     }

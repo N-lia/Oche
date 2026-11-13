@@ -132,10 +132,10 @@ fun MainScreen(viewModel: MainViewModel = viewModel()) {
                 onSelectTab = { tab = it },
             )
 
-            if (tab == 0) {
-                SetupList(state = state, viewModel = viewModel)
-            } else {
-                ChatScreen()
+            when (tab) {
+                0 -> FocusScreen()
+                1 -> SetupList(state = state, viewModel = viewModel)
+                else -> ChatScreen()
             }
         }
     }
@@ -348,7 +348,7 @@ private fun MinimalPillTabs(
         horizontalArrangement = Arrangement.spacedBy(10.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        val tabs = listOf("Space", "Live Chat")
+        val tabs = listOf("Focus", "Space", "Live Chat")
         tabs.forEachIndexed { index, title ->
             val selected = selectedTab == index
             Surface(
@@ -365,7 +365,7 @@ private fun MinimalPillTabs(
                     color = if (selected) OffWhite else MutedWarmGrey,
                     fontSize = 13.5.sp,
                     fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
-                    modifier = Modifier.padding(horizontal = 20.dp, vertical = 9.dp),
+                    modifier = Modifier.padding(horizontal = 18.dp, vertical = 9.dp),
                 )
             }
         }

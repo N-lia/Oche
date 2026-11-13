@@ -10,5 +10,7 @@ class OyiApplication : Application() {
     override fun onCreate() {
         super.onCreate()
         container = AppContainer(this)
+        // Blocking must not depend on the overlay service being switched on.
+        container.focusGuard.start()
     }
 }
