@@ -77,7 +77,9 @@ class DeviceController(private val service: AccessibilityService) {
         if (windows.isNotEmpty()) {
             val appAndDialogWindows = windows.filter { win ->
                 val pkg = win.root?.packageName?.toString().orEmpty()
-                val isOyiOverlay = pkg == selfPkg && win.type == AccessibilityWindowInfo.TYPE_APPLICATION_OVERLAY
+                // OYI's own bubble is a TYPE_APPLICATION_OVERLAY window, which
+                // accessibility reports as TYPE_SYSTEM.
+                val isOyiOverlay = pkg == selfPkg && win.type != AccessibilityWindowInfo.TYPE_APPLICATION
                 !isOyiOverlay && (
                     win.type == AccessibilityWindowInfo.TYPE_APPLICATION ||
                         win.type == AccessibilityWindowInfo.TYPE_SYSTEM

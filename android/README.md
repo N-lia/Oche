@@ -1,6 +1,6 @@
 # OYI for Android
 
-Native Android companion app for OYI. It does three things:
+Native Android companion app for OYI. It does four things:
 
 1. **Overlay bubble** — a small always-on bubble that shows which app is open,
    how long you have been in it, the state of the OYI link, and today's total
@@ -12,7 +12,33 @@ Native Android companion app for OYI. It does three things:
    action per step (tap, tap by text, type, scroll, back/home/recents, open
    app) through its accessibility service.
 
+4. **Focus (the blocker)** — block distracting apps and sites, run timed
+   focus blocks, and lock your own rules for the month. See below.
+
 Target device: **itel City 100 (C671L), Android 14 / API 34**.
+
+## Focus: the offline blocker
+
+Everything here is decided on the phone. No network call sits between
+noticing a distraction and blocking it.
+
+| Part | How |
+| --- | --- |
+| Distractions | Apps you pick. Each is always blocked, has a daily allowance, or only counts during a focus block. |
+| Blocked sites | Read from the address bar of known browsers (`focus/BrowserUrls.kt`). |
+| Focus block | A timed task. 3 min in a distraction: nudge. 2 more: firm nudge. 2 more: lockdown until the block ends or you mark the task done. |
+| Block screen | `focus/BlockActivity.kt` replaces the blocked app and shows the task due. |
+| Monthly lock | Adding and tightening is always allowed. Removing or relaxing only on the 1st of the month, or 24 h after an emergency exit (open for 1 h). |
+| Lock clock | `focus/TrustedClock.kt`: anchored to a server `Date` header and carried by the monotonic clock, so changing the phone's date does not open the lock. |
+
+The rules live in `focus/FocusRules.kt` (pure Kotlin, unit tested in
+`app/src/test`). `focus/FocusStore.kt` is the only way to change them and
+refuses anything that loosens the blocker while the lock is shut.
+`focus/FocusGuard.kt` enforces them for the whole process; it needs the
+accessibility service ("Control access") to see which app is in front.
+
+Not built yet: the local VPN DNS filter, uninstall protection (Device Admin),
+and the agent API for adding blocks remotely.
 
 ## Architecture
 
