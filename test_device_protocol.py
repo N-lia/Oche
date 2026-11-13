@@ -102,9 +102,32 @@ def test_mobile_use_types_are_normalised() -> None:
     assert parse_action('{"action_type":"scroll","direction":"down"}').type == "scroll"
     assert parse_action('{"action_type":"open_app","app_name":"Settings"}').package == "Settings"
     assert parse_action('{"action_type":"go_back"}').type == "back"
+    assert parse_action('{"action_type":"long_press","target":2}').type == "long_press"
+    assert parse_action('{"action_type":"press_enter"}').type == "press_enter"
     done = parse_action('{"action_type":"done","text":"all done"}')
     assert done.type == "done"
     assert done.message == "all done"
+
+
+def test_parse_think_tags_and_bracketed_index() -> None:
+    raw = (
+        "<think>The user wants Wi-Fi settings, which is item [4].</think>\n"
+        '{"action_type":"click","action_ui_element":"[4] Text: \'Wi-Fi\'","x":0.5,"y":0.25}'
+    )
+    action = parse_action(raw)
+    assert action.type == "tap"
+    assert action.target == 4
+    assert action.x == 500 and action.y == 250
+
+
+def test_input_with_submit_flag() -> None:
+    action = parse_action(
+        '{"action_type":"input","target":3,"text":"dark mode","submit":true}'
+    )
+    assert action.type == "type"
+    assert action.target == 3
+    assert action.text == "dark mode"
+    assert action.submit is True
 
 
 def test_unknown_action_type_is_rejected() -> None:

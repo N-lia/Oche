@@ -155,6 +155,11 @@ def main() -> int:
             f"/api/device/job/{JOB_ID}/action",
             {"raw": raw, "step": step},
         )
+        if verdict.get("error"):
+            print(
+                f"step {step} action rejected by gateway: {verdict['error']}",
+                file=sys.stderr,
+            )
         if verdict.get("finished"):
             gateway_post(
                 f"/api/device/job/{JOB_ID}/result",

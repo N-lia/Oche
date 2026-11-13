@@ -66,6 +66,60 @@ class DeviceClient(
 
     private var activeCommand: ActiveCommand? = null
 
+    init {
+        runtime.onApprovalDecision = { commandId, approved ->
+            scope.launch {
+                send(
+                    JSONObject().apply {
+                        put("type", "approval_response")
+                        put("command_id", commandId)
+                        put("approved", approved)
+                        put(
+                            "message",
+                            if (approved) "Approved by user on Dynamic Island" else "Denied by user on Dynamic Island",
+                        )
+                    },
+                )
+                val cmd = activeCommand
+                if (cmd != null && (commandId.isBlank() || cmd.id == commandId)) {
+                    if (approved) {
+                        cmd.lastActionOk = true
+                        cmd.lastError = ""
+                        cmd.lastResult = "User approved the action on the device Dynamic Island."
+                        cmd.step += 1
+                        sendObservation()
+                    } else {
+                        send(
+                            JSONObject().apply {
+                                put("type", "command_done")
+                                put("command_id", cmd.id)
+                                put("status", "cancelled")
+                                put("message", "User denied the action from the Dynamic Island.")
+                            },
+                        )
+                        activeCommand = null
+                    }
+                }
+            }
+        }
+        runtime.onCancelCommand = {
+            scope.launch {
+                val cmd = activeCommand
+                activeCommand = null
+                if (cmd != null) {
+                    send(
+                        JSONObject().apply {
+                            put("type", "command_done")
+                            put("command_id", cmd.id)
+                            put("status", "cancelled")
+                            put("message", "Stopped by user from the Dynamic Island.")
+                        },
+                    )
+                }
+            }
+        }
+    }
+
     fun start() {
         if (settingsJob != null) return
         stopped = false
@@ -232,20 +286,32 @@ class DeviceClient(
 
             "action" -> executeAction(payload)
 
-            "command_done" -> finishCommand(payload.optString("message", "Done."))
+            "approval_request" -> {
+                val cmdId = payload.optString("command_id", activeCommand?.id.orEmpty())
+                val title = payload.optString("title", "Approval Required")
+                val prompt = payload.optString("message", "OYI needs your approval to continue.")
+                runtime.showApprovalRequired(cmdId, title, prompt)
+            }
+
+            "command_done" -> finishCommand(
+                commandId = payload.optString("command_id"),
+                status = payload.optString("status", "completed"),
+                message = payload.optString("message", "Done."),
+                needsApproval = payload.optBoolean("needs_approval", false),
+            )
 
             "cancel" -> {
+                val msg = payload.optString("message", "Cancelled")
                 activeCommand = null
-                runtime.setBusy(false)
-                runtime.setMessage(payload.optString("message", "Cancelled"))
+                runtime.showError("Task Cancelled", msg)
             }
 
             "status_request" -> respondWithStatus(payload)
 
             "error" -> {
-                runtime.setMessage(payload.optString("message", "Gateway error"))
+                val msg = payload.optString("message", "Gateway error")
                 activeCommand = null
-                runtime.setBusy(false)
+                runtime.showError("Gateway Error", msg)
             }
         }
     }
@@ -266,13 +332,18 @@ class DeviceClient(
             return
         }
 
+        val instruction = payload.optString("text")
         activeCommand = ActiveCommand(
             id = commandId,
-            text = payload.optString("text"),
+            text = instruction,
             step = 0,
         )
-        runtime.setBusy(true)
-        runtime.setMessage("Working: ${activeCommand?.text ?: ""}")
+        runtime.showWorking(
+            commandId = commandId,
+            title = "OYI Agent Active",
+            subtitle = instruction.ifBlank { "Inspecting screen…" },
+            step = 0,
+        )
         sendObservation()
     }
 
@@ -286,6 +357,14 @@ class DeviceClient(
         if (actionStep != command.step) return
 
         val action = payload.optJSONObject("action") ?: return
+        val reason = payload.optString("message").takeIf { it.isNotBlank() }
+            ?: describeAction(action)
+        runtime.showWorking(
+            commandId = command.id,
+            title = "Step ${actionStep + 1}",
+            subtitle = reason,
+            step = actionStep + 1,
+        )
         scope.launch {
             val controller = runtime.controller
             if (controller == null) {
@@ -308,10 +387,55 @@ class DeviceClient(
         }
     }
 
-    private fun finishCommand(message: String) {
+    private fun describeAction(action: JSONObject): String {
+        val type = action.optString("type")
+        val target = action.optString("element_text")
+            .ifBlank { action.optString("package") }
+            .ifBlank { action.optString("text") }
+        return when (type) {
+            "tap" -> if (target.isNotBlank()) "Tapping $target" else "Tapping screen"
+            "long_press" -> if (target.isNotBlank()) "Holding $target" else "Long-pressing"
+            "type" -> "Typing '${action.optString("text").take(24)}'"
+            "scroll" -> "Scrolling ${action.optString("direction", "down")}"
+            "open_app" -> "Opening ${action.optString("package")}"
+            "back" -> "Navigating back"
+            "home" -> "Going to Home screen"
+            else -> "Running $type"
+        }
+    }
+
+    private fun finishCommand(
+        commandId: String,
+        status: String,
+        message: String,
+        needsApproval: Boolean = false,
+    ) {
         activeCommand = null
-        runtime.setBusy(false)
-        runtime.setMessage(message)
+        val lowerMsg = message.lowercase()
+        val isApprovalPrompt = needsApproval ||
+            status == "ask_user" ||
+            status == "approval_required" ||
+            lowerMsg.contains("approve") ||
+            lowerMsg.contains("confirm") ||
+            lowerMsg.contains("permission") ||
+            message.trim().endsWith("?")
+        when {
+            isApprovalPrompt -> runtime.showApprovalRequired(
+                commandId = commandId,
+                title = "Approval Required",
+                prompt = message,
+            )
+            status == "completed" || status == "done" -> runtime.showCompleted(
+                title = "Task Completed",
+                message = message,
+                commandId = commandId,
+            )
+            else -> runtime.showError(
+                title = "Task ${status.replaceFirstChar { it.uppercase() }}",
+                message = message,
+                commandId = commandId,
+            )
+        }
     }
 
     /**
@@ -380,17 +504,24 @@ class DeviceClient(
             }
 
             val foreground = runtime.foreground.value
+            val pkg = snapshot?.packageName?.takeIf { it.isNotEmpty() }
+                ?: foreground?.packageName.orEmpty()
+            val appLabel = if (pkg.isNotEmpty()) {
+                runtime.labelFor(pkg)
+            } else {
+                foreground?.label.orEmpty()
+            }
             Log.i(
                 TAG,
-                "step=${command.step} elements=${snapshot?.elements?.size ?: 0} " +
+                "step=${command.step} pkg=$pkg elements=${snapshot?.elements?.size ?: 0} " +
                     "list=${snapshot?.elementText?.lineSequence()?.take(3)?.joinToString(" | ")}",
             )
             val message = JSONObject().apply {
                 put("type", "observation")
                 put("command_id", command.id)
                 put("step", command.step)
-                put("package", snapshot?.packageName ?: foreground?.packageName.orEmpty())
-                put("app_label", foreground?.label.orEmpty())
+                put("package", pkg)
+                put("app_label", appLabel)
                 put("elements", snapshot?.elementJson ?: JSONArray())
                 put("element_text", snapshot?.elementText.orEmpty())
                 put("screenshot", snapshot?.screenshot.orEmpty())

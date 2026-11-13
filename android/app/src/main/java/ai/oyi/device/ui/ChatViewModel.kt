@@ -68,16 +68,32 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                     is LiveVoiceController.Event.BotText ->
                         appendAgentText(event.text)
                     is LiveVoiceController.Event.BotAudio -> {
-                        appendAgentText(event.text)
+                        val last = _state.value.messages.lastOrNull()
+                        if (last == null || last.role != ChatRole.AGENT || !last.pending) {
+                            appendAgentText(event.text)
+                        }
                         voice.playAudio(event.audio)
                     }
                     is LiveVoiceController.Event.Filler -> {
                         if (event.url.isNotBlank()) voice.playClip(event.url)
                     }
+                    is LiveVoiceController.Event.Status ->
+                        _state.update { it.copy(liveStatus = event.text) }
                     is LiveVoiceController.Event.Failed ->
                         _state.update { it.copy(error = event.message, liveStatus = "") }
                     is LiveVoiceController.Event.TurnEnded ->
-                        _state.update { it.copy(liveStatus = "Listening…") }
+                        _state.update { current ->
+                            current.copy(
+                                liveStatus = "Listening…",
+                                messages = current.messages.map { msg ->
+                                    if (msg.role == ChatRole.AGENT && msg.pending) {
+                                        msg.copy(pending = false)
+                                    } else {
+                                        msg
+                                    }
+                                },
+                            )
+                        }
                 }
             }
         }

@@ -37,15 +37,18 @@ You receive the screen like this:
   --- Current Screenshot ---
   <image>
   --- Visible UI Elements ---
-  [1] Text: 'Wi-Fi' | Bounds: [42,332][700,360]
-  [2] Text: 'Battery' | Bounds: [42,520][700,548]
+  [1] Text: 'Wi-Fi' [clickable] | Bounds: [42,208][700,225] | id: title
+  [2] Switch: 'Use Wi-Fi' [OFF] [clickable] | Bounds: [840,200][960,235] | id: switchWidget
+  [3] Input: 'Search settings' [editable] | Bounds: [48,72][952,136] | id: search_src_text
 
 Return ONLY one JSON object. No Markdown, no prose, no code fences.
 
 Allowed actions (one JSON object, no Markdown, no prose):
 
-  {"action_type":"click","action":"<what you are doing>","action_ui_element":"the text 'Wi-Fi' in the list","x":0.5,"y":0.5}
-  {"action_type":"input","text":"hello","action_ui_element":"the field 'Search'"}
+  {"action_type":"click","target":1,"action":"<what you are doing>","action_ui_element":"the text 'Wi-Fi' in the list","x":0.5,"y":0.21}
+  {"action_type":"long_press","target":1,"action_ui_element":"the text 'Wi-Fi' in the list","x":0.5,"y":0.21}
+  {"action_type":"input","target":3,"text":"dark mode","action_ui_element":"the field 'Search settings'","submit":true}
+  {"action_type":"press_enter"}
   {"action_type":"scroll","direction":"down"}
   {"action_type":"open_app","app_name":"Settings"}
   {"action_type":"back"}
@@ -56,19 +59,14 @@ Allowed actions (one JSON object, no Markdown, no prose):
   {"action_type":"ask_user","text":"<what you need to know>"}
 
 Targeting rules (Dynamic-First, Coordinate-Fallback):
-- "action_ui_element" must quote the element's EXACT visible text, e.g.
-  "the text 'Network & internet' in the list". The device resolves that text
-  against the live screen and taps the real element, so an exact label is
-  what matters. Copy the label from the Visible UI Elements list.
-- You may also use {"type":"tap","target":3} with the 1-based index from the
-  Visible UI Elements list. Never invent an index that is not listed.
-- "x" and "y" are fractions from 0 to 1 of the screen. They are used only
-  when no listed element matches the target (a custom-drawn canvas).
-- "direction":"down" reveals the content BELOW the current screen; "up"
-  reveals the content above. Each scroll moves about half a screen, so repeat
-  it while the item you want is still not listed.
-- To answer a question about the screen, do not act: use "done" with the
-  answer in "text".
+- Always include `"target": <index>` (the 1-based `[index]` from Visible UI Elements) when acting on a listed element, plus `"action_ui_element"` quoting its exact label. Never invent an index that is not listed.
+- You may also use `{"type":"tap","target":3}` directly.
+- `"x"` and `"y"` are fractions from 0 to 1 of the screen (or 0..1000 matching the normalized bounds). Include them as a coordinate fallback, or use them directly when tapping an unlabelled icon/canvas element not in the list.
+- To launch an app (e.g. Settings, WhatsApp, Chrome, YouTube), prefer `{"action_type":"open_app","app_name":"<App Name>"}` instead of searching the home screen.
+- For `"input"`: include `"target"` or `"action_ui_element"` for the text field so the device focuses it before typing. Set `"submit": true` when typing a search query that should be submitted immediately, or use `{"action_type":"press_enter"}` on the next step. If only a search button/bar is visible and not yet editable, click it first.
+- Check `[ON]` / `[OFF]` states before toggling switches or checkboxes. If a setting is already in the requested state, do not toggle it again — finish with `"done"`.
+- `"direction":"down"` reveals the content BELOW the current screen; `"up"` reveals the content above. Each scroll moves about half a screen, so repeat it while the item you want is still not listed.
+- To answer a question about the screen, do not act: use `"done"` with the answer in `"text"`.
 
 Other rules:
 - One action per response. The next screenshot arrives after it executes.
@@ -78,8 +76,10 @@ Other rules:
   banking, payment, permission, or security screen appears, use ask_user.
 - Do not send messages, delete data, make purchases, or confirm irreversible
   actions unless the user explicitly asked for that exact action.
-- If the previous action failed, do not repeat it blindly; choose a different
-  element or scroll to find it.
+- If the previous action failed or left the screen unchanged, do NOT repeat the
+  exact same action; try a different element, use `"open_app"`, or scroll.
+- Never claim a task is `"done"` until the current screen or action result
+  confirms the requested state has actually been reached.
 - If the goal is already achieved, use done (with the answer in "text").
 - If the request is ambiguous or blocked, use ask_user with "text".
 - Keep reason/message short; they may be shown to the user.
@@ -88,6 +88,10 @@ Other rules:
 
 class VisionAgentError(RuntimeError):
     """The vision model could not produce a usable action."""
+
+
+def _screen_signature(observation: Observation, elements_text: str) -> str:
+    return f"{observation.package}|{elements_text[:1500]}"
 
 
 def build_messages(
@@ -104,15 +108,40 @@ def build_messages(
     """
     elements = observation.element_text.strip()
     if not elements and observation.elements:
-        elements = _format_elements(observation.elements)
+        elements = _format_elements(
+            observation.elements,
+            width=observation.width,
+            height=observation.height,
+        )
+    if len(elements) > MAX_TREE_CHARS:
+        elements = elements[:MAX_TREE_CHARS] + "\n...(truncated)"
+
+    current_sig = _screen_signature(observation, elements)
+    screen_unchanged = False
+    if history:
+        prev_sig = history[-1].get("screen_sig")
+        prev_action_type = (history[-1].get("action") or {}).get("type")
+        if prev_sig and prev_sig == current_sig and prev_action_type not in {"wait", None}:
+            screen_unchanged = True
 
     history_lines = []
-    for item in history[-4:]:
+    for item in history[-6:]:
         action = item.get("action", {})
+        status_label = "ok" if item.get("ok", True) else "failed"
+        if item.get("unchanged"):
+            status_label += " (screen did not change)"
         history_lines.append(
             f"- step {item.get('step', '?')}: {json.dumps(action, ensure_ascii=False)}"
-            f" -> {'ok' if item.get('ok', True) else 'failed'}"
+            f" -> {status_label}"
             + (f": {item.get('result')}" if item.get("result") else "")
+        )
+
+    unchanged_warning = ""
+    if screen_unchanged:
+        unchanged_warning = (
+            "SCREEN CHANGE: WARNING — the screen did NOT change after the previous "
+            "action. Do NOT repeat the exact same tap/scroll; try a different "
+            "element index, use open_app, or tap coordinates directly.\n"
         )
 
     text = (
@@ -123,7 +152,8 @@ def build_messages(
         f"APP LABEL: {observation.app_label or '(unknown)'}\n"
         f"SCREEN: {observation.width}x{observation.height}\n"
         f"PREVIOUS ACTION: {'ok' if observation.last_action_ok else 'failed'}\n"
-        f"PREVIOUS RESULT: {observation.action_result or observation.error or '(none)'}\n\n"
+        f"PREVIOUS RESULT: {observation.action_result or observation.error or '(none)'}\n"
+        f"{unchanged_warning}\n"
         "RECENT ACTIONS:\n"
         f"{chr(10).join(history_lines) if history_lines else '(none)'}\n\n"
         "--- Visible UI Elements ---\n"
@@ -156,7 +186,7 @@ class VisionAgent:
         base_url: str | None = None,
         model: str | None = None,
         timeout_s: float = 75.0,
-        retries: int = 1,
+        retries: int = 2,
         client: httpx.AsyncClient | None = None,
     ) -> None:
         self.api_key = (api_key if api_key is not None else os.getenv("NEBIUS_API_KEY", "")).strip()
@@ -236,8 +266,8 @@ class VisionAgent:
         last_error: Exception | None = None
         for attempt in range(self.retries + 1):
             if attempt:
-                # A transient DNS/TCP hiccup should not abort a phone command.
-                await asyncio.sleep(1.5 * attempt)
+                # A transient DNS/TCP hiccup or malformed JSON should not abort a phone command.
+                await asyncio.sleep(0.8 * attempt)
                 LOGGER.warning("Retrying the vision request (attempt %s)", attempt + 1)
             try:
                 response = await self._get_client().post(
@@ -262,15 +292,19 @@ class VisionAgent:
             except ValueError as exc:
                 raise VisionAgentError("Nebius returned a non-JSON response") from exc
 
-            content = _extract_content(data)
             try:
+                content = _extract_content(data)
                 return parse_action(content)
-            except ActionParseError as exc:
+            except (ActionParseError, VisionAgentError) as exc:
+                last_error = exc
                 LOGGER.warning(
-                    "Vision model returned an invalid action: %s | raw=%s",
+                    "Vision model returned an invalid action (attempt %d/%d): %s",
+                    attempt + 1,
+                    self.retries + 1,
                     exc,
-                    content[:600].replace("\n", " "),
                 )
+                if attempt < self.retries:
+                    continue
                 raise VisionAgentError(str(exc)) from exc
 
         detail = last_error.__class__.__name__ if last_error else "unknown error"
@@ -305,20 +339,45 @@ class VisionAgent:
         }
 
 
-def _format_elements(elements: list[dict[str, Any]]) -> str:
+def _format_elements(
+    elements: list[dict[str, Any]],
+    *,
+    width: int = 0,
+    height: int = 0,
+) -> str:
     """Render the element index the way the phone labels it."""
     lines: list[str] = []
     for element in elements:
         index = element.get("index")
         text = str(element.get("text") or "").replace("\n", " ")
         kind = str(element.get("kind") or "Text")
+        tags: list[str] = []
+        if element.get("checkable"):
+            tags.append("ON" if element.get("checked") else "OFF")
+        elif element.get("checked") is True:
+            tags.append("ON")
+        if element.get("editable"):
+            tags.append("editable")
+        elif element.get("clickable"):
+            tags.append("clickable")
+        if element.get("focused"):
+            tags.append("focused")
+        tag_str = "".join(f" [{t}]" for t in tags)
+
         bounds = element.get("bounds") or []
         if isinstance(bounds, list) and len(bounds) == 4:
-            left, top, right, bottom = bounds
+            left, top, right, bottom = (int(bounds[0]), int(bounds[1]), int(bounds[2]), int(bounds[3]))
+            if width > 0 and height > 0 and (right > 1000 or bottom > 1000):
+                left = max(0, min(1000, int(left * 1000 / width)))
+                top = max(0, min(1000, int(top * 1000 / height)))
+                right = max(0, min(1000, int(right * 1000 / width)))
+                bottom = max(0, min(1000, int(bottom * 1000 / height)))
             bounds_text = f"[{left},{top}][{right},{bottom}]"
         else:
             bounds_text = "[0,0][0,0]"
-        lines.append(f"[{index}] {kind}: '{text}' | Bounds: {bounds_text}")
+        res_id = str(element.get("id") or "").strip()
+        id_suffix = f" | id: {res_id.rsplit('/', 1)[-1]}" if res_id else ""
+        lines.append(f"[{index}] {kind}: '{text}'{tag_str} | Bounds: {bounds_text}{id_suffix}")
     return "\n".join(lines)
 
 

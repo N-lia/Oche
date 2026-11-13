@@ -210,21 +210,21 @@ class VoiceSession:
             # Client VAD says speech began. It also carries the preroll, so the
             # first syllable is not lost even though audio outside a turn is
             # ignored below.
-            if self.state == SESSION_PAUSED and self.stream is not None:
-                # Smart Turn said "not finished" and the user kept going: this
-                # is the same turn, not a new one. Keep the ASR stream alive.
+            if self.state in (SESSION_PAUSED, SESSION_EVALUATING) and self.stream is not None:
+                # Smart Turn was scoring or holding an unfinished thought and
+                # the user kept going: keep the same turn and ASR stream alive.
                 self._cancel_grace()
                 self.state = SESSION_LISTENING
                 seed = self._decode_preroll(data.get("preroll"))
                 if seed:
                     await self._feed(seed, now)
                 await self.send({"type": "turn_resumed", "turn_id": self.turn_id})
-            elif self.state == SESSION_IDLE and self.stream is None:
-                await self._begin_turn(now, seed_pcm=self._decode_preroll(data.get("preroll")))
-            elif self.state == SESSION_RESPONDING and self._reply_active():
-                # The user started talking while the reply was still being
-                # generated: open a soft-barge turn so the transcript decides.
+            elif self._reply_active():
+                # The user started talking while a reply was being generated or
+                # spoken: open a soft-barge turn so the transcript decides.
                 await self._interrupt(now, data.get("preroll", ""))
+            elif self.state in (SESSION_IDLE, SESSION_FINALIZING):
+                await self._begin_turn(now, seed_pcm=self._decode_preroll(data.get("preroll")))
         elif kind in ("speech_end", "flush"):
             # Client VAD says the user stopped. Smart Turn decides whether to
             # dispatch the turn now or hold it open for a beat.
@@ -237,9 +237,17 @@ class VoiceSession:
                 speak = bool(data.get("speak", self.speak_text_replies))
                 await self._start_text_turn(text, speak)
         elif kind == "barge_in":
-            # User started talking over the bot: drop the pending reply and
+            # User started talking over the bot: duck the pending reply and
             # begin a fresh turn immediately, seeded with the client's preroll.
             await self._interrupt(now, data.get("preroll", ""))
+        elif kind == "barge_cancel":
+            # Client confirmed sustained barge-in speech: cancel any in-flight
+            # reply task immediately while the new listening turn continues.
+            if self.soft_barge or self._reply_active():
+                old_reply_turn = self.reply_turn_id or self.turn_id
+                self.soft_barge = False
+                await self._cancel_response()
+                await self.send({"type": "interrupted", "turn_id": old_reply_turn})
         elif kind == "playback_start":
             # The client reports actual audio playback, so turn-taking does not
             # have to guess whether the agent is speaking.
@@ -270,13 +278,13 @@ class VoiceSession:
         # a turn is pre-speech, noise or speaker echo, and must not open one.
         if self.state == SESSION_LISTENING:
             await self._feed(pcm, time.monotonic())
-        elif self.state == SESSION_PAUSED:
+        elif self.state in (SESSION_PAUSED, SESSION_EVALUATING):
             # A few frames can still be in flight while Smart Turn evaluates.
             # Keep them with the same turn so a resumed thought is contiguous.
             self._remember_audio(pcm)
             if self.stream is not None:
                 self.stream.feed(pcm)
-        # IDLE / EVALUATING / FINALIZING / RESPONDING: ignored until the VAD
+        # IDLE / FINALIZING / RESPONDING: ignored until the VAD
         # opens or resumes a turn.
 
     async def _begin_turn(self, now: float, seed_pcm: bytes = b"") -> None:
@@ -472,6 +480,7 @@ class VoiceSession:
             return
 
         self.state = SESSION_EVALUATING
+        evaluating_turn = self.turn_id
         probability: float | None = None
         min_bytes = 16000 * 2 // 4  # 250 ms is too little to judge
         if self.smart_turn_available and len(self._turn_audio) >= min_bytes:
@@ -480,6 +489,11 @@ class VoiceSession:
                 probability = await self._turn_scorer(pcm, self.sample_rate)
             except Exception:  # noqa: BLE001 - endpointing must never break
                 LOGGER.exception("Smart Turn scoring failed")
+
+        # If speech_start or barge_in arrived while Smart Turn was scoring,
+        # the turn was already resumed or replaced; do not finalize it.
+        if self.state != SESSION_EVALUATING or self.turn_id != evaluating_turn or self.stream is None:
+            return
 
         if probability is None or probability >= self.smart_turn_threshold:
             await self._finalize_turn(now)
@@ -612,7 +626,12 @@ class VoiceSession:
         try:
             await self._run_agent(user_text, turn_id)
             # If the user is already on a new turn, this reply was superseded.
-            if self.state in (SESSION_LISTENING, SESSION_FINALIZING):
+            if turn_id != self.turn_id or self.state in (
+                SESSION_LISTENING,
+                SESSION_EVALUATING,
+                SESSION_PAUSED,
+                SESSION_FINALIZING,
+            ):
                 return
             self.state = SESSION_IDLE
             await self.send({"type": "turn_end", "turn_id": turn_id})
@@ -644,19 +663,17 @@ class VoiceSession:
         reply is left running (the client ducks it) and ``_finish_turn``
         resumes it for a continuer or cancels it for a real turn.
         """
-        if self.state == SESSION_IDLE and not self.response_task and self.stream is None:
+        seed = self._decode_preroll(preroll_b64)
+        if self.state == SESSION_IDLE and not self._reply_active() and self.stream is None and not seed:
             return
 
-        self.soft_barge = bool(
-            (self.response_task and not self.response_task.done()) or self.bot_speaking
-        )
+        self.soft_barge = self._reply_active()
 
         # Tear down the previous ASR stream (a no-op if it already finished).
         await self._stop_listening()
 
         await self.send({"type": "barge_pending", "turn_id": self.turn_id})
 
-        seed = self._decode_preroll(preroll_b64)
         await self._begin_turn(now, seed_pcm=seed)
 
     # ------------------------------------------------------------- reply

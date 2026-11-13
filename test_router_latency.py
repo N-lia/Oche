@@ -71,6 +71,10 @@ def test_phone_control_needs_an_action_not_just_a_device_word() -> None:
         "send a message to John on my phone",
         "what's my screen time",
         "control my phone",
+        "open WhatsApp",
+        "turn on dark mode",
+        "how much time have I used today?",
+        "which app am I using?",
     ):
         decision = classify_request(text)
         assert decision.intent == "device_control", (text, decision)

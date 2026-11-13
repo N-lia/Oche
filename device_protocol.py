@@ -25,7 +25,9 @@ from pydantic import BaseModel, Field, ValidationError, field_validator, model_v
 
 ActionType = Literal[
     "tap",
+    "long_press",
     "type",
+    "press_enter",
     "scroll",
     "back",
     "home",
@@ -39,6 +41,8 @@ ActionType = Literal[
 _SCREEN_TEXT_LIMIT = 240
 _SCREENSHOT_LIMIT = 6 * 1024 * 1024
 _FENCED_JSON_RE = re.compile(r"```(?:json)?\s*(\{.*?\})\s*```", re.DOTALL | re.IGNORECASE)
+_THINK_TAG_RE = re.compile(r"<think>.*?</think>", re.DOTALL | re.IGNORECASE)
+_LEADING_INDEX_RE = re.compile(r"^\s*\[?\s*(\d{1,3})\s*\]?(?:\s|$|:)")
 
 
 class DeviceHello(BaseModel):
@@ -97,6 +101,7 @@ class Action(BaseModel):
     x: int | None = Field(default=None, ge=0, le=1000)
     y: int | None = Field(default=None, ge=0, le=1000)
     text: str | None = Field(default=None, max_length=4000)
+    submit: bool | None = None
     package: str | None = Field(default=None, max_length=255)
     direction: Literal["up", "down", "left", "right"] | None = None
     distance: float | None = Field(default=None, ge=0.1, le=1.0)
@@ -106,12 +111,12 @@ class Action(BaseModel):
 
     @model_validator(mode="after")
     def _require_action_arguments(self) -> "Action":
-        if self.type == "tap" and not (
+        if self.type in {"tap", "long_press"} and not (
             self.target is not None
             or (self.element_text or "").strip()
             or (self.x is not None and self.y is not None)
         ):
-            raise ValueError("tap needs an element index, an element description or x/y")
+            raise ValueError(f"{self.type} needs an element index, an element description or x/y")
         if self.type == "type" and not (self.text or "").strip():
             raise ValueError("type requires text")
         if self.type == "open_app" and not (self.package or "").strip():
@@ -125,23 +130,36 @@ _ACTION_TYPE_ALIASES: dict[str, str] = {
     "click": "tap",
     "tap": "tap",
     "press": "tap",
-    "long_press": "tap",
+    "long_press": "long_press",
+    "long_click": "long_press",
+    "hold": "long_press",
     "input": "type",
     "type": "type",
     "input_text": "type",
     "enter_text": "type",
+    "set_text": "type",
+    "press_enter": "press_enter",
+    "enter": "press_enter",
+    "submit": "press_enter",
+    "ime_action": "press_enter",
+    "search": "press_enter",
     "scroll": "scroll",
     "swipe": "scroll",
     "drag": "scroll",
     "open_app": "open_app",
     "launch": "open_app",
     "launch_app": "open_app",
+    "start_app": "open_app",
     "navigate": "open_app",
     "back": "back",
     "go_back": "back",
+    "navigate_back": "back",
     "home": "home",
     "go_home": "home",
+    "navigate_home": "home",
     "recents": "recents",
+    "recent_apps": "recents",
+    "app_switch": "recents",
     "wait": "wait",
     "sleep": "wait",
     "done": "done",
@@ -152,6 +170,7 @@ _ACTION_TYPE_ALIASES: dict[str, str] = {
     "ask_user": "ask_user",
     "ask": "ask_user",
     "clarify": "ask_user",
+    "take_over": "ask_user",
 }
 
 
@@ -190,6 +209,63 @@ class ActionParseError(ValueError):
     """The model returned something that is not a valid Action."""
 
 
+def _extract_json_payload(raw_text: str) -> Any:
+    text = _THINK_TAG_RE.sub("", raw_text or "").strip()
+    if not text:
+        raise ActionParseError("model returned an empty action")
+
+    fenced = _FENCED_JSON_RE.search(text)
+    if fenced:
+        candidate_text = fenced.group(1).strip()
+    else:
+        start = text.find("{")
+        end = text.rfind("}")
+        candidate_text = text[start : end + 1] if (start >= 0 and end > start) else text
+
+    try:
+        return json.loads(candidate_text)
+    except json.JSONDecodeError:
+        pass
+
+    # If prose before the JSON contained braces, scan each '{' with raw_decode.
+    decoder = json.JSONDecoder()
+    decoded_dicts: list[dict[str, Any]] = []
+    for idx, ch in enumerate(text):
+        if ch != "{":
+            continue
+        try:
+            obj, _ = decoder.raw_decode(text[idx:])
+            if isinstance(obj, dict):
+                decoded_dicts.append(obj)
+        except json.JSONDecodeError:
+            continue
+    if decoded_dicts:
+        for obj in reversed(decoded_dicts):
+            if any(k in obj for k in ("type", "action_type", "actionType", "action")):
+                return obj
+        return decoded_dicts[-1]
+
+    # Phone-use models sometimes stop one character early or leave a stray
+    # quote. Repair the obvious cases instead of failing the whole command.
+    candidates = (
+        candidate_text,
+        candidate_text + "}",
+        candidate_text.rstrip('"') + "}",
+        candidate_text.rstrip('",') + "}",
+        candidate_text + '"}',
+        candidate_text.rstrip('"') + '"}',
+        candidate_text.rstrip('"') + "]}",
+    )
+    last_exc: Exception | None = None
+    for candidate in candidates:
+        try:
+            return json.loads(candidate)
+        except json.JSONDecodeError as exc:
+            last_exc = exc
+            continue
+    raise ActionParseError(f"model did not return JSON: {last_exc}") from last_exc
+
+
 def parse_action(raw: str | dict[str, Any] | Action) -> Action:
     """Parse a planner response into a validated action.
 
@@ -204,40 +280,7 @@ def parse_action(raw: str | dict[str, Any] | Action) -> Action:
     if isinstance(raw, dict):
         payload: Any = raw
     else:
-        text = (raw or "").strip()
-        if not text:
-            raise ActionParseError("model returned an empty action")
-        fenced = _FENCED_JSON_RE.search(text)
-        if fenced:
-            text = fenced.group(1)
-        else:
-            start = text.find("{")
-            end = text.rfind("}")
-            if start >= 0 and end > start:
-                text = text[start : end + 1]
-        try:
-            payload = json.loads(text)
-        except json.JSONDecodeError as exc:
-            # Phone-use models sometimes stop one character early or leave a
-            # stray quote. Repair the obvious cases instead of failing the
-            # whole phone command.
-            candidates = (
-                text,
-                text + "}",
-                text.rstrip('"') + "}",
-                text.rstrip('",') + "}",
-                text + '"}',
-                text.rstrip('"') + '"}',
-                text.rstrip('"') + "]}",
-            )
-            for candidate in candidates:
-                try:
-                    payload = json.loads(candidate)
-                    break
-                except json.JSONDecodeError:
-                    continue
-            else:
-                raise ActionParseError(f"model did not return JSON: {exc}") from exc
+        payload = _extract_json_payload(raw)
 
     if not isinstance(payload, dict):
         raise ActionParseError("action must be a JSON object")
@@ -246,6 +289,19 @@ def parse_action(raw: str | dict[str, Any] | Action) -> Action:
         return Action.model_validate(_normalize_action(payload))
     except ValidationError as exc:
         raise ActionParseError(f"invalid action: {exc}") from exc
+
+
+def _coerce_index(value: Any) -> int | None:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value if 1 <= value <= 1000 else None
+    if isinstance(value, str):
+        match = _LEADING_INDEX_RE.match(value.strip())
+        if match:
+            idx = int(match.group(1))
+            return idx if 1 <= idx <= 1000 else None
+    return None
 
 
 def _normalize_action(payload: dict[str, Any]) -> dict[str, Any]:
@@ -266,8 +322,23 @@ def _normalize_action(payload: dict[str, Any]) -> dict[str, Any]:
             raise ActionParseError(f"unknown action type {raw_type!r}")
         out["type"] = mapped
 
+    # Normalize element index from target / index / element_index / element_id.
+    for key in ("target", "index", "element_index", "element_id"):
+        if key in out and out.get(key) is not None:
+            coerced = _coerce_index(out.get(key))
+            if coerced is not None:
+                out["target"] = coerced
+                break
+
     # The element the model wants, described in words.
-    for key in ("action_ui_element", "ui_element", "element", "element_description", "target_description"):
+    for key in (
+        "action_ui_element",
+        "ui_element",
+        "element",
+        "element_description",
+        "target_description",
+        "label",
+    ):
         value = out.get(key)
         if isinstance(value, str) and value.strip():
             out["element_text"] = value.strip()
@@ -282,13 +353,41 @@ def _normalize_action(payload: dict[str, Any]) -> dict[str, Any]:
             and legacy_description.strip().lower() not in _ACTION_TYPE_ALIASES
         ):
             out["element_text"] = legacy_description.strip()
+            if not out.get("reason"):
+                out["reason"] = legacy_description.strip()
+
+    if isinstance(out.get("action"), str) and out["action"].strip() and not out.get("reason"):
+        if out["action"].strip().lower() not in _ACTION_TYPE_ALIASES:
+            out["reason"] = out["action"].strip()
+
+    # If element_text begins with a bracketed index like "[3] Text: 'Wi-Fi'",
+    # also populate target=3 when target was not given explicitly.
+    if out.get("target") is None and isinstance(out.get("element_text"), str):
+        et = out["element_text"].strip()
+        if et.startswith("[") and "]" in et:
+            coerced = _coerce_index(et)
+            if coerced is not None:
+                out["target"] = coerced
+
+    # Support [x, y] coordinate arrays (point / coordinate / coordinates).
+    if out.get("x") is None or out.get("y") is None:
+        for coord_key in ("point", "coordinate", "coordinates", "position"):
+            coord = out.get(coord_key)
+            if isinstance(coord, (list, tuple)) and len(coord) >= 2:
+                out["x"], out["y"] = coord[0], coord[1]
+                break
 
     # mobile-use emits 0..1 fractions, our protocol is 0..1000.
     x, y = out.get("x"), out.get("y")
     if isinstance(x, (int, float)) and isinstance(y, (int, float)):
-        if 0 <= float(x) <= 1 and 0 <= float(y) <= 1:
-            out["x"] = int(round(float(x) * 1000))
-            out["y"] = int(round(float(y) * 1000))
+        if 0 <= float(x) <= 1 and 0 <= float(y) <= 1 and (isinstance(x, float) or isinstance(y, float) or float(x) <= 1.0 and float(y) <= 1.0):
+            # Treat (0..1, 0..1) as normalized fractions unless both are > 1.
+            if float(x) <= 1.0 and float(y) <= 1.0 and not (isinstance(x, int) and isinstance(y, int) and (x > 1 or y > 1)):
+                out["x"] = int(round(float(x) * 1000))
+                out["y"] = int(round(float(y) * 1000))
+            else:
+                out["x"] = int(round(float(x)))
+                out["y"] = int(round(float(y)))
         else:
             out["x"] = int(round(float(x)))
             out["y"] = int(round(float(y)))
@@ -309,16 +408,41 @@ def _normalize_action(payload: dict[str, Any]) -> dict[str, Any]:
                 break
 
     # "input" carries its text; a click carries the element description.
-    if out.get("type") == "type" and not out.get("text"):
-        for key in ("input_text", "text_to_type", "value"):
-            value = out.get(key)
-            if isinstance(value, str) and value.strip():
-                out["text"] = value.strip()
+    if out.get("type") == "type":
+        if not out.get("text"):
+            for key in ("input_text", "text_to_type", "value", "content"):
+                value = out.get(key)
+                if isinstance(value, str) and value.strip():
+                    out["text"] = value.strip()
+                    break
+        for submit_key in ("submit", "press_enter", "enter"):
+            if isinstance(out.get(submit_key), bool):
+                out["submit"] = out[submit_key]
                 break
 
-    out.pop("action_type", None)
-    out.pop("action_ui_element", None)
-    out.pop("action", None)
+    for drop_key in (
+        "action_type",
+        "actionType",
+        "action_ui_element",
+        "ui_element",
+        "element",
+        "element_description",
+        "target_description",
+        "action",
+        "index",
+        "element_index",
+        "element_id",
+        "point",
+        "coordinate",
+        "coordinates",
+        "position",
+        "app_name",
+        "app",
+        "package_name",
+        "input_text",
+        "text_to_type",
+    ):
+        out.pop(drop_key, None)
     return out
 
 

@@ -70,6 +70,36 @@ test('a short blip is not a turn', () => {
   feed(h, SPEECH, 100);
   feed(h, QUIET, 300);
   if (h.types().includes('user_speech.started')) throw new Error('blip became a turn');
+  // A second short blip after silence must also not accumulate with the first one.
+  feed(h, SPEECH, 100);
+  feed(h, QUIET, 300);
+  if (h.types().includes('user_speech.started')) throw new Error('second blip leaked speechStartedAt');
+});
+
+test('consonant dips during barge-in do not abort or prevent cancel', () => {
+  const h = harness();
+  h.tt.agentOutputStart();
+  h.advance(400); // past echo guard
+  // Speak with realistic 40ms consonant dips between syllables.
+  feed(h, SPEECH, 200);
+  feed(h, QUIET, 40);
+  feed(h, SPEECH, 260);
+  feed(h, QUIET, 40);
+  feed(h, SPEECH, 260);
+  if (!h.types().includes('barge_in.requested')) throw new Error('no barge_in');
+  if (!h.types().includes('output.cancel_requested')) throw new Error('consonant dips prevented cancel');
+  if (h.tt.state !== 'interrupted') throw new Error(`state ${h.tt.state}`);
+  if (h.types().includes('user_speech.ended')) throw new Error('consonant dip prematurely ended barge speech');
+});
+
+test('output ending during early barge onset still emits speech_start', () => {
+  const h = harness();
+  h.tt.agentOutputStart();
+  h.advance(400);
+  feed(h, SPEECH, 80); // in barge_pending, but before barge_in.requested
+  h.tt.agentOutputEnd();
+  if (h.tt.state !== 'user_speaking') throw new Error(`state ${h.tt.state}`);
+  if (!h.types().includes('user_speech.started')) throw new Error('missing user_speech.started on output end');
 });
 
 test('barge-in needs sustained speech and ducks first', () => {

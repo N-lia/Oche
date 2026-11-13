@@ -12,6 +12,8 @@ import ai.oyi.device.accessibility.OyiAccessibilityService
 import ai.oyi.device.model.AppUsage
 import ai.oyi.device.model.ConnectionState
 import ai.oyi.device.model.ForegroundApp
+import ai.oyi.device.model.IslandKind
+import ai.oyi.device.model.IslandState
 import ai.oyi.device.service.OyiService
 import androidx.core.content.ContextCompat
 import kotlinx.coroutines.Dispatchers
@@ -39,6 +41,7 @@ data class UiState(
     val lastMessage: String = "",
     val currentApp: ForegroundApp? = null,
     val topApps: List<AppUsage> = emptyList(),
+    val island: IslandState = IslandState(),
 )
 
 class MainViewModel(application: Application) : AndroidViewModel(application) {
@@ -88,6 +91,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 _state.update { it.copy(lastMessage = message) }
             }
         }
+        viewModelScope.launch {
+            container.runtime.island.collect { island ->
+                _state.update { it.copy(island = island) }
+            }
+        }
         refresh()
     }
 
@@ -125,6 +133,47 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun setAutoStart(enabled: Boolean) {
         container.settings.setAutoStart(enabled)
         refresh()
+    }
+
+    fun approveIsland() {
+        container.runtime.resolveApproval(true)
+    }
+
+    fun denyIsland() {
+        container.runtime.resolveApproval(false)
+    }
+
+    fun dismissIsland() {
+        container.runtime.dismissIsland()
+    }
+
+    fun stopActiveTask() {
+        container.runtime.cancelActiveCommand()
+    }
+
+    fun previewIslandState(kind: IslandKind) {
+        when (kind) {
+            IslandKind.IDLE -> container.runtime.dismissIsland()
+            IslandKind.WORKING -> container.runtime.showWorking(
+                commandId = "preview_cmd",
+                title = "Step 2 · Controlling Settings",
+                subtitle = "Tapping 'Display & Brightness'",
+                step = 2,
+            )
+            IslandKind.COMPLETED -> container.runtime.showCompleted(
+                title = "Task Completed",
+                message = "Opened Settings and turned on Dark theme.",
+            )
+            IslandKind.APPROVAL_REQUIRED -> container.runtime.showApprovalRequired(
+                commandId = "preview_cmd",
+                title = "Approval Required",
+                prompt = "Allow OYI to send this WhatsApp message to John?",
+            )
+            IslandKind.ERROR -> container.runtime.showError(
+                title = "Task Blocked",
+                message = "Screen was locked before the action could complete.",
+            )
+        }
     }
 
     /** Starts or stops the OYI service (and therefore the overlay bubble). */

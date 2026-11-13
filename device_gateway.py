@@ -327,11 +327,15 @@ class DeviceGateway:
             # Finish here rather than waiting for the planner's final POST:
             # the phone is still waiting for an action or command_done, and a
             # dead planner must not leave it permanently busy.
-            await self.finish_job(job.id, status="completed", message=message)
+            await self.finish_job(
+                job.id,
+                status="completed",
+                message=message,
+                needs_approval=(action.type == "ask_user"),
+            )
             return {"finished": True, "status": job.status, "message": job.message}
 
         job.step += 1
-        job.history.append({"step": job.step, "action": action_for_device(action)})
         await job.actions.put({"action": action_for_device(action)})
         return {"finished": False, "step": job.step}
 
@@ -341,6 +345,7 @@ class DeviceGateway:
         *,
         status: str,
         message: str,
+        needs_approval: bool = False,
     ) -> dict[str, Any]:
         job = self._jobs.get(job_id)
         if job is None:
@@ -376,14 +381,15 @@ class DeviceGateway:
         if connection is not None and connection.active_command_id == job.id:
             connection.active_command_id = ""
             try:
-                await connection.send(
-                    {
-                        "type": "command_done",
-                        "command_id": job.id,
-                        "status": job.status,
-                        "message": job.message,
-                    }
-                )
+                done_payload: dict[str, Any] = {
+                    "type": "command_done",
+                    "command_id": job.id,
+                    "status": job.status,
+                    "message": job.message,
+                }
+                if needs_approval:
+                    done_payload["needs_approval"] = True
+                await connection.send(done_payload)
             except Exception:  # noqa: BLE001 - phone may have disconnected
                 LOGGER.debug(
                     "Could not deliver command_done for job %s", job.id, exc_info=True
@@ -617,6 +623,13 @@ class DeviceGateway:
             waiter = self._status_waiters.pop(request_id, None)
             if waiter is not None and not waiter.done():
                 waiter.set_result(payload)
+        elif message_type == "approval_response":
+            LOGGER.info(
+                "Device approval_response id=%s command=%s approved=%s",
+                connection.hello.device_id,
+                payload.get("command_id"),
+                payload.get("approved"),
+            )
         elif message_type == "ping":
             await connection.send({"type": "pong", "time": time.time()})
         elif message_type == "event":
@@ -755,7 +768,13 @@ class DeviceGateway:
             message = action.message.strip() or (
                 "Done." if action.type == "done" else "I need more information to continue."
             )
-            await self._finish_command(command, connection, "completed", message=message)
+            await self._finish_command(
+                command,
+                connection,
+                "completed",
+                message=message,
+                needs_approval=(action.type == "ask_user"),
+            )
             return
 
         command.last_action = action
@@ -765,6 +784,10 @@ class DeviceGateway:
             observation.step,
             action_for_device(action),
         )
+        screen_sig = f"{observation.package}|{(observation.element_text or '')[:1500]}"
+        prev_sig = command.history[-1].get("screen_sig") if command.history else None
+        if command.history and prev_sig and prev_sig == screen_sig:
+            command.history[-1]["unchanged"] = True
         command.history.append(
             {
                 "step": observation.step,
@@ -772,6 +795,7 @@ class DeviceGateway:
                 "ok": observation.last_action_ok,
                 "error": observation.error,
                 "result": observation.action_result,
+                "screen_sig": screen_sig,
             }
         )
         await self._send_action(connection, command, action)
@@ -789,6 +813,15 @@ class DeviceGateway:
         observation: Observation,
     ) -> None:
         """Hand a screen to the external planner and send its action back."""
+        screen_sig = f"{observation.package}|{(observation.element_text or '')[:1500]}"
+        if job.history:
+            prev_sig = job.history[-1].get("screen_sig")
+            if prev_sig and prev_sig == screen_sig:
+                job.history[-1]["unchanged"] = True
+            if observation.action_result or observation.error:
+                job.history[-1]["ok"] = observation.last_action_ok
+                job.history[-1]["result"] = observation.action_result or observation.error
+
         messages = build_messages(
             instruction=job.instruction,
             observation=observation,
@@ -827,6 +860,7 @@ class DeviceGateway:
                     "ok": False,
                     "error": item["error"],
                     "result": item["error"],
+                    "screen_sig": screen_sig,
                 }
             )
             # The phone is waiting for an action, not a new observation.  A
@@ -845,6 +879,7 @@ class DeviceGateway:
                 "ok": observation.last_action_ok,
                 "error": observation.error,
                 "result": observation.action_result,
+                "screen_sig": screen_sig,
             }
         )
         await self._send_action_to(connection, job.id, observation.step, action)
@@ -900,19 +935,21 @@ class DeviceGateway:
         *,
         message: str = "",
         error: str = "",
+        needs_approval: bool = False,
     ) -> None:
         command.finish(status, message=message, error=error)
         connection.active_command_id = ""
         try:
-            await connection.send(
-                {
-                    "type": "command_done",
-                    "command_id": command.command_id,
-                    "status": command.status,
-                    "message": command.message,
-                    "error": command.error,
-                }
-            )
+            done_payload: dict[str, Any] = {
+                "type": "command_done",
+                "command_id": command.command_id,
+                "status": command.status,
+                "message": command.message,
+                "error": command.error,
+            }
+            if needs_approval:
+                done_payload["needs_approval"] = True
+            await connection.send(done_payload)
         except Exception:  # noqa: BLE001 - phone may have disconnected
             LOGGER.debug("Could not deliver command_done", exc_info=True)
 

@@ -98,6 +98,21 @@ _PHONE_ACTION_RE = re.compile(
 )
 
 
+_PHONE_DIRECT_RE = re.compile(
+    r"\b(?:(?:open|launch)\s+(?:the\s+)?(?:\w+\s+app|settings|whatsapp|youtube|"
+    r"chrome|spotify|instagram|tiktok|gmail|camera|photos|gallery|calculator|"
+    r"calendar|clock|contacts|messages|play\s+store|maps)|"
+    r"(?:turn\s+(?:on|off)|enable|disable|toggle)\s+(?:the\s+)?(?:dark\s+(?:mode|theme)|"
+    r"wi-?fi|bluetooth|hotspot|airplane\s+mode|do\s+not\s+disturb|flashlight|"
+    r"torch|auto-?rotate|battery\s+saver|location)|"
+    r"(?:what|which)\s+app\s+(?:is\s+open|am\s+i\s+(?:using|in|on))|"
+    r"how\s+much\s+(?:screen\s+)?time\s+have\s+i\s+used(?:\s+today)?|"
+    r"my\s+screen\s+time|screen\s+time\s+today)\b|"
+    r"^\s*(?:scroll\s+(?:up|down|left|right)|go\s+back|go\s+home|open\s+recents)\b",
+    re.IGNORECASE,
+)
+
+
 def _is_phone_control(text: str) -> bool:
     # "How do I ... on my phone?" asks for instructions, not for the agent to
     # start tapping.  Explicit screen inspection ("what's on my screen") stays.
@@ -108,6 +123,8 @@ def _is_phone_control(text: str) -> bool:
         re.IGNORECASE,
     ):
         return False
+    if _PHONE_DIRECT_RE.search(text):
+        return True
     return bool(_PHONE_DEVICE_RE.search(text) and _PHONE_ACTION_RE.search(text))
 
 

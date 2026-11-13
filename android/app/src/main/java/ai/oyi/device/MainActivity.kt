@@ -71,21 +71,28 @@ class MainActivity : ComponentActivity() {
 
 @Composable
 private fun OyiTheme(content: @Composable () -> Unit) {
-    val dark = isSystemInDarkTheme()
-    val colors = if (dark) {
-        darkColorScheme(
-            primary = Color(0xFF7C5CFF),
-            background = Color(0xFF12101C),
-            surface = Color(0xFF1B1830),
-            surfaceVariant = Color(0xFF241F3D),
-        )
-    } else {
-        lightColorScheme(
-            primary = Color(0xFF5B3DF5),
-            background = Color(0xFFF7F5FF),
-            surface = Color(0xFFFFFFFF),
-            surfaceVariant = Color(0xFFEDEAFF),
-        )
-    }
+    val colors = darkColorScheme(
+        primary = Color(0xFFF08A65),
+        onPrimary = Color(0xFF0A0807),
+        primaryContainer = Color(0xFFD9724E),
+        onPrimaryContainer = Color(0xFF0A0807),
+        secondary = Color(0xFFF7EDD0),
+        onSecondary = Color(0xFF0B0A08),
+        secondaryContainer = Color(0xFFE9DCBA),
+        onSecondaryContainer = Color(0xFF0B0A08),
+        tertiary = Color(0xFFF7E27E),
+        onTertiary = Color(0xFF0B0A08),
+        background = Color(0xFF070708),
+        onBackground = Color(0xFFF8F6F1),
+        surface = Color(0xFF151518),
+        onSurface = Color(0xFFF8F6F1),
+        surfaceVariant = Color(0xFF1F1F24),
+        onSurfaceVariant = Color(0xFFA09C94),
+        error = Color(0xFFF08A65),
+        onError = Color(0xFF0A0807),
+        errorContainer = Color(0xFF2E1B14),
+        onErrorContainer = Color(0xFFF7EDD0),
+        outline = Color(0xFF38383E),
+    )
     MaterialTheme(colorScheme = colors, content = content)
 }

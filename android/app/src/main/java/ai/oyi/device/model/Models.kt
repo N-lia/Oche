@@ -44,3 +44,22 @@ data class ActionResult(
     val ok: Boolean,
     val message: String = "",
 )
+
+/** Visual mode of the OYI Dynamic Island overlay and in-app banner. */
+enum class IslandKind {
+    IDLE,
+    WORKING,
+    COMPLETED,
+    APPROVAL_REQUIRED,
+    ERROR,
+}
+
+/** Live state rendered by the Dynamic Island. */
+data class IslandState(
+    val kind: IslandKind = IslandKind.IDLE,
+    val title: String = "",
+    val subtitle: String = "",
+    val step: Int = 0,
+    val commandId: String = "",
+    val updatedAt: Long = System.currentTimeMillis(),
+)

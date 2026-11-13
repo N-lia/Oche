@@ -19,16 +19,23 @@
 
   const DEFAULTS = {
     mode: 'vad',
-    speechThreshold: 0.022,
+    speechThreshold: 0.020,
+    bargeSpeechThreshold: 0.015,
     noiseFloorThreshold: 0.008,
-    minSpeechMs: 220,
-    silenceMs: 750,
-    debounceMs: 100,
-    cooldownMs: 180,
+    adaptiveNoiseFloor: true,
+    noiseMarginMultiplier: 2.6,
+    maxSpeechThreshold: 0.045,
+    minSpeechMs: 180,
+    bargeMinSpeechMs: 160,
+    onsetHangoverMs: 90,
+    bargeHangoverMs: 380,
+    silenceMs: 700,
+    debounceMs: 80,
+    cooldownMs: 160,
     // Ignore the first moments of agent playback: speaker -> mic echo.
-    echoGuardMs: 350,
+    echoGuardMs: 320,
     // Sustained speech beyond this is a real interruption, not an "mm-hmm".
-    cancelAfterMs: 900,
+    cancelAfterMs: 680,
     bargeIn: {
       enabled: true,
       whileAgentSpeaking: true,
@@ -67,11 +74,13 @@
     let agentStartedAt = 0;
     let speechStartedAt = 0;
     let silenceSince = 0;
+    let onsetSilenceSince = 0;
     let cooldownUntil = 0;
     let bargeEmitted = false;
     let cancelEmitted = false;
     let noiseEmitted = false;
     let holdEmitted = false;
+    let ambientNoise = config.noiseFloorThreshold;
 
     function emit(type, extra) {
       try {
@@ -91,15 +100,41 @@
     function resetSpeech() {
       speechStartedAt = 0;
       silenceSince = 0;
+      onsetSilenceSince = 0;
       bargeEmitted = false;
       cancelEmitted = false;
+    }
+
+    function effectiveThreshold(forBarge) {
+      const base = forBarge
+        ? (typeof config.bargeSpeechThreshold === 'number' ? config.bargeSpeechThreshold : config.speechThreshold)
+        : config.speechThreshold;
+      if (!config.adaptiveNoiseFloor) return base;
+      const adaptive = ambientNoise * (config.noiseMarginMultiplier || 2.6);
+      const maxCap = config.maxSpeechThreshold || 0.045;
+      return Math.min(maxCap, Math.max(base, adaptive));
+    }
+
+    function updateNoiseFloor(value, isSpeakingState) {
+      if (!config.adaptiveNoiseFloor) return;
+      if (!isSpeakingState && value < config.speechThreshold) {
+        // Fast downward tracking when quiet, very slow upward drift during ambient hum.
+        const alpha = value < ambientNoise ? 0.12 : 0.02;
+        ambientNoise = ambientNoise * (1 - alpha) + value * alpha;
+      }
     }
 
     function level(value, at) {
       if (!running || muted) return;
       const now = typeof at === 'number' ? at : clock();
       if (now < cooldownUntil) return;
-      const speaking = value >= config.speechThreshold;
+
+      const threshold = effectiveThreshold(agentSpeaking);
+      const speaking = value >= threshold;
+      updateNoiseFloor(
+        value,
+        speaking || state === 'user_speaking' || state === 'barge_pending' || state === 'interrupted'
+      );
 
       if (agentSpeaking) {
         if (config.halfDuplex.preventWhileAgentSpeaking) {
@@ -122,22 +157,51 @@
           return;
         }
         if (!speaking) {
-          if (state === 'barge_pending') {
-            // The "barge-in" lasted less than a syllable: close the turn we
-            // already opened on the server so a ducked reply can resume.
-            const durationMs = Math.round(now - speechStartedAt);
-            resetSpeech();
-            setState('agent_speaking', 'barge_aborted');
-            emit('user_speech.ended', { durationMs: durationMs, aborted: true });
+          if (state === 'barge_pending' && !bargeEmitted) {
+            // Still qualifying onset: tolerate brief consonant dips up to onsetHangoverMs.
+            if (!onsetSilenceSince) onsetSilenceSince = now;
+            if (now - onsetSilenceSince >= (config.onsetHangoverMs || 90)) {
+              resetSpeech();
+              setState('agent_speaking', 'barge_aborted');
+            }
+            return;
+          }
+          if (state === 'barge_pending' || state === 'interrupted') {
+            // Barge-in turn is already open on the server: use hangover so
+            // consonant/word gaps do not prematurely chop the interruption.
+            if (!silenceSince) silenceSince = now;
+            const hangoverMs = state === 'interrupted'
+              ? config.silenceMs
+              : (config.bargeHangoverMs || 380);
+            if (now - silenceSince >= hangoverMs) {
+              const durationMs = Math.round(now - speechStartedAt);
+              const wasInterrupted = state === 'interrupted';
+              resetSpeech();
+              if (wasInterrupted) {
+                setState('cooldown', 'barge_speech_end');
+                emit('user_speech.ended', { durationMs: durationMs, barge: true });
+                cooldownUntil = now + config.cooldownMs;
+                setTimeout(function () {
+                  if (state === 'cooldown') setState(agentSpeaking ? 'agent_speaking' : 'armed', 'cooldown_elapsed');
+                }, config.cooldownMs);
+              } else {
+                setState('agent_speaking', 'barge_speech_end');
+                emit('user_speech.ended', { durationMs: durationMs, barge: true });
+              }
+            }
           }
           return;
         }
+
+        silenceSince = 0;
+        onsetSilenceSince = 0;
         if (!speechStartedAt) {
           speechStartedAt = now;
           setState('barge_pending', 'speech_during_output');
         }
         const sustained = now - speechStartedAt;
-        const qualifyAt = Math.max(config.minSpeechMs, config.debounceMs);
+        const minBarge = typeof config.bargeMinSpeechMs === 'number' ? config.bargeMinSpeechMs : config.minSpeechMs;
+        const qualifyAt = Math.max(minBarge, config.debounceMs);
         if (!bargeEmitted && sustained >= qualifyAt) {
           bargeEmitted = true;
           emit('barge_in.requested', { sustainedMs: Math.round(sustained) });
@@ -172,20 +236,30 @@
 
       if (speaking) {
         noiseEmitted = false;
+        onsetSilenceSince = 0;
         if (!speechStartedAt) speechStartedAt = now;
         if (now - speechStartedAt >= config.minSpeechMs) {
           silenceSince = 0;
           setState('user_speaking', 'speech_start');
           emit('user_speech.started', {});
         }
-      } else if (value >= config.noiseFloorThreshold) {
-        // Below speech but above the floor: noise/echo, not a turn.
-        if (!noiseEmitted) {
-          noiseEmitted = true;
-          emit('input.noise_gated', { level: value });
-        }
       } else {
-        noiseEmitted = false;
+        if (speechStartedAt) {
+          if (!onsetSilenceSince) onsetSilenceSince = now;
+          if (now - onsetSilenceSince >= (config.onsetHangoverMs || 90)) {
+            speechStartedAt = 0;
+            onsetSilenceSince = 0;
+          }
+        }
+        if (value >= config.noiseFloorThreshold) {
+          // Below speech but above the floor: noise/echo, not a turn.
+          if (!noiseEmitted) {
+            noiseEmitted = true;
+            emit('input.noise_gated', { level: value });
+          }
+        } else {
+          noiseEmitted = false;
+        }
       }
     }
 
@@ -199,13 +273,18 @@
 
     function agentOutputEnd() {
       const wasBarging = state === 'barge_pending' || state === 'interrupted';
+      const hadEmittedBarge = bargeEmitted;
+      const priorSpeechStart = speechStartedAt;
       agentSpeaking = false;
       holdEmitted = false;
       resetSpeech();
       if (wasBarging) {
         // The user is mid-utterance; keep the turn open until silence ends it.
-        speechStartedAt = clock();
+        speechStartedAt = priorSpeechStart || clock();
         setState('user_speaking', 'output_end');
+        if (!hadEmittedBarge) {
+          emit('user_speech.started', {});
+        }
         return;
       }
       if (state === 'agent_speaking') {

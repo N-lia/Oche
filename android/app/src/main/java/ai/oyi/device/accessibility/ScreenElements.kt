@@ -1,6 +1,7 @@
 package ai.oyi.device.accessibility
 
 import android.graphics.Rect
+import android.os.Build
 import android.view.accessibility.AccessibilityNodeInfo
 import org.json.JSONArray
 import org.json.JSONObject
@@ -23,12 +24,18 @@ data class ScreenElement(
     /** 1-based index, as shown to the model. */
     val index: Int,
     val label: String,
-    /** "Text", "Hint" or "Tooltip". */
+    /** "Text", "Input", "Button", "Switch", or "Hint". */
     val kind: String,
     /** Pixel bounds of the element. */
     val bounds: Rect,
     val className: String,
     val resourceId: String,
+    val clickable: Boolean = false,
+    val editable: Boolean = false,
+    val checkable: Boolean = false,
+    val checked: Boolean = false,
+    val focused: Boolean = false,
+    val scrollable: Boolean = false,
     /** The live node, used to execute the action against the real element. */
     val node: AccessibilityNodeInfo,
 ) {
@@ -38,17 +45,14 @@ data class ScreenElement(
 
 object ScreenElements {
 
-    const val MAX_ELEMENTS = 120
+    const val MAX_ELEMENTS = 140
 
     /** Same-label elements within this distance (px) are the same element. */
-    private const val DUPLICATE_RADIUS = 8f
+    private const val DUPLICATE_RADIUS = 10f
 
     /**
-     * Walks the live tree and returns the visible, labelled elements in
-     * traversal order.
-     *
-     * Unlabelled wrappers are skipped: they answer neither a text query nor a
-     * hit test. Off-screen and zero-area nodes are skipped as well.
+     * Walks the live tree and returns the visible, actionable or labelled
+     * elements in traversal order.
      */
     fun collect(
         root: AccessibilityNodeInfo?,
@@ -56,35 +60,56 @@ object ScreenElements {
         height: Int,
     ): List<ScreenElement> {
         if (root == null) return emptyList()
+        return collectRoots(listOf(root), width, height)
+    }
+
+    fun collectRoots(
+        roots: List<AccessibilityNodeInfo>,
+        width: Int,
+        height: Int,
+    ): List<ScreenElement> {
+        if (roots.isEmpty()) return emptyList()
 
         val elements = mutableListOf<ScreenElement>()
         val seen = mutableListOf<Pair<String, Pair<Int, Int>>>()
         val queue = ArrayDeque<AccessibilityNodeInfo>()
-        queue.add(root)
+        roots.forEach { queue.add(it) }
 
         while (queue.isNotEmpty() && elements.size < MAX_ELEMENTS) {
             val node = queue.removeFirst()
+            if (!node.isVisibleToUser) {
+                continue
+            }
             val label = labelOf(node)
             if (label.isNotEmpty()) {
                 val bounds = Rect()
                 node.getBoundsInScreen(bounds)
                 if (isVisible(bounds, width, height)) {
+                    val kind = kindOf(node)
+                    val dedupKey = "$kind:$label"
                     val center = bounds.centerX() to bounds.centerY()
-                    val duplicate = seen.any { (text, point) ->
-                        text == label &&
+                    val duplicate = seen.any { (key, point) ->
+                        key == dedupKey &&
                             abs(point.first - center.first) < DUPLICATE_RADIUS &&
                             abs(point.second - center.second) < DUPLICATE_RADIUS
                     }
                     if (!duplicate) {
-                        seen.add(label to center)
+                        seen.add(dedupKey to center)
+                        val checkState = resolveCheckState(node)
                         elements.add(
                             ScreenElement(
                                 index = elements.size + 1,
                                 label = label,
-                                kind = kindOf(node),
+                                kind = kind,
                                 bounds = Rect(bounds),
                                 className = node.className?.toString().orEmpty(),
                                 resourceId = node.viewIdResourceName.orEmpty(),
+                                clickable = isEffectivelyClickable(node),
+                                editable = node.isEditable,
+                                checkable = checkState.first,
+                                checked = checkState.second,
+                                focused = node.isFocused || node.isAccessibilityFocused,
+                                scrollable = node.isScrollable,
                                 node = node,
                             )
                         )
@@ -109,6 +134,12 @@ object ScreenElements {
                     put("kind", element.kind)
                     put("class", element.className)
                     put("id", element.resourceId)
+                    put("clickable", element.clickable)
+                    put("editable", element.editable)
+                    put("checkable", element.checkable)
+                    put("checked", element.checked)
+                    put("focused", element.focused)
+                    put("scrollable", element.scrollable)
                     put("bounds", JSONArray().apply {
                         put(element.bounds.left)
                         put(element.bounds.top)
@@ -123,7 +154,7 @@ object ScreenElements {
 
     /**
      * The "Visible UI Elements" block, formatted like ARTEMIS: one line per
-     * element with 0..1000 normalized bounds.
+     * element with 0..1000 normalized bounds and interactive state tags.
      */
     fun format(elements: List<ScreenElement>, width: Int, height: Int): String {
         if (elements.isEmpty()) return "(no accessible elements found)"
@@ -137,7 +168,21 @@ object ScreenElements {
                 append(element.kind)
                 append(": '")
                 append(element.label.replace('\n', ' '))
-                append("' | Bounds: ")
+                append("'")
+                if (element.checkable) {
+                    append(if (element.checked) " [ON]" else " [OFF]")
+                } else if (element.checked) {
+                    append(" [ON]")
+                }
+                if (element.editable) {
+                    append(" [editable]")
+                } else if (element.clickable) {
+                    append(" [clickable]")
+                }
+                if (element.focused) {
+                    append(" [focused]")
+                }
+                append(" | Bounds: ")
                 append(normalized)
                 if (element.resourceId.isNotEmpty()) {
                     append(" | id: ")
@@ -161,13 +206,94 @@ object ScreenElements {
         node.text?.toString()?.trim()?.takeIf { it.isNotEmpty() }?.let { return it }
         node.contentDescription?.toString()?.trim()?.takeIf { it.isNotEmpty() }
             ?.let { return it }
-        node.tooltipText?.toString()?.trim()?.takeIf { it.isNotEmpty() }?.let { return it }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            node.hintText?.toString()?.trim()?.takeIf { it.isNotEmpty() }?.let { return it }
+        }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+            node.tooltipText?.toString()?.trim()?.takeIf { it.isNotEmpty() }?.let { return it }
+        }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            node.stateDescription?.toString()?.trim()?.takeIf { it.isNotEmpty() }?.let { return it }
+        }
+        // Editable inputs, checkable switches, or unlabelled icon buttons with a view ID.
+        if (node.isEditable) {
+            val shortId = node.viewIdResourceName?.substringAfterLast('/')?.replace('_', ' ')?.trim()
+            return if (!shortId.isNullOrEmpty()) shortId else "Text input"
+        }
+        if (node.isCheckable) {
+            siblingOrParentText(node)?.let { return it }
+            val shortId = node.viewIdResourceName?.substringAfterLast('/')?.replace('_', ' ')?.trim()
+            return if (!shortId.isNullOrEmpty()) shortId else "Toggle"
+        }
+        if (node.isClickable && node.childCount == 0) {
+            val shortId = node.viewIdResourceName?.substringAfterLast('/')?.trim()
+            if (!shortId.isNullOrEmpty()) {
+                return shortId.replace('_', ' ')
+            }
+        }
         return ""
     }
 
+    private fun siblingOrParentText(node: AccessibilityNodeInfo): String? {
+        val parent = node.parent ?: return null
+        for (i in 0 until parent.childCount) {
+            val sibling = parent.getChild(i) ?: continue
+            if (sibling == node) continue
+            val text = sibling.text?.toString()?.trim()
+                ?: sibling.contentDescription?.toString()?.trim()
+            if (!text.isNullOrEmpty()) return text
+        }
+        return null
+    }
+
+    private fun resolveCheckState(node: AccessibilityNodeInfo): Pair<Boolean, Boolean> {
+        if (node.isCheckable) return true to node.isChecked
+        val parent = node.parent ?: return false to node.isChecked
+        for (i in 0 until parent.childCount) {
+            val sibling = parent.getChild(i) ?: continue
+            if (sibling.isCheckable) {
+                return true to sibling.isChecked
+            }
+        }
+        return false to node.isChecked
+    }
+
+    private fun isEffectivelyClickable(node: AccessibilityNodeInfo): Boolean {
+        var cursor: AccessibilityNodeInfo? = node
+        var depth = 0
+        while (cursor != null && depth < 4) {
+            if (cursor.isClickable || cursor.isCheckable || cursor.isEditable) return true
+            cursor = cursor.parent
+            depth++
+        }
+        return false
+    }
+
     private fun kindOf(node: AccessibilityNodeInfo): String {
-        if (node.text?.toString()?.isNotBlank() == true) return "Text"
-        if (node.tooltipText?.toString()?.isNotBlank() == true) return "Hint"
+        val cls = node.className?.toString().orEmpty()
+        if (node.isEditable || cls.contains("EditText", ignoreCase = true)) return "Input"
+        if (
+            node.isCheckable ||
+            cls.contains("Switch", ignoreCase = true) ||
+            cls.contains("CheckBox", ignoreCase = true) ||
+            cls.contains("ToggleButton", ignoreCase = true) ||
+            cls.contains("RadioButton", ignoreCase = true)
+        ) {
+            return "Switch"
+        }
+        if (cls.contains("Button", ignoreCase = true)) return "Button"
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O &&
+            node.text.isNullOrBlank() &&
+            !node.hintText.isNullOrBlank()
+        ) {
+            return "Input"
+        }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P &&
+            node.text.isNullOrBlank() &&
+            !node.tooltipText.isNullOrBlank()
+        ) {
+            return "Hint"
+        }
         return "Text"
     }
 

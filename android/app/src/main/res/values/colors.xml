@@ -1,5 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <color name="oyi_background">#FF12101C</color>
-    <color name="oyi_primary">#FF7C5CFF</color>
+    <color name="oyi_background">#FF070708</color>
+    <color name="oyi_surface">#FF161618</color>
+    <color name="oyi_primary">#FFF08A65</color>
+    <color name="oyi_accent">#FFF7EDD0</color>
 </resources>
