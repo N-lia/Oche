@@ -363,6 +363,177 @@ async def _run_reconnect_job() -> None:
     await gateway.aclose()
 
 
+async def _run_ask_user_approved() -> None:
+    """ask_user pauses the command; approving on the phone resumes it."""
+
+    socket = FakeSocket()
+    vision = FakeVision(
+        [
+            Action(type="ask_user", message="Turn on Wi-Fi?"),
+            Action(type="done", message="Wi-Fi is on."),
+        ]
+    )
+    gateway = DeviceGateway(vision=vision)  # type: ignore[arg-type]
+    connection = DeviceConnection(websocket=socket, hello=_hello())  # type: ignore[arg-type]
+    await gateway.register(connection)
+    session = await gateway.send_command(text="turn on wifi", max_steps=4)
+
+    await gateway.on_observation(connection, _observation(session.command_id, 0))
+    frame = socket.sent[-1]
+    assert frame["type"] == "approval_request", frame
+    assert frame["command_id"] == session.command_id, frame
+    assert frame["message"] == "Turn on Wi-Fi?", frame
+    assert session.status == "running", session.status
+    assert connection.active_command_id == session.command_id
+
+    await gateway.handle_message(
+        connection,
+        json.dumps(
+            {"type": "approval_response", "command_id": session.command_id, "approved": True}
+        ),
+    )
+    assert session.command_id not in gateway._approvals
+    # The phone follows the approval with the next screen.
+    await gateway.on_observation(connection, _observation(session.command_id, 1))
+    done = socket.sent[-1]
+    assert done["type"] == "command_done", done
+    assert done["message"] == "Wi-Fi is on.", done
+    assert "needs_approval" not in done, done
+    assert session.status == "completed"
+    assert vision.calls == 2
+    await gateway.aclose()
+
+
+async def _run_ask_user_denied() -> None:
+    """Denying ends the command with the question, without a second command_done."""
+
+    socket = FakeSocket()
+    vision = FakeVision([Action(type="ask_user", message="Send the message to Ada?")])
+    gateway = DeviceGateway(vision=vision)  # type: ignore[arg-type]
+    connection = DeviceConnection(websocket=socket, hello=_hello())  # type: ignore[arg-type]
+    await gateway.register(connection)
+    session = await gateway.send_command(text="message Ada", max_steps=4)
+
+    await gateway.on_observation(connection, _observation(session.command_id, 0))
+    assert socket.sent[-1]["type"] == "approval_request"
+    sent_before = len(socket.sent)
+
+    await gateway.handle_message(
+        connection,
+        json.dumps(
+            {"type": "approval_response", "command_id": session.command_id, "approved": False}
+        ),
+    )
+    # The phone sends its own command_done after a denial.
+    await gateway.handle_message(
+        connection,
+        json.dumps(
+            {
+                "type": "command_done",
+                "command_id": session.command_id,
+                "status": "cancelled",
+                "message": "User denied the action from the Dynamic Island.",
+            }
+        ),
+    )
+    assert len(socket.sent) == sent_before, socket.sent[sent_before:]
+    assert session.status == "completed", session.status
+    assert "declined" in session.message, session.message
+    assert "Send the message to Ada?" in session.message, session.message
+    assert connection.active_command_id == ""
+    await gateway.aclose()
+
+
+async def _run_ask_user_timeout() -> None:
+    """No answer: the command ends and the phone drops the prompt."""
+
+    socket = FakeSocket()
+    vision = FakeVision([Action(type="ask_user", message="Which account?")])
+    gateway = DeviceGateway(vision=vision, approval_timeout_s=0.05)  # type: ignore[arg-type]
+    connection = DeviceConnection(websocket=socket, hello=_hello())  # type: ignore[arg-type]
+    await gateway.register(connection)
+    session = await gateway.send_command(text="log in", max_steps=4)
+
+    await gateway.on_observation(connection, _observation(session.command_id, 0))
+    assert socket.sent[-1]["type"] == "approval_request"
+    await asyncio.wait_for(session.done.wait(), 1)
+    done = socket.sent[-1]
+    assert done["type"] == "command_done", done
+    assert "Which account?" in done["message"], done
+    assert session.status == "completed"
+    assert connection.active_command_id == ""
+    assert not gateway._approvals
+    await gateway.aclose()
+
+
+async def _run_job_ask_user_approved() -> None:
+    """A sandbox job keeps running across an approval."""
+
+    socket = FakeSocket()
+    gateway = DeviceGateway(vision=FakeVision([]))  # type: ignore[arg-type]
+    connection = DeviceConnection(websocket=socket, hello=_hello())  # type: ignore[arg-type]
+    await gateway.register(connection)
+    job = await gateway.create_job(device_id="dev_test", instruction="pay the bill", max_steps=4)
+
+    drive = asyncio.create_task(gateway.on_observation(connection, _observation(job.id, 0)))
+    screen = await gateway.next_observation(job.id, timeout=1)
+    assert screen.get("step") == 0, screen
+    verdict = await gateway.submit_action(
+        job.id, json.dumps({"action_type": "ask_user", "text": "Confirm the payment?"})
+    )
+    assert verdict["finished"] is False, verdict
+    assert verdict["awaiting_approval"] is True, verdict
+    await asyncio.wait_for(drive, 1)
+    assert socket.sent[-1]["type"] == "approval_request", socket.sent[-1]
+    assert not job.done
+    assert job.history[-1]["action"]["type"] == "ask_user", job.history
+
+    await gateway.handle_message(
+        connection,
+        json.dumps({"type": "approval_response", "command_id": job.id, "approved": True}),
+    )
+    drive = asyncio.create_task(gateway.on_observation(connection, _observation(job.id, 1)))
+    screen = await gateway.next_observation(job.id, timeout=1)
+    assert screen.get("step") == 1, screen
+    verdict = await gateway.submit_action(
+        job.id, json.dumps({"action_type": "done", "text": "Paid."})
+    )
+    assert verdict["finished"] is True, verdict
+    await asyncio.wait_for(drive, 1)
+    result = await gateway.job_result(job.id, timeout=1)
+    assert result.message == "Paid.", result
+    await gateway.aclose()
+
+
+async def _run_job_ask_user_denied() -> None:
+    socket = FakeSocket()
+    gateway = DeviceGateway(vision=FakeVision([]))  # type: ignore[arg-type]
+    connection = DeviceConnection(websocket=socket, hello=_hello())  # type: ignore[arg-type]
+    await gateway.register(connection)
+    job = await gateway.create_job(device_id="dev_test", instruction="pay the bill", max_steps=4)
+
+    drive = asyncio.create_task(gateway.on_observation(connection, _observation(job.id, 0)))
+    await gateway.next_observation(job.id, timeout=1)
+    await gateway.submit_action(
+        job.id, json.dumps({"action_type": "ask_user", "text": "Confirm the payment?"})
+    )
+    await asyncio.wait_for(drive, 1)
+    sent_before = len(socket.sent)
+    await gateway.handle_message(
+        connection,
+        json.dumps({"type": "approval_response", "command_id": job.id, "approved": False}),
+    )
+    result = await gateway.job_result(job.id, timeout=1)
+    assert result.status == "completed", result
+    assert "Confirm the payment?" in result.message, result
+    assert len(socket.sent) == sent_before, socket.sent[sent_before:]
+    assert connection.active_command_id == ""
+    # The planner's long poll ends instead of waiting two minutes.
+    screen = await gateway.next_observation(job.id, timeout=1)
+    assert screen["finished"] is True, screen
+    await gateway.aclose()
+
+
 if __name__ == "__main__":
     asyncio.run(_run())
     asyncio.run(_run_offline())
@@ -373,4 +544,9 @@ if __name__ == "__main__":
     asyncio.run(_run_busy_job())
     asyncio.run(_run_job_exclusivity())
     asyncio.run(_run_reconnect_job())
+    asyncio.run(_run_ask_user_approved())
+    asyncio.run(_run_ask_user_denied())
+    asyncio.run(_run_ask_user_timeout())
+    asyncio.run(_run_job_ask_user_approved())
+    asyncio.run(_run_job_ask_user_denied())
     print("device_gateway tests passed")

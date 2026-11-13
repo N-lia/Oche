@@ -411,19 +411,16 @@ class DeviceClient(
         needsApproval: Boolean = false,
     ) {
         activeCommand = null
-        val lowerMsg = message.lowercase()
-        val isApprovalPrompt = needsApproval ||
-            status == "ask_user" ||
-            status == "approval_required" ||
-            lowerMsg.contains("approve") ||
-            lowerMsg.contains("confirm") ||
-            lowerMsg.contains("permission") ||
-            message.trim().endsWith("?")
+        // Approvals arrive as an explicit approval_request while the command is
+        // still open. A finished command can no longer be resumed, so its
+        // message is never shown as an approval prompt, whatever it says.
+        // needs_approval is kept only for older gateways and is shown as a
+        // question the user answers in chat.
         when {
-            isApprovalPrompt -> runtime.showApprovalRequired(
+            needsApproval -> runtime.showCompleted(
+                title = "OYI needs your answer",
+                message = message,
                 commandId = commandId,
-                title = "Approval Required",
-                prompt = message,
             )
             status == "completed" || status == "done" -> runtime.showCompleted(
                 title = "Task Completed",

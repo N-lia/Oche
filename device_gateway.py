@@ -19,6 +19,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -37,6 +38,11 @@ from device_protocol import (
 from vision_agent import VisionAgent, build_messages
 
 LOGGER = logging.getLogger("oyi.device")
+
+# How long the phone's approval prompt waits for the user before the command
+# ends and the planner's question goes back to the agent.  Kept under the
+# planner's two-minute observation long-poll.
+APPROVAL_TIMEOUT_S = float(os.getenv("OYI_PHONE_APPROVAL_TIMEOUT_S", "90"))
 
 
 class SocketLike(Protocol):
@@ -129,6 +135,16 @@ class CommandSession:
 
 
 @dataclass
+class PendingApproval:
+    """The planner asked the user something; the phone is showing the prompt."""
+
+    command_id: str
+    device_id: str
+    question: str
+    timer: asyncio.Task | None = None
+
+
+@dataclass
 class DeviceJob:
     """One phone command driven from outside the process (a Nebius Sandbox).
 
@@ -152,8 +168,15 @@ class DeviceJob:
 
 
 class DeviceGateway:
-    def __init__(self, vision: VisionAgent | None = None) -> None:
+    def __init__(
+        self,
+        vision: VisionAgent | None = None,
+        *,
+        approval_timeout_s: float = APPROVAL_TIMEOUT_S,
+    ) -> None:
         self._vision = vision
+        self._approval_timeout_s = approval_timeout_s
+        self._approvals: dict[str, PendingApproval] = {}
         self._devices: dict[str, DeviceConnection] = {}
         self._commands: dict[str, CommandSession] = {}
         self._jobs: dict[str, DeviceJob] = {}
@@ -320,19 +343,25 @@ class DeviceGateway:
             await job.actions.put({"error": str(error)})
             return {"finished": False, "error": str(error)}
 
-        if action.type in {"done", "ask_user"}:
-            message = action.message or (
-                "Done." if action.type == "done" else "I need more information to continue."
-            )
+        if action.type == "ask_user":
+            question = action.message or "I need more information to continue."
+            # The phone handler is waiting on job.actions for this step; tell
+            # it the step ends in a question, not a UI action.
+            await job.actions.put({"approval": question})
+            connection = self._devices.get(job.device_id)
+            if connection is None or not await self._request_approval(
+                connection, job.id, question
+            ):
+                await self.finish_job(job.id, status="completed", message=question)
+                return {"finished": True, "status": job.status, "message": job.message}
+            return {"finished": False, "awaiting_approval": True, "message": question}
+
+        if action.type == "done":
+            message = action.message or "Done."
             # Finish here rather than waiting for the planner's final POST:
             # the phone is still waiting for an action or command_done, and a
             # dead planner must not leave it permanently busy.
-            await self.finish_job(
-                job.id,
-                status="completed",
-                message=message,
-                needs_approval=(action.type == "ask_user"),
-            )
+            await self.finish_job(job.id, status="completed", message=message)
             return {"finished": True, "status": job.status, "message": job.message}
 
         job.step += 1
@@ -345,13 +374,14 @@ class DeviceGateway:
         *,
         status: str,
         message: str,
-        needs_approval: bool = False,
+        notify_phone: bool = True,
     ) -> dict[str, Any]:
         job = self._jobs.get(job_id)
         if job is None:
             raise DeviceGatewayError(f"Unknown job {job_id}")
         if job.done:
             return {"ok": True}
+        self._clear_approval(job_id)
         job.status = status
         job.message = message
         job.done = True
@@ -380,16 +410,17 @@ class DeviceGateway:
         connection = self._devices.get(job.device_id)
         if connection is not None and connection.active_command_id == job.id:
             connection.active_command_id = ""
+            if not notify_phone:
+                return {"ok": True}
             try:
-                done_payload: dict[str, Any] = {
-                    "type": "command_done",
-                    "command_id": job.id,
-                    "status": job.status,
-                    "message": job.message,
-                }
-                if needs_approval:
-                    done_payload["needs_approval"] = True
-                await connection.send(done_payload)
+                await connection.send(
+                    {
+                        "type": "command_done",
+                        "command_id": job.id,
+                        "status": job.status,
+                        "message": job.message,
+                    }
+                )
             except Exception:  # noqa: BLE001 - phone may have disconnected
                 LOGGER.debug(
                     "Could not deliver command_done for job %s", job.id, exc_info=True
@@ -598,6 +629,7 @@ class DeviceGateway:
             command_id = str(payload.get("command_id", ""))
             command = self._commands.get(command_id)
             if command is not None:
+                self._clear_approval(command_id)
                 command.finish(
                     "completed",
                     message=str(payload.get("message", "Phone stopped the command.")),
@@ -624,12 +656,7 @@ class DeviceGateway:
             if waiter is not None and not waiter.done():
                 waiter.set_result(payload)
         elif message_type == "approval_response":
-            LOGGER.info(
-                "Device approval_response id=%s command=%s approved=%s",
-                connection.hello.device_id,
-                payload.get("command_id"),
-                payload.get("approved"),
-            )
+            await self._on_approval_response(connection, payload)
         elif message_type == "ping":
             await connection.send({"type": "pong", "time": time.time()})
         elif message_type == "event":
@@ -646,6 +673,12 @@ class DeviceGateway:
             )
 
     async def on_observation(self, connection: DeviceConnection, observation: Observation) -> None:
+        # A screen after an approval prompt means the user approved, even if
+        # the approval_response frame itself was lost.
+        pending = self._approvals.get(observation.command_id)
+        if pending is not None and pending.device_id == connection.hello.device_id:
+            self._clear_approval(observation.command_id)
+
         # A job (sandbox planner) takes over the decision loop for this device.
         job = self._job_for_device(connection.hello.device_id)
         if job is not None and not job.done:
@@ -764,17 +797,27 @@ class DeviceGateway:
             )
             return
 
-        if action.type in {"done", "ask_user"}:
-            message = action.message.strip() or (
-                "Done." if action.type == "done" else "I need more information to continue."
+        if action.type == "ask_user":
+            question = action.message.strip() or "I need more information to continue."
+            # The phone resumes with the next step after the user approves, so
+            # nothing from this step may be resent as a duplicate.
+            command.last_action = None
+            command.history.append(
+                {
+                    "step": observation.step,
+                    "action": {"type": "ask_user", "text": question},
+                    "ok": observation.last_action_ok,
+                    "error": observation.error,
+                    "result": observation.action_result,
+                }
             )
-            await self._finish_command(
-                command,
-                connection,
-                "completed",
-                message=message,
-                needs_approval=(action.type == "ask_user"),
-            )
+            if not await self._request_approval(connection, command.command_id, question):
+                await self._finish_command(command, connection, "completed", message=question)
+            return
+
+        if action.type == "done":
+            message = action.message.strip() or "Done."
+            await self._finish_command(command, connection, "completed", message=message)
             return
 
         command.last_action = action
@@ -850,6 +893,21 @@ class DeviceGateway:
         # finish_job pushes a sentinel into this queue to wake a handler that
         # is still waiting after the phone disconnected or the job ended.
         if job.done or "finished" in item:
+            return
+
+        if "approval" in item:
+            # The planner asked the user; the phone shows the prompt and sends
+            # the next observation only after the user approves.
+            job.history.append(
+                {
+                    "step": observation.step,
+                    "action": {"type": "ask_user", "text": item["approval"]},
+                    "ok": observation.last_action_ok,
+                    "error": observation.error,
+                    "result": observation.action_result,
+                    "screen_sig": screen_sig,
+                }
+            )
             return
 
         if "error" in item:
@@ -935,23 +993,140 @@ class DeviceGateway:
         *,
         message: str = "",
         error: str = "",
-        needs_approval: bool = False,
+        notify_phone: bool = True,
     ) -> None:
+        self._clear_approval(command.command_id)
         command.finish(status, message=message, error=error)
-        connection.active_command_id = ""
+        if connection.active_command_id == command.command_id:
+            connection.active_command_id = ""
+        if not notify_phone:
+            return
         try:
-            done_payload: dict[str, Any] = {
-                "type": "command_done",
-                "command_id": command.command_id,
-                "status": command.status,
-                "message": command.message,
-                "error": command.error,
-            }
-            if needs_approval:
-                done_payload["needs_approval"] = True
-            await connection.send(done_payload)
+            await connection.send(
+                {
+                    "type": "command_done",
+                    "command_id": command.command_id,
+                    "status": command.status,
+                    "message": command.message,
+                    "error": command.error,
+                }
+            )
         except Exception:  # noqa: BLE001 - phone may have disconnected
             LOGGER.debug("Could not deliver command_done", exc_info=True)
+
+    # ------------------------------------------------------------------
+    # Approvals (the planner's ask_user, answered on the phone)
+    # ------------------------------------------------------------------
+
+    async def _request_approval(
+        self,
+        connection: DeviceConnection,
+        command_id: str,
+        question: str,
+    ) -> bool:
+        """Show the planner's question on the phone and wait for the user.
+
+        The command stays open.  Approve: the phone sends the next observation
+        and the planner continues.  Deny or no answer: the command ends with
+        the question, so the agent can ask the user in chat instead.
+        Returns False when the phone could not be asked.
+        """
+        self._clear_approval(command_id)
+        try:
+            await connection.send(
+                {
+                    "type": "approval_request",
+                    "command_id": command_id,
+                    "title": "Approval Required",
+                    "message": question,
+                }
+            )
+        except Exception:  # noqa: BLE001 - phone may have disconnected
+            LOGGER.debug("Could not deliver approval_request", exc_info=True)
+            return False
+        pending = PendingApproval(
+            command_id=command_id,
+            device_id=connection.hello.device_id,
+            question=question,
+        )
+        pending.timer = asyncio.create_task(self._expire_approval(pending))
+        self._approvals[command_id] = pending
+        LOGGER.info("command=%s waiting for approval on the phone", command_id)
+        return True
+
+    def _clear_approval(self, command_id: str) -> PendingApproval | None:
+        pending = self._approvals.pop(command_id, None)
+        if pending is not None and pending.timer is not None:
+            current = asyncio.current_task()
+            if pending.timer is not current:
+                pending.timer.cancel()
+        return pending
+
+    async def _expire_approval(self, pending: PendingApproval) -> None:
+        await asyncio.sleep(self._approval_timeout_s)
+        if self._approvals.get(pending.command_id) is not pending:
+            return
+        LOGGER.info("command=%s approval timed out", pending.command_id)
+        await self._end_after_approval(
+            pending,
+            message=f"No answer on the phone. The phone agent asked: {pending.question}",
+            notify_phone=True,
+        )
+
+    async def _on_approval_response(
+        self, connection: DeviceConnection, payload: dict[str, Any]
+    ) -> None:
+        command_id = str(payload.get("command_id") or "")
+        if not command_id:
+            command_id = connection.active_command_id
+        pending = self._approvals.get(command_id)
+        approved = payload.get("approved") is True
+        LOGGER.info(
+            "Device approval_response id=%s command=%s approved=%s pending=%s",
+            connection.hello.device_id,
+            command_id,
+            approved,
+            pending is not None,
+        )
+        if pending is None or pending.device_id != connection.hello.device_id:
+            return
+        if approved:
+            # The phone follows up with the next observation; the planner sees
+            # the approval in PREVIOUS RESULT and carries on.
+            self._clear_approval(command_id)
+            return
+        # The phone already ended the command on its side and sends its own
+        # command_done; do not send a second one.
+        await self._end_after_approval(
+            pending,
+            message=f"The user declined on the phone. The phone agent asked: {pending.question}",
+            notify_phone=False,
+        )
+
+    async def _end_after_approval(
+        self,
+        pending: PendingApproval,
+        *,
+        message: str,
+        notify_phone: bool,
+    ) -> None:
+        self._clear_approval(pending.command_id)
+        job = self._jobs.get(pending.command_id)
+        if job is not None:
+            await self.finish_job(
+                job.id, status="completed", message=message, notify_phone=notify_phone
+            )
+            return
+        command = self._commands.get(pending.command_id)
+        connection = self._devices.get(pending.device_id)
+        if command is None or command.status != "running":
+            return
+        if connection is None:
+            command.finish("completed", message=message)
+            return
+        await self._finish_command(
+            command, connection, "completed", message=message, notify_phone=notify_phone
+        )
 
     async def aclose(self) -> None:
         for command in list(self._commands.values()):
