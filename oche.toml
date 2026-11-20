@@ -1,0 +1,42 @@
+# Oche: everything is a plugin. Plugins load top to bottom; prefix a name with "~" to disable it.
+# Run in a terminal:   python -m oche
+# Use from the bot:    OCHE_ENGINE=core python TG.py
+
+[plugins.openai]                       # the `model` service
+base_url = "https://api.tokenfactory.nebius.com/v1/"
+api_key_env = "NEBIUS_API_KEY"
+model = "nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B"
+# Thinking stays off on latency-bound tiers; the serious tier keeps it.
+no_thinking = [
+  "nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B",
+  "nvidia/nemotron-3-super-120b-a12b",
+  "nvidia/Nemotron-3_5-Lightning",
+]
+
+[plugins.agent]                        # the agent loop -> `agent` service
+max_steps = 12
+prompt = "You are OYI, Sir Mario's personal AI assistant. Reply directly in chat by default. Treat tool output as private working context: synthesize a direct answer, include only relevant facts, and say when something could not be verified."
+
+[plugins.privacy]                      # scrub PII before the model sees it, restore after
+
+[plugins.clock]                        # live date/time on every turn
+
+[plugins.router]                       # pick a model tier per turn
+routine = "nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B"
+standard = "nvidia/nemotron-3-super-120b-a12b"
+serious = "nvidia/Nemotron-3-Ultra-550b-a55b"
+search = "nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B"
+classifier = "nvidia/Nemotron-3_5-Lightning"
+
+[plugins.workspace]                    # ls / read / write / edit in WORKSPACE_DIR
+
+[plugins.memory]                       # Mem0 long-term memory
+
+[plugins.tavily]                       # web search
+
+[plugins.subagent]                     # background work
+model = "nvidia/nemotron-3-super-120b-a12b"
+
+[plugins.voice]                        # voice notes
+
+[plugins.telegram]                     # Telegram HTML rules + notification delivery

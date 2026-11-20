@@ -26,7 +26,6 @@ from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from agent_service import agent_service
 from asr_client import atranscribe, health as asr_health
 from backchannel import (
     CATEGORIES,
@@ -167,7 +166,7 @@ async def api_chat(req: ChatRequest):
     if not req.prompt.strip():
         return {"response": ""}
     try:
-        reply = await asyncio.to_thread(agent_service.chat, req.prompt, req.thread_id)
+        reply = "".join([chunk async for chunk in astream_chat_agent(req.prompt, thread_id=req.thread_id)])
         return {"response": reply}
     except Exception as exc:
         LOGGER.exception("Agent chat failed")

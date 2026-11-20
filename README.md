@@ -1,3 +1,13 @@
+## Oche core (plugin engine)
+
+`oche/` is a small plugin core: everything (the model provider, the agent loop, routing, privacy,
+memory, web search, files, subagents, voice, Telegram rules) is a plugin listed in `oche.toml`.
+See [`oche/README.md`](oche/README.md).
+
+- `python -m oche` chats in the terminal.
+- `OCHE_ENGINE=core` makes the bot and WebApp use it. Without it, they keep the DeepAgents
+  engine in `agent_service.py`.
+
 ## Run with OpenShell
 
 This project runs the Telegram bot in an OpenShell sandbox. The bot keeps its
