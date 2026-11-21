@@ -166,6 +166,9 @@ class VoiceSession:
 
         self._agent_streamer = agent_streamer
         self._event_streamer = event_streamer or self._default_event_streamer
+        # Voice turns use the structured stream too (so clients can show which
+        # tool the agent is using), unless a caller injected a token streamer.
+        self._voice_uses_events = agent_streamer is _default_agent_streamer
         self._tts = tts
         self._stream_factory = stream_factory
         self._clip_exists = clip_exists
@@ -354,6 +357,17 @@ class VoiceSession:
         from main import astream_chat_agent
 
         async for chunk in astream_chat_agent(text, thread_id=self.thread_id):
+            if chunk:
+                yield {"type": "token", "text": chunk}
+        yield {"type": "done"}
+
+    async def _voice_events(self, text: str, turn_id: int) -> AsyncIterator[dict]:
+        """Agent events for a voice turn: structured when possible, else tokens."""
+        if self._voice_uses_events:
+            async for event in self._event_streamer(text, turn_id):
+                yield event
+            return
+        async for chunk in self._agent_streamer(text, turn_id):
             if chunk:
                 yield {"type": "token", "text": chunk}
         yield {"type": "done"}
@@ -688,7 +702,14 @@ class VoiceSession:
         try:
             chunks: list[str] = []
             plain = MarkdownPlainStream(keep_urls=False) if self.plain_text else None
-            async for chunk in self._agent_streamer(user_text, turn_id):
+            async for event in self._voice_events(user_text, turn_id):
+                etype = event.get("type")
+                if etype == "tool":
+                    await self.send({**event, "turn_id": turn_id})
+                    continue
+                if etype == "done":
+                    break
+                chunk = event.get("text") if etype == "token" else ""
                 if chunk:
                     chunks.append(chunk)
                     visible = plain.feed(chunk) if plain is not None else chunk

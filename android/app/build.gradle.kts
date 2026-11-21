@@ -2,6 +2,8 @@ plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
     id("org.jetbrains.kotlin.plugin.compose")
+    // Screenshot tests of the Dynamic Island on the JVM (no emulator).
+    id("app.cash.paparazzi")
 }
 
 // Optional default gateway baked into the debug build, e.g.

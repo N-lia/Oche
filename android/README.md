@@ -2,9 +2,10 @@
 
 Native Android companion app for OYI. It does four things:
 
-1. **Overlay bubble** — a small always-on bubble that shows which app is open,
-   how long you have been in it, the state of the OYI link, and today's total
-   for that app.
+1. **Dynamic Island** — a black pill docked at the top of the screen, over
+   every app. It shows what OYI is doing right now (see below). When nothing is
+   going on, it rests as a small capsule that shows which app is open, how long
+   you have been in it and the state of the OYI link. A tap adds today's total.
 2. **Usage tracking** — foreground app + duration history stored locally in
    SQLite (`UsageStatsManager`).
 3. **Phone control** — an outbound WebSocket to the OYI gateway. The server
@@ -45,7 +46,7 @@ and the agent API for adding blocks remotely.
 ```
 Android app (this folder)
   OyiService (foreground service)
-    ├── OverlayController      bubble + panel
+    ├── OverlayController      the Dynamic Island overlay (Compose)
     ├── UsageTracker           UsageStatsManager -> UsageRepository (SQLite)
     └── DeviceClient           outbound WSS -> /ws/device
   OyiAccessibilityService
@@ -89,13 +90,13 @@ adb install -r app/build/outputs/apk/debug/app-debug.apk
 
 1. Open **OYI** on the phone.
 2. Grant the three permissions the app asks for:
-   - **Display over other apps** (overlay bubble)
+   - **Display over other apps** (the Dynamic Island)
    - **Usage access** (foreground app + duration)
    - **Accessibility -> OYI device control** (phone control; required for the
      vision loop because it is what reads the screen and taps)
 3. Paste the gateway URL (for example `https://150-230-152-243.sslip.io`) and
    the pairing token, then **Save**.
-4. Turn on **OYI overlay bubble**.
+4. Turn on the **Dynamic Island** switch.
 
 The pairing token is the server's `OYI_DEVICE_TOKEN` (the app sends it as
 `Authorization: Bearer <token>`).
@@ -238,17 +239,70 @@ Telegram, the voice webapp, or the live chat.
 - v1 is a sideloaded personal app: it uses `PACKAGE_USAGE_STATS` and an
   accessibility service, which are not Play-store friendly.
 
+## The Dynamic Island
+
+The island lives in `ui/island/`. It is one Compose component used in two
+places: the overlay (`service/OverlayController.kt`, a small
+`TYPE_APPLICATION_OVERLAY` window hosting a `ComposeView`) and the header
+inside the app. The overlay steps aside while OYI's own screen is in front, so
+only one island ever shows.
+
+It changes between three sizes: a resting capsule, a compact pill (an icon, one
+line and a live accessory) and an expanded card (badge, title, detail and
+buttons). The size changes on a spring.
+
+| State | Looks like |
+| --- | --- |
+| Listening | mic + live sound bars from the microphone level |
+| Thinking | spinner + a running timer |
+| Tool | the tool's name ("Searching the web"), a spinner, then a check |
+| Replying / Speaking | pen + timer / a breathing orb + sound bars |
+| Done | a check + how long the turn took; a tap lists the tools it used |
+| Phone control | the current action + "Step N"; tap for **Stop** |
+| Approval | a card with **Deny** / **Approve** |
+| Focus nudge, errors | a card that folds away on its own |
+
+Each state also pops up one of Caleb's expression stickers
+(`res/drawable-nodpi/oyi_face_*.png`, cut from his sheet). They are picked in
+`faceFor()`:
+
+| State | Expression |
+| --- | --- |
+| Idle | asleep (Zzz) |
+| Listening, idle card | neutral smirk |
+| Thinking, errors | hand on chin with "?" |
+| Tool | at the laptop with `</>` |
+| Replying, speaking | "…" speech bubble |
+| Phone control | shades with screens |
+| Approval | lightbulb, finger up |
+| Turn done / phone task done | laughing / shades |
+
+Gestures: tap opens or closes the detail, a swipe up folds it away, and a long
+press opens OYI.
+
+`DeviceRuntime` holds two layers: the task layer (phone control, approvals,
+focus, alerts) and the agent layer (a chat or live-voice turn). The task layer
+wins while it shows something. Chat and live voice feed the agent layer from
+the server's `status` and `tool` events: `/ws/voice` for voice, and
+`{"tool": ...}` lines on `/api/chat/stream` for text.
+
+`islandSpec()` (pure Kotlin) decides what each state looks like and is unit
+tested. The Paparazzi screenshot tests in
+`app/src/test/.../snapshots` render every state on the JVM. CI uploads the
+images as the `island-snapshots` artifact.
+
 ## Known Android behaviour
 
-- **The bubble is hidden while the Settings app is open.** Android's Settings
+- **The island is hidden while the Settings app is open.** Android's Settings
   app sets `HIDE_NON_SYSTEM_OVERLAY_WINDOWS` on its window, which makes the
   system hide every third-party `TYPE_APPLICATION_OVERLAY` window. This is
   deliberate platform behaviour (it keeps permission dialogs readable), not
-  an OYI bug — the bubble is drawn over every other app, including the
+  an OYI bug — the island is drawn over every other app, including the
   launcher.
-- The overlay uses `FLAG_NOT_FOCUSABLE | FLAG_LAYOUT_IN_SCREEN`. It must not
-  use `FLAG_LAYOUT_NO_LIMITS`: that leaves the display bounds unbounded and
-  the bubble's surface is then never shown.
+- The overlay uses `FLAG_NOT_FOCUSABLE | FLAG_NOT_TOUCH_MODAL |
+  FLAG_LAYOUT_IN_SCREEN` and wraps the island tightly, so touches next to it
+  reach the app below. It must not use `FLAG_LAYOUT_NO_LIMITS`: that leaves
+  the display bounds unbounded and the island's surface is then never shown.
 
 
 ### The planner speaks the phone-use dialect

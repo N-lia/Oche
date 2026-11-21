@@ -100,6 +100,14 @@ jobs:
           done
           exit 1
 
+      - name: Upload island snapshots
+        if: always()
+        uses: actions/upload-artifact@v5
+        with:
+          name: island-snapshots
+          path: android/app/build/reports/paparazzi/**/*.png
+          if-no-files-found: warn
+
       - name: Upload APK
         uses: actions/upload-artifact@v5
         with:

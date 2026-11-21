@@ -503,12 +503,25 @@ async def api_chat(req: ChatRequest):
         raise HTTPException(status_code=500, detail=str(exc))
 
 
+async def _chat_events(prompt: str, thread_id: str):
+    """Structured agent events (tool/token) when the service has them."""
+    streamer = getattr(agent_service, "astream_events", None)
+    if streamer is not None:
+        async for event in streamer(prompt, thread_id):
+            yield event
+        return
+    async for chunk in agent_service.astream(prompt, thread_id):
+        yield {"type": "token", "text": chunk}
+
+
 @app.post("/api/chat/stream")
 async def api_chat_stream(req: ChatRequest):
     """Stream the agent's reply as newline-delimited JSON.
 
     Each line is {"text": "..."} so a client can render tokens as they
-    arrive.  Async tools (phone control) work on this path too.
+    arrive.  Async tools (phone control) work on this path too.  Activity
+    lines ({"tool": {"name", "label", "state"}}) tell a client which tool the
+    agent is using; older clients only read "text" and skip them.
     """
     if not req.prompt.strip():
         return StreamingResponse(iter(()), media_type="application/x-ndjson")
@@ -516,7 +529,14 @@ async def api_chat_stream(req: ChatRequest):
     async def generate():
         plain = MarkdownPlainStream(keep_urls=True) if req.plain else None
         try:
-            async for chunk in agent_service.astream(req.prompt, req.thread_id):
+            async for event in _chat_events(req.prompt, req.thread_id):
+                if event.get("type") == "tool":
+                    tool = {k: event.get(k, "") for k in ("name", "label", "state")}
+                    yield json.dumps({"tool": tool}) + "\n"
+                    continue
+                chunk = event.get("text") if event.get("type") == "token" else ""
+                if not chunk:
+                    continue
                 text = plain.feed(chunk) if plain is not None else chunk
                 if text:
                     yield json.dumps({"text": text}) + "\n"

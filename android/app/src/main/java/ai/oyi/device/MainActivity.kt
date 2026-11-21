@@ -42,6 +42,18 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    // While OYI is in front, its own header shows the island and the
+    // overlay steps aside.
+    override fun onStart() {
+        super.onStart()
+        (application as OyiApplication).container.runtime.setAppVisible(true)
+    }
+
+    override fun onStop() {
+        (application as OyiApplication).container.runtime.setAppVisible(false)
+        super.onStop()
+    }
+
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         applyDebugOverrides(intent)

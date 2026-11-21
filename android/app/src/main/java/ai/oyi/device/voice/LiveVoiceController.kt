@@ -64,6 +64,9 @@ class LiveVoiceController(
         data class BotAudio(val text: String, val audio: ByteArray) : Event
         data class Filler(val phrase: String, val url: String) : Event
         data class Status(val text: String) : Event
+
+        /** The agent started ([done] = false) or finished a tool. */
+        data class Tool(val label: String, val done: Boolean) : Event
         data class Failed(val message: String) : Event
         data object TurnEnded : Event
     }
@@ -73,6 +76,10 @@ class LiveVoiceController(
 
     private val _active = MutableStateFlow(false)
     val active: StateFlow<Boolean> = _active.asStateFlow()
+
+    /** Microphone level, 0..1, for the Dynamic Island's sound bars. */
+    private val _level = MutableStateFlow(0f)
+    val level: StateFlow<Float> = _level.asStateFlow()
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     private val http = OkHttpClient.Builder()
@@ -241,6 +248,7 @@ class LiveVoiceController(
                 sumSq += (y * y).toDouble()
             }
             val rms = if (shorts.isNotEmpty()) sqrt(sumSq / shorts.size).toFloat() else 0f
+            _level.value = min(1f, rms * LEVEL_GAIN)
             val now = SystemClock.elapsedRealtime()
             if (now < cooldownUntil) continue
 
@@ -377,6 +385,7 @@ class LiveVoiceController(
         runCatching { recorder?.stop() }
         runCatching { recorder?.release() }
         recorder = null
+        _level.value = 0f
         sendControl(JSONObject().apply { put("type", "stop") })
         socket?.close(1000, "stopped")
         socket = null
@@ -500,6 +509,20 @@ class LiveVoiceController(
                     unduckPlayback()
                     emit(Event.Status(if (agentSpeaking) "Speaking…" else "Listening…"))
                 }
+                "status" -> {
+                    if (payload.optString("phase") == "thinking") {
+                        emit(Event.Status(payload.optString("text").ifBlank { "Thinking…" }))
+                    }
+                }
+                "tool" -> {
+                    val name = payload.optString("name")
+                    emit(
+                        Event.Tool(
+                            label = payload.optString("label").ifBlank { name.ifBlank { "Working…" } },
+                            done = payload.optString("state") == "done",
+                        )
+                    )
+                }
                 "turn_hold" -> emit(Event.Status("Go on…"))
                 "turn_resumed" -> emit(Event.Status("Hearing you…"))
                 "bot_text_delta" -> emit(Event.BotText(payload.optString("text")))
@@ -561,5 +584,6 @@ class LiveVoiceController(
         private const val COOLDOWN_MS = 160L
         private const val ECHO_GUARD_MS = 320L
         private const val CANCEL_AFTER_MS = 680L
+        private const val LEVEL_GAIN = 9f
     }
 }

@@ -52,6 +52,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val _state = MutableStateFlow(UiState())
     val state: StateFlow<UiState> = _state.asStateFlow()
 
+    /** Live microphone level for the island's sound bars. */
+    val voiceLevel: StateFlow<Float> = container.runtime.voiceLevel
+
     init {
         viewModelScope.launch {
             container.settings.settings.collect { settings ->
@@ -152,8 +155,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun previewIslandState(kind: IslandKind) {
+        // Clear both layers so the preview shows exactly the chosen state.
+        container.runtime.dismissIsland()
+        container.runtime.agentRest(listening = false)
         when (kind) {
-            IslandKind.IDLE -> container.runtime.dismissIsland()
+            IslandKind.IDLE -> Unit
             IslandKind.WORKING -> container.runtime.showWorking(
                 commandId = "preview_cmd",
                 title = "Step 2 · Controlling Settings",
@@ -173,6 +179,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 title = "Task Blocked",
                 message = "Screen was locked before the action could complete.",
             )
+            IslandKind.LISTENING -> container.runtime.agentListening("Hearing you…")
+            IslandKind.THINKING -> container.runtime.agentThinking()
+            IslandKind.TOOL -> container.runtime.agentTool("Searching the web", done = false)
+            IslandKind.REPLYING -> container.runtime.agentReplying()
+            IslandKind.SPEAKING -> container.runtime.agentSpeaking()
         }
     }
 
