@@ -2,3 +2,4 @@
 # The WebApp is a separate process from the Telegram bot.
 fastapi
 uvicorn[standard]
+httpx

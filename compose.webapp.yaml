@@ -9,21 +9,40 @@
 #   - the parakeet-asr service reachable on the host at :50051
 
 services:
+  qdrant:
+    # One shared memory store for the Telegram bot and the WebApp. Local
+    # Qdrant files take an exclusive lock, so two processes cannot share a
+    # directory; server mode fixes that.
+    image: qdrant/qdrant:latest
+    restart: unless-stopped
+    expose:
+      - "6333"
+    volumes:
+      - qdrant-data:/qdrant/storage
+
   webapp:
     build:
       context: .
       dockerfile: Dockerfile.webapp
     image: oyi-webapp:local
     restart: unless-stopped
+    depends_on:
+      - qdrant
     env_file:
       - .env
     environment:
       WEBAPP_PORT: "8000"
+      QDRANT_URL: "http://qdrant:6333"
       # Reach the on-host gRPC ASR (same as the Telegram bot).
       PARAKEET_GRPC_TARGET: "host.docker.internal:50051"
       # Warn (with stack) when something blocks the asyncio loop: the stall
       # hunter for "agent reply never arrives while the loop looks alive".
       WEBAPP_DEBUG_LOOP: "1"
+      # Phone control (see .env.example):
+      #   NEBIUS_API_KEY          - vision planner credentials
+      #   OYI_DEVICE_TOKEN        - shared secret for the phone WebSocket
+      #   OYI_DEVICE_API_TOKEN    - shared secret for /api/device/* callers
+      #   OYI_DEVICE_VISION_MODEL - defaults to nvidia/Nemotron-3.5-Super-VL
     extra_hosts:
       - "host.docker.internal:host-gateway"
     volumes:
@@ -51,6 +70,7 @@ services:
 
 volumes:
   oyi-webapp-memory:
+  qdrant-data:
   backchannel-cache:
   caddy-data:
   caddy-config:

@@ -14,6 +14,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
+import time
 from collections.abc import Awaitable, Callable
 from functools import partial
 from typing import Literal
@@ -49,7 +51,14 @@ _RESEARCH_CHARS = 30_000
 
 _ExtractDepth = Literal["basic", "advanced"]
 
-_CLIENT: AsyncTavilyClient | None = None
+# A Tavily client wraps an httpx.AsyncClient, which is bound to the event loop
+# that created it.  A single global client breaks the second asyncio.run()
+# ("Event loop is closed"), so keep one per running loop.
+_CLIENTS: dict[int, tuple[asyncio.AbstractEventLoop, AsyncTavilyClient]] = {}
+_REQUEST_TIMEOUT = float(os.getenv("TAVILY_TIMEOUT_SECONDS", "20"))
+_SEARCH_CACHE_TTL = float(os.getenv("TAVILY_CACHE_TTL_SECONDS", "300"))
+_SEARCH_CACHE_MAX = 128
+_SEARCH_CACHE: dict[tuple, tuple[float, str]] = {}
 
 
 class TavilySearchInput(BaseModel):
@@ -256,11 +265,41 @@ class _ToolFailure(Exception):
 
 
 def _get_client() -> AsyncTavilyClient:
-    """Return the shared async Tavily client."""
-    global _CLIENT
-    if _CLIENT is None:
-        _CLIENT = AsyncTavilyClient()
-    return _CLIENT
+    """Return the async Tavily client bound to the current event loop."""
+    loop = asyncio.get_running_loop()
+    entry = _CLIENTS.get(id(loop))
+    if entry is not None and entry[0] is loop:
+        return entry[1]
+
+    # Drop clients whose loops are finished; keeping them would exhaust memory
+    # in long-lived servers that create short-lived loops for sync callers.
+    for key, (stored_loop, _client) in list(_CLIENTS.items()):
+        if stored_loop is not loop and stored_loop.is_closed():
+            _CLIENTS.pop(key, None)
+
+    client = AsyncTavilyClient()
+    _CLIENTS[id(loop)] = (loop, client)
+    return client
+
+
+def _cache_get(key: tuple) -> str | None:
+    entry = _SEARCH_CACHE.get(key)
+    if entry is None:
+        return None
+    created, value = entry
+    if time.monotonic() - created > _SEARCH_CACHE_TTL:
+        _SEARCH_CACHE.pop(key, None)
+        return None
+    return value
+
+
+def _cache_put(key: tuple, value: str) -> None:
+    if value.startswith("Tavily error:"):
+        return
+    if len(_SEARCH_CACHE) >= _SEARCH_CACHE_MAX:
+        oldest = min(_SEARCH_CACHE, key=lambda item: _SEARCH_CACHE[item][0])
+        _SEARCH_CACHE.pop(oldest, None)
+    _SEARCH_CACHE[key] = (time.monotonic(), value)
 
 
 def _recovery_hint(exc: Exception) -> str | None:
@@ -329,8 +368,90 @@ def _clip(text: str, limit: int) -> str:
     return f"{text[:limit]}\n[truncated {len(text) - limit} characters]"
 
 
-def _format_search(data: dict) -> str:
-    return parse_tavily_search(data, query=str(data.get("query") or ""))
+def _format_search(data: dict, query: str = "") -> str:
+    return parse_tavily_search(data, query=query or str(data.get("query") or ""))
+
+
+def _search_cache_key(
+    query: str,
+    search_depth: str,
+    topic: str,
+    max_results: int,
+    time_range: str | None,
+    start_date: str | None,
+    end_date: str | None,
+    include_domains: list[str] | None,
+    exclude_domains: list[str] | None,
+) -> tuple:
+    return (
+        query,
+        search_depth,
+        topic,
+        max_results,
+        time_range,
+        start_date,
+        end_date,
+        tuple(include_domains or ()),
+        tuple(exclude_domains or ()),
+    )
+
+
+async def search_web(
+    query: str,
+    *,
+    search_depth: Literal["advanced", "basic", "fast", "ultra-fast"] = "basic",
+    topic: Literal["general", "news", "finance"] = "general",
+    max_results: int = 5,
+    time_range: Literal["day", "week", "month", "year"] | None = None,
+    start_date: str | None = None,
+    end_date: str | None = None,
+    include_domains: list[str] | None = None,
+    exclude_domains: list[str] | None = None,
+) -> str:
+    """Run one Tavily search and return formatted evidence.
+
+    This is the non-tool entry point used by the deterministic pre-search pass.
+    It shares the client pool and cache with ``tavily_search`` so a model that
+    repeats the same query does not pay for a second request.
+    """
+    if time_range is not None:
+        start_date = end_date = None
+    query, _ = scrub_for_external(query)
+    max_results = max(1, min(max_results, _MAX_RESULTS))
+    key = _search_cache_key(
+        query,
+        search_depth,
+        topic,
+        max_results,
+        time_range,
+        start_date,
+        end_date,
+        include_domains,
+        exclude_domains,
+    )
+    cached = _cache_get(key)
+    if cached is not None:
+        return cached
+
+    client = _get_client()
+    result = await _respond(
+        lambda: client.search(
+            query=query,
+            search_depth=search_depth,
+            topic=topic,
+            max_results=max_results,
+            time_range=time_range,
+            start_date=start_date,
+            end_date=end_date,
+            include_domains=include_domains,
+            exclude_domains=exclude_domains,
+            include_answer=True,
+            timeout=_REQUEST_TIMEOUT,
+        ),
+        partial(_format_search, query=query),
+    )
+    _cache_put(key, result)
+    return result
 
 
 def _format_pages(data: dict, per_page_chars: int) -> str:
@@ -361,7 +482,11 @@ async def _run_research(
             raise _ToolFailure(
                 "Provide `input` (the research question), or `request_id` to resume a previous task."
             )
-        task = await client.research(input=input.strip(), model=model)
+        task = await client.research(
+            input=input.strip(),
+            model=model,
+            timeout=min(60.0, float(timeout_seconds)),
+        )
         request_id = task.get("request_id")
         if not request_id:
             raise _ToolFailure(f"Tavily did not return a request_id for the research task: {task!r}")
@@ -369,7 +494,10 @@ async def _run_research(
     loop = asyncio.get_running_loop()
     deadline = loop.time() + timeout_seconds
     while True:
-        result = await client.get_research(request_id)
+        result = await asyncio.wait_for(
+            client.get_research(request_id),
+            timeout=_REQUEST_TIMEOUT,
+        )
         status = result.get("status")
         if status == "completed":
             return result
@@ -389,7 +517,7 @@ async def _run_research(
 @tool(args_schema=TavilySearchInput)
 async def tavily_search(
     query: str,
-    search_depth: Literal["advanced", "basic", "fast", "ultra-fast"] = "advanced",
+    search_depth: Literal["advanced", "basic", "fast", "ultra-fast"] = "basic",
     topic: Literal["general", "news", "finance"] = "general",
     max_results: int = 5,
     time_range: Literal["day", "week", "month", "year"] | None = None,
@@ -398,24 +526,26 @@ async def tavily_search(
     include_domains: list[str] | None = None,
     exclude_domains: list[str] | None = None,
 ) -> str:
-    """Search the live web and return ranked results with scores and content snippets.
+    """Search the live web and return an answer plus ranked source snippets.
 
     Use this when the user needs current information, source discovery, recent
     news, official documentation, market/company information, or facts that may
     have changed. Use it as the first step when you do not know which URLs are
-    relevant. After search, call tavily_extract on the best source(s) before
-    relying on details, quotes, or nuanced claims in your answer.
+    relevant. Tavily also returns a short synthesized answer; use it to orient
+    the reply, but verify specific claims against the snippets and cite the
+    source URLs.
 
     Do not use this for purely conversational replies, stable facts already in
     context, math/code reasoning that does not need the web, or when the user
     already provided the exact URL to read. This returns snippets and URLs, not
-    full page content.
+    full page content; call `tavily_extract` only when a snippet is too short
+    for the code, table, quote, or detail the answer needs.
 
     Args:
         query: Natural-language search query.
-        search_depth: "advanced" for best relevance (2 credits), "basic" for
-            balanced (1 credit), "fast" for lower latency (1 credit), or
-            "ultra-fast" for the lowest latency with one summary per result.
+        search_depth: "basic" for almost every search (3x faster, same result
+            quality), "advanced" for multi-hop/comparison questions, or
+            "fast"/"ultra-fast" when latency matters more than recall.
         topic: "general" for web results, "news" for articles, "finance" for
             market and company news.
         max_results: How many results to return, 1-20 (default 5).
@@ -426,24 +556,16 @@ async def tavily_search(
         include_domains: Only return results from these domains, e.g. ["nature.com"].
         exclude_domains: Drop results from these domains, e.g. ["reddit.com"].
     """
-    if time_range is not None:
-        # Tavily does not accept relative and absolute date filters together.
-        start_date = end_date = None
-    query, _ = scrub_for_external(query)
-    client = _get_client()
-    return await _respond(
-        lambda: client.search(
-            query=query,
-            search_depth=search_depth,
-            topic=topic,
-            max_results=max(1, min(max_results, _MAX_RESULTS)),
-            time_range=time_range,
-            start_date=start_date,
-            end_date=end_date,
-            include_domains=include_domains,
-            exclude_domains=exclude_domains,
-        ),
-        _format_search,
+    return await search_web(
+        query,
+        search_depth=search_depth,
+        topic=topic,
+        max_results=max_results,
+        time_range=time_range,
+        start_date=start_date,
+        end_date=end_date,
+        include_domains=include_domains,
+        exclude_domains=exclude_domains,
     )
 
 
@@ -481,6 +603,7 @@ async def tavily_extract(
             urls=urls[:_MAX_URLS_PER_CALL],
             extract_depth=extract_depth,
             query=query,
+            timeout=_REQUEST_TIMEOUT,
         ),
         partial(_format_pages, per_page_chars=_EXTRACT_CHARS_PER_URL),
     )
@@ -528,6 +651,7 @@ async def tavily_map(
             limit=max(1, min(limit, _MAX_MAP_LIMIT)),
             select_paths=select_paths,
             exclude_paths=exclude_paths,
+            timeout=_REQUEST_TIMEOUT,
         ),
         _format_map,
     )
@@ -578,6 +702,7 @@ async def tavily_crawl(
             extract_depth=extract_depth,
             select_paths=select_paths,
             exclude_paths=exclude_paths,
+            timeout=_REQUEST_TIMEOUT,
         ),
         partial(_format_pages, per_page_chars=_CRAWL_CHARS_PER_PAGE),
     )

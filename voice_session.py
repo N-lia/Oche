@@ -27,7 +27,7 @@ import numpy as np
 
 from asr_client import AsyncTranscribeStream, ascore_turn
 from backchannel import BackchannelController, clip_path
-from telegram_format import strip_telegram_html
+from telegram_format import MarkdownPlainStream, markdown_to_plain_text
 from turn_policy import classify_turn
 
 LOGGER = logging.getLogger("oyi.voice.session")
@@ -136,6 +136,9 @@ class VoiceSession:
         self.mood = "normal"
         self.thread_id = "webapp"
         self.speak_text_replies = True
+        # Every text surface except Telegram renders ``textContent``/speaks the
+        # reply, so Markdown must be converted to plain text by default.
+        self.plain_text = True
         self.state = SESSION_IDLE
         self.text = ""
         # Monotonic turn counter. Every message carries the id of the turn it
@@ -163,6 +166,9 @@ class VoiceSession:
 
         self._agent_streamer = agent_streamer
         self._event_streamer = event_streamer or self._default_event_streamer
+        # Voice turns use the structured stream too (so clients can show which
+        # tool the agent is using), unless a caller injected a token streamer.
+        self._voice_uses_events = agent_streamer is _default_agent_streamer
         self._tts = tts
         self._stream_factory = stream_factory
         self._clip_exists = clip_exists
@@ -182,6 +188,7 @@ class VoiceSession:
             self.mood = data.get("mood", "normal")
             self.thread_id = str(data.get("thread_id") or self.thread_id)
             self.speak_text_replies = bool(data.get("speak_text_replies", self.speak_text_replies))
+            self.plain_text = bool(data.get("plain_text", self.plain_text))
             await self.send(
                 {
                     "type": "ready",
@@ -206,21 +213,21 @@ class VoiceSession:
             # Client VAD says speech began. It also carries the preroll, so the
             # first syllable is not lost even though audio outside a turn is
             # ignored below.
-            if self.state == SESSION_PAUSED and self.stream is not None:
-                # Smart Turn said "not finished" and the user kept going: this
-                # is the same turn, not a new one. Keep the ASR stream alive.
+            if self.state in (SESSION_PAUSED, SESSION_EVALUATING) and self.stream is not None:
+                # Smart Turn was scoring or holding an unfinished thought and
+                # the user kept going: keep the same turn and ASR stream alive.
                 self._cancel_grace()
                 self.state = SESSION_LISTENING
                 seed = self._decode_preroll(data.get("preroll"))
                 if seed:
                     await self._feed(seed, now)
                 await self.send({"type": "turn_resumed", "turn_id": self.turn_id})
-            elif self.state == SESSION_IDLE and self.stream is None:
-                await self._begin_turn(now, seed_pcm=self._decode_preroll(data.get("preroll")))
-            elif self.state == SESSION_RESPONDING and self._reply_active():
-                # The user started talking while the reply was still being
-                # generated: open a soft-barge turn so the transcript decides.
+            elif self._reply_active():
+                # The user started talking while a reply was being generated or
+                # spoken: open a soft-barge turn so the transcript decides.
                 await self._interrupt(now, data.get("preroll", ""))
+            elif self.state in (SESSION_IDLE, SESSION_FINALIZING):
+                await self._begin_turn(now, seed_pcm=self._decode_preroll(data.get("preroll")))
         elif kind in ("speech_end", "flush"):
             # Client VAD says the user stopped. Smart Turn decides whether to
             # dispatch the turn now or hold it open for a beat.
@@ -233,9 +240,17 @@ class VoiceSession:
                 speak = bool(data.get("speak", self.speak_text_replies))
                 await self._start_text_turn(text, speak)
         elif kind == "barge_in":
-            # User started talking over the bot: drop the pending reply and
+            # User started talking over the bot: duck the pending reply and
             # begin a fresh turn immediately, seeded with the client's preroll.
             await self._interrupt(now, data.get("preroll", ""))
+        elif kind == "barge_cancel":
+            # Client confirmed sustained barge-in speech: cancel any in-flight
+            # reply task immediately while the new listening turn continues.
+            if self.soft_barge or self._reply_active():
+                old_reply_turn = self.reply_turn_id or self.turn_id
+                self.soft_barge = False
+                await self._cancel_response()
+                await self.send({"type": "interrupted", "turn_id": old_reply_turn})
         elif kind == "playback_start":
             # The client reports actual audio playback, so turn-taking does not
             # have to guess whether the agent is speaking.
@@ -266,13 +281,13 @@ class VoiceSession:
         # a turn is pre-speech, noise or speaker echo, and must not open one.
         if self.state == SESSION_LISTENING:
             await self._feed(pcm, time.monotonic())
-        elif self.state == SESSION_PAUSED:
+        elif self.state in (SESSION_PAUSED, SESSION_EVALUATING):
             # A few frames can still be in flight while Smart Turn evaluates.
             # Keep them with the same turn so a resumed thought is contiguous.
             self._remember_audio(pcm)
             if self.stream is not None:
                 self.stream.feed(pcm)
-        # IDLE / EVALUATING / FINALIZING / RESPONDING: ignored until the VAD
+        # IDLE / FINALIZING / RESPONDING: ignored until the VAD
         # opens or resumes a turn.
 
     async def _begin_turn(self, now: float, seed_pcm: bytes = b"") -> None:
@@ -346,6 +361,17 @@ class VoiceSession:
                 yield {"type": "token", "text": chunk}
         yield {"type": "done"}
 
+    async def _voice_events(self, text: str, turn_id: int) -> AsyncIterator[dict]:
+        """Agent events for a voice turn: structured when possible, else tokens."""
+        if self._voice_uses_events:
+            async for event in self._event_streamer(text, turn_id):
+                yield event
+            return
+        async for chunk in self._agent_streamer(text, turn_id):
+            if chunk:
+                yield {"type": "token", "text": chunk}
+        yield {"type": "done"}
+
     async def _start_text_turn(self, text: str, speak: bool) -> None:
         """Typed turn: supersede any pending reply and stream the agent answer."""
         now = time.monotonic()
@@ -363,6 +389,7 @@ class VoiceSession:
         self.response_task = asyncio.create_task(self._respond_text(text, self.turn_id, speak))
 
     async def _respond_text(self, text: str, turn_id: int, speak: bool) -> None:
+        plain = MarkdownPlainStream(keep_urls=False) if self.plain_text else None
         try:
             chunks: list[str] = []
             async for event in self._event_streamer(text, turn_id):
@@ -370,16 +397,27 @@ class VoiceSession:
                     return  # superseded by a newer turn
                 etype = event.get("type")
                 if etype == "token" and event.get("text"):
-                    chunks.append(event["text"])
-                    await self.send(
-                        {"type": "bot_text_delta", "text": event["text"], "turn_id": turn_id}
-                    )
+                    text_chunk = event["text"]
+                    chunks.append(text_chunk)
+                    plain_chunk = plain.feed(text_chunk) if plain is not None else text_chunk
+                    if plain_chunk:
+                        await self.send(
+                            {
+                                "type": "bot_text_delta",
+                                "text": plain_chunk,
+                                "turn_id": turn_id,
+                            }
+                        )
                 elif etype in ("status", "tool"):
                     await self.send({**event, "turn_id": turn_id})
                 elif etype == "done":
                     break
             if turn_id != self.turn_id:
                 return
+            if plain is not None:
+                tail = plain.flush()
+                if tail:
+                    await self.send({"type": "bot_text_delta", "text": tail, "turn_id": turn_id})
             reply = "".join(chunks).strip() or "I could not produce a response."
             self.expecting_answer = reply.rstrip().endswith("?")
             if speak and self.mode != "echo":
@@ -456,6 +494,7 @@ class VoiceSession:
             return
 
         self.state = SESSION_EVALUATING
+        evaluating_turn = self.turn_id
         probability: float | None = None
         min_bytes = 16000 * 2 // 4  # 250 ms is too little to judge
         if self.smart_turn_available and len(self._turn_audio) >= min_bytes:
@@ -464,6 +503,11 @@ class VoiceSession:
                 probability = await self._turn_scorer(pcm, self.sample_rate)
             except Exception:  # noqa: BLE001 - endpointing must never break
                 LOGGER.exception("Smart Turn scoring failed")
+
+        # If speech_start or barge_in arrived while Smart Turn was scoring,
+        # the turn was already resumed or replaced; do not finalize it.
+        if self.state != SESSION_EVALUATING or self.turn_id != evaluating_turn or self.stream is None:
+            return
 
         if probability is None or probability >= self.smart_turn_threshold:
             await self._finalize_turn(now)
@@ -596,7 +640,12 @@ class VoiceSession:
         try:
             await self._run_agent(user_text, turn_id)
             # If the user is already on a new turn, this reply was superseded.
-            if self.state in (SESSION_LISTENING, SESSION_FINALIZING):
+            if turn_id != self.turn_id or self.state in (
+                SESSION_LISTENING,
+                SESSION_EVALUATING,
+                SESSION_PAUSED,
+                SESSION_FINALIZING,
+            ):
                 return
             self.state = SESSION_IDLE
             await self.send({"type": "turn_end", "turn_id": turn_id})
@@ -628,19 +677,17 @@ class VoiceSession:
         reply is left running (the client ducks it) and ``_finish_turn``
         resumes it for a continuer or cancels it for a real turn.
         """
-        if self.state == SESSION_IDLE and not self.response_task and self.stream is None:
+        seed = self._decode_preroll(preroll_b64)
+        if self.state == SESSION_IDLE and not self._reply_active() and self.stream is None and not seed:
             return
 
-        self.soft_barge = bool(
-            (self.response_task and not self.response_task.done()) or self.bot_speaking
-        )
+        self.soft_barge = self._reply_active()
 
         # Tear down the previous ASR stream (a no-op if it already finished).
         await self._stop_listening()
 
         await self.send({"type": "barge_pending", "turn_id": self.turn_id})
 
-        seed = self._decode_preroll(preroll_b64)
         await self._begin_turn(now, seed_pcm=seed)
 
     # ------------------------------------------------------------- reply
@@ -654,10 +701,26 @@ class VoiceSession:
         )
         try:
             chunks: list[str] = []
-            async for chunk in self._agent_streamer(user_text, turn_id):
+            plain = MarkdownPlainStream(keep_urls=False) if self.plain_text else None
+            async for event in self._voice_events(user_text, turn_id):
+                etype = event.get("type")
+                if etype == "tool":
+                    await self.send({**event, "turn_id": turn_id})
+                    continue
+                if etype == "done":
+                    break
+                chunk = event.get("text") if etype == "token" else ""
                 if chunk:
                     chunks.append(chunk)
-                    await self.send({"type": "bot_text_delta", "text": chunk, "turn_id": turn_id})
+                    visible = plain.feed(chunk) if plain is not None else chunk
+                    if visible:
+                        await self.send(
+                            {"type": "bot_text_delta", "text": visible, "turn_id": turn_id}
+                        )
+            if plain is not None:
+                tail = plain.flush()
+                if tail:
+                    await self.send({"type": "bot_text_delta", "text": tail, "turn_id": turn_id})
             reply = "".join(chunks).strip() or "I could not produce a response."
         except asyncio.CancelledError:
             raise
@@ -670,8 +733,8 @@ class VoiceSession:
         await self._speak(reply, turn_id)
 
     async def _speak(self, text: str, turn_id: int) -> None:
-        # Agent replies are Telegram HTML now; tags must never reach TTS.
-        text = strip_telegram_html(text)
+        # Replies are Markdown; never send formatting markers to TTS.
+        text = markdown_to_plain_text(text)
         self.bot_speaking = True
         try:
             audio = await self._tts(text, self.mood)

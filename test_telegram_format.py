@@ -227,6 +227,38 @@ def test_native_markdown_hidden_inside_code_stays_verbatim() -> None:
     assert out.count("<code>") == 1
 
 
+def test_spaced_bold_from_model_is_converted() -> None:
+    # Models sometimes pad emphasis markers: "** Bola Tinubu **".
+    html = tf.markdown_to_telegram_html("The president is ** Bola Tinubu **.")
+    assert html == "The president is <b>Bola Tinubu</b>.", html
+
+
+def test_markdown_table_becomes_readable_bullets() -> None:
+    table = (
+        "| Name | Price | Battery |\n"
+        "|------|-------|---------|\n"
+        "| Pixel 9 | ₦95,000 | 4700mAh |\n"
+        "| Infinix Hot 50 | ₦90,000 | 5000mAh |"
+    )
+    html = tf.markdown_to_telegram_html(table)
+    assert "|" not in html and "---" not in html, html
+    assert "• <b>Name:</b> Pixel 9 — <b>Price:</b> ₦95,000 — <b>Battery:</b> 4700mAh" in html
+    assert "• <b>Name:</b> Infinix Hot 50" in html
+
+
+def test_table_conversion_leaves_prose_pipes_alone() -> None:
+    text = "The command is `cat file | grep x`, not a table."
+    html = tf.markdown_to_telegram_html(text)
+    assert "cat file | grep x" in html
+    assert "•" not in html
+
+
+def test_heading_trailing_hashes_are_removed() -> None:
+    html = tf.markdown_to_telegram_html("## Plan ##\n\nbody")
+    assert "<b>Plan</b>" in html
+    assert "##" not in html
+
+
 def main() -> int:
     tests = [value for name, value in sorted(globals().items()) if name.startswith("test_") and callable(value)]
     for test in tests:

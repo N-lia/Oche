@@ -554,6 +554,88 @@ async def test_smart_turn_failure_falls_back_to_silence() -> None:
     await session.aclose()
 
 
+async def test_barge_in_during_client_playback_after_generation_finished() -> None:
+    """When TTS finishes and bot_audio is playing on the client, barge-in must still work."""
+    streams: list[FakeStream] = []
+    calls: list[str] = []
+
+    async def agent(text, turn_id):
+        calls.append(text)
+        yield f"reply to {text}"
+
+    async def tts(text, mood):
+        return b"MP3"
+
+    session, queue = _make_session(streams, agent, tts)
+    await session.on_control({"type": "start", "sample_rate": 16000})
+    await _user_turn(session, streams, "tell me a story")
+    await asyncio.sleep(0.05)
+
+    # _respond has finished, so state is IDLE and response_task is None, but
+    # the client is still playing bot_audio (bot_speaking=True).
+    assert session.state == SESSION_IDLE
+    assert session.response_task is None
+    assert session.bot_speaking is True
+    _drain(queue)
+
+    # User barges in while the client is playing the MP3.
+    preroll_bytes = b"\x01\x02" * 8
+    await session.on_control({"type": "barge_in", "preroll": _b64(preroll_bytes)})
+    assert session.state == SESSION_LISTENING, "barge-in during playback must open a listening turn"
+    assert session.turn_id == 2
+    assert session.soft_barge is True
+
+    await session.on_audio(SPEECH)
+    await session.on_control({"type": "speech_end"})
+    await streams[-1].events.put({"type": "eou", "text": "stop and open settings", "model_eou": True})
+    await asyncio.sleep(0.05)
+
+    messages = _drain(queue)
+    assert "interrupted" in _types(messages), "real barge-in turn must emit interrupted"
+    assert calls == ["tell me a story", "stop and open settings"]
+    await session.aclose()
+
+
+async def test_speech_start_during_smart_turn_evaluation_resumes_turn() -> None:
+    """Speaking again while Smart Turn is scoring must resume the same turn."""
+    streams: list[FakeStream] = []
+    scorer_started = asyncio.Event()
+    release_scorer = asyncio.Event()
+
+    async def agent(text, turn_id):
+        yield "ok"
+
+    async def tts(text, mood):
+        return b""
+
+    async def slow_scorer(pcm, sample_rate):
+        scorer_started.set()
+        await release_scorer.wait()
+        return 0.95  # Would have finalized if the user hadn't resumed speaking!
+
+    session, queue = _make_session(
+        streams, agent, tts, smart_turn_available=True, turn_scorer=slow_scorer
+    )
+    await session.on_control({"type": "start"})
+    await session.on_control({"type": "speech_start"})
+    await session.on_audio(SPEECH)
+
+    end_task = asyncio.create_task(session.on_control({"type": "speech_end"}))
+    await scorer_started.wait()
+    assert session.state == "evaluating"
+
+    # User starts speaking again before Smart Turn finishes scoring.
+    await session.on_control({"type": "speech_start", "preroll": _b64(AUDIO)})
+    assert session.state == SESSION_LISTENING
+    assert session.turn_id == 1
+
+    release_scorer.set()
+    await end_task
+    assert session.state == SESSION_LISTENING, "late scorer result must not finalize a resumed turn"
+    assert not streams[0].finished
+    await session.aclose()
+
+
 def main() -> int:
     tests = [value for name, value in sorted(globals().items()) if name.startswith("test_")]
     failures = 0

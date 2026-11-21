@@ -12,8 +12,8 @@
       tg.ready();
       tg.expand();
       // The mascot lives on white: keep the Telegram chrome white too.
-      if (tg.setHeaderColor) tg.setHeaderColor('#ffffff');
-      if (tg.setBackgroundColor) tg.setBackgroundColor('#ffffff');
+      if (tg.setHeaderColor) tg.setHeaderColor('#080808');
+      if (tg.setBackgroundColor) tg.setBackgroundColor('#080808');
     } catch (_) { /* older SDK */ }
   }
 
@@ -26,6 +26,14 @@
   const feed = $('feed');
   const connDot = $('connDot');
   const stageText = $('stageText');
+  const dynamicIsland = $('dynamicIsland');
+  const islandBadge = $('islandBadge');
+  const islandBody = $('islandBody');
+  const islandTitle = $('islandTitle');
+  const islandSubtitle = $('islandSubtitle');
+  const islandActions = $('islandActions');
+  const btnIslandApprove = $('btnIslandApprove');
+  const btnIslandDeny = $('btnIslandDeny');
   const micButton = $('micButton');
   const chatForm = $('chatForm');
   const chatInput = $('chatInput');
@@ -126,10 +134,29 @@
     return node;
   }
 
+  let islandTimer = null;
+  function setIsland(kind, badge, title, subtitle) {
+    if (!dynamicIsland) return;
+    clearTimeout(islandTimer);
+    dynamicIsland.dataset.kind = kind || 'idle';
+    if (islandBadge) islandBadge.textContent = badge || (S.voiceActive ? 'LIVE' : 'READY');
+    const hasBody = Boolean(title || subtitle || kind === 'approval');
+    if (islandBody) islandBody.hidden = !hasBody;
+    if (islandTitle) islandTitle.textContent = title || '';
+    if (islandSubtitle) islandSubtitle.textContent = subtitle || '';
+    if (islandActions) islandActions.hidden = kind !== 'approval';
+    if (kind === 'completed' || kind === 'error') {
+      islandTimer = setTimeout(() => setIsland('idle', S.voiceActive ? 'LIVE' : 'READY'), 6000);
+    }
+  }
+
   function setConn(state, text) {
     S.wsState = state;
     connDot.className = `stage__dot is-${state}`;
     if (text) stageText.textContent = text;
+    if (islandBadge && (!dynamicIsland || dynamicIsland.dataset.kind === 'idle')) {
+      islandBadge.textContent = state === 'online' ? (S.voiceActive ? 'LIVE' : 'ONLINE') : state.toUpperCase();
+    }
   }
 
   function setCaption(text) {
@@ -140,6 +167,9 @@
   // or speaking (with the mouth moving while the agent talks).
   function setVoiceState(state, text) {
     if (text) setCaption(text);
+    if (islandBadge && (!dynamicIsland || dynamicIsland.dataset.kind === 'idle')) {
+      islandBadge.textContent = state === 'speaking' ? 'SPEAKING' : (S.voiceActive ? 'LIVE' : 'READY');
+    }
     if (!mascot) return;
     if (state === 'speaking') mascot.setState('speaking');
     else if (state === 'thinking') mascot.setState('thinking');
@@ -364,6 +394,11 @@
         if (msg.turn_id && msg.turn_id <= S.interruptedTurnId) break;
         addTool(msg.label || msg.name, msg.state);
         showActivity(msg.label || 'Working…');
+        if (msg.state === 'start') {
+          setIsland('working', 'WORKING', msg.label || msg.name, 'Executing tool action…');
+        } else if (msg.state === 'done') {
+          setIsland('completed', 'DONE', 'Task Completed', `${msg.label || msg.name} finished.`);
+        }
         break;
 
       case 'backchannel':
@@ -402,12 +437,20 @@
         hideActivity();
         toast(msg.message || 'Something went wrong.');
         addMessage('error', msg.message || 'Something went wrong.');
+        setIsland('error', 'ALERT', 'Task Error', msg.message || 'Something went wrong.');
         S.busy = false;
         finalizeBotBubble();
         break;
 
       case 'turn_end':
         if (msg.turn_id && msg.turn_id <= S.interruptedTurnId) break;
+        if (S.botBubble) {
+          const replyText = S.botBubble.textContent || '';
+          const lower = replyText.toLowerCase();
+          if (replyText.trim().endsWith('?') && (lower.includes('approve') || lower.includes('confirm') || lower.includes('should i') || lower.includes('shall i') || lower.includes('allow'))) {
+            setIsland('approval', 'APPROVAL', 'Approval Required', replyText.trim());
+          }
+        }
         finalizeBotBubble();
         finalizeUserBubble();
         hideActivity();
@@ -426,22 +469,25 @@
   let playbackContext = null;
   let levelMeter = null;
   let levelTimer = 0;
+  let botAudioUrl = null;
+  let hpPrevIn = 0;
+  let hpPrevOut = 0;
 
   function levelMeterFor(audio) {
     try {
       const Ctx = window.AudioContext || window.webkitAudioContext;
       if (!Ctx) return null;
-      if (!playbackContext || playbackContext.state === 'closed') {
-        playbackContext = new Ctx();
+      const ctx = (audioContext && audioContext.state !== 'closed')
+        ? audioContext
+        : (playbackContext && playbackContext.state !== 'closed' ? playbackContext : (playbackContext = new Ctx()));
+      if (ctx.state === 'suspended') {
+        ctx.resume().catch(() => {});
       }
-      if (playbackContext.state === 'suspended') {
-        playbackContext.resume().catch(() => {});
-      }
-      const source = playbackContext.createMediaElementSource(audio);
-      const analyser = playbackContext.createAnalyser();
+      const source = ctx.createMediaElementSource(audio);
+      const analyser = ctx.createAnalyser();
       analyser.fftSize = 512;
       source.connect(analyser);
-      analyser.connect(playbackContext.destination);
+      analyser.connect(ctx.destination);
       return analyser;
     } catch (_) {
       // Some browsers refuse to route a media element through Web Audio; the
@@ -475,6 +521,13 @@
     if (mascot) mascot.setLevel(0);
   }
 
+  function releaseBotAudioUrl() {
+    if (botAudioUrl) {
+      try { URL.revokeObjectURL(botAudioUrl); } catch (_) {}
+      botAudioUrl = null;
+    }
+  }
+
   function playOverlay(url, volume) {
     if (!url || !S.speakReplies) return;
     const audio = new Audio(url);
@@ -493,6 +546,7 @@
   function playBotAudio(base64) {
     stopOverlays();
     if (botAudio) { botAudio.pause(); botAudio = null; }
+    releaseBotAudioUrl();
     if (!S.speakReplies || !base64) {
       wsSend({ type: 'playback_end' });
       return;
@@ -501,9 +555,18 @@
     if (mascot) mascot.setSpeaking(true);
     ensureTurnTaker().agentOutputStart();
     wsSend({ type: 'playback_start' });
-    botAudio = new Audio(`data:audio/mpeg;base64,${base64}`);
+    let src = `data:audio/mpeg;base64,${base64}`;
+    try {
+      const bin = atob(base64);
+      const bytes = new Uint8Array(bin.length);
+      for (let i = 0; i < bin.length; i += 1) bytes[i] = bin.charCodeAt(i);
+      botAudioUrl = URL.createObjectURL(new Blob([bytes], { type: 'audio/mpeg' }));
+      src = botAudioUrl;
+    } catch (_) {}
+    botAudio = new Audio(src);
     botAudio.onended = () => {
       botAudio = null;
+      releaseBotAudioUrl();
       stopLevelMeter();
       if (mascot) mascot.setSpeaking(false);
       ensureTurnTaker().agentOutputEnd();
@@ -511,6 +574,7 @@
       if (S.voiceActive) setVoiceState('listening', 'Listening');
     };
     botAudio.play().then(() => startLevelMeter(botAudio)).catch(() => {
+      releaseBotAudioUrl();
       stopLevelMeter();
       if (mascot) mascot.setSpeaking(false);
       ensureTurnTaker().agentOutputEnd();
@@ -544,13 +608,24 @@
     return out;
   }
 
-  function rms(int16) {
+  // High-pass filtered RMS (~120 Hz cutoff at 16 kHz) so DC offset, mic
+  // handling thumps and low-frequency fan rumble do not trigger the VAD.
+  function voiceBandRms(int16) {
+    if (!int16.length) return 0;
+    const alpha = 0.955;
     let sum = 0;
+    let prevIn = hpPrevIn;
+    let prevOut = hpPrevOut;
     for (let i = 0; i < int16.length; i += 1) {
-      const v = int16[i] / 32768;
-      sum += v * v;
+      const x = int16[i] / 32768;
+      const y = alpha * (prevOut + x - prevIn);
+      prevIn = x;
+      prevOut = y;
+      sum += y * y;
     }
-    return int16.length ? Math.sqrt(sum / int16.length) : 0;
+    hpPrevIn = prevIn;
+    hpPrevOut = prevOut;
+    return Math.sqrt(sum / int16.length);
   }
 
   function base64FromInt16(int16) {
@@ -578,6 +653,11 @@
     switch (event.type) {
       case 'user_speech.started':
         if (S.voiceActive) {
+          stopOverlays();
+          if (S.busy) {
+            hideActivity();
+            finalizeUserBubble();
+          }
           setVoiceState('listening', 'Hearing you…');
           wsSend({ type: 'speech_start', preroll: prerollBase64() });
         }
@@ -585,6 +665,13 @@
 
       case 'user_speech.ended':
         if (S.voiceActive) {
+          if (event.aborted) {
+            if (botAudio) {
+              unduckBotAudio();
+              setVoiceState('speaking', 'Speaking…');
+            }
+            break;
+          }
           showActivity('Transcribing…');
           setVoiceState('thinking', 'Thinking…');
           wsSend({ type: 'speech_end' });
@@ -601,6 +688,7 @@
 
       case 'output.cancel_requested':
         stopBotAudio();
+        wsSend({ type: 'barge_cancel' });
         break;
 
       case 'input.duplex_hold':
@@ -617,7 +705,7 @@
       turnTaker = window.createTurnTaker({
         config: {
           halfDuplex: { preventWhileAgentSpeaking: S.duplex === 'half' },
-          silenceMs: S.smartTurn ? 500 : 750,
+          silenceMs: S.smartTurn ? 500 : 700,
         },
         onEvent: onTurnEvent,
       });
@@ -634,7 +722,7 @@
   function onMicFrame(float32) {
     if (!S.voiceActive || !S.socket || S.socket.readyState !== WebSocket.OPEN) return;
     const pcm = toInt16(resampleTo16k(float32, audioContext.sampleRate));
-    const level = rms(pcm);
+    const level = voiceBandRms(pcm);
     pushPreroll(pcm);
 
     // Turn timing is decided locally from the level — not from transcripts and
@@ -660,6 +748,7 @@
       // turn-taking on the server side.
       wsSend({ type: 'playback_end' });
     }
+    releaseBotAudioUrl();
     stopLevelMeter();
     if (mascot) mascot.setSpeaking(false);
     if (turnTaker) turnTaker.agentOutputEnd();
@@ -771,6 +860,24 @@
   }
 
   // --------------------------------------------------------------- controls
+  if (btnIslandApprove) {
+    btnIslandApprove.addEventListener('click', async () => {
+      setIsland('working', 'APPROVED', 'Approved', 'Continuing task…');
+      await ensureSocket();
+      addMessage('user', 'Yes, approved.');
+      wsSend({ type: 'text', text: 'Yes, approved. Please proceed.', speak: S.speakReplies });
+    });
+  }
+
+  if (btnIslandDeny) {
+    btnIslandDeny.addEventListener('click', async () => {
+      setIsland('idle', S.voiceActive ? 'LIVE' : 'READY');
+      await ensureSocket();
+      addMessage('user', 'No, cancel that.');
+      wsSend({ type: 'text', text: 'No, cancel that action.', speak: S.speakReplies });
+    });
+  }
+
   micButton.addEventListener('click', async () => {
     if (S.voiceActive) await stopVoice();
     else await startVoice();

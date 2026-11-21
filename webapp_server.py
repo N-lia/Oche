@@ -15,19 +15,30 @@ import base64
 import json
 import logging
 import os
+import secrets
 import time
 from pathlib import Path
 
 import uvicorn
 from dotenv import load_dotenv
-from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, Header, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, Response
+from fastapi.responses import FileResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from agent_service import agent_service
 from asr_client import atranscribe, health as asr_health
+from device_gateway import (
+    DeviceConnection,
+    DeviceGatewayError,
+    DeviceOfflineError,
+    device_gateway,
+)
+from device_protocol import CommandRequest, DeviceHello
+from sandbox_planner import run_sandbox_planner, sandbox_planner_enabled
+from memory import warm_memory
+from telegram_format import MarkdownPlainStream, markdown_to_plain_text
 from backchannel import (
     CATEGORIES,
     all_phrases,
@@ -46,6 +57,16 @@ logging.basicConfig(level=logging.INFO)
 LOGGER = logging.getLogger("oyi.webapp")
 
 app = FastAPI(title="OYI Live Chat", version="2.0.0")
+
+
+@app.on_event("startup")
+async def _warm_memory_backend() -> None:
+    """Load Mem0 before the first turn so memory is present on turn one."""
+    try:
+        task = asyncio.create_task(asyncio.to_thread(warm_memory))
+    except RuntimeError:
+        return
+    app.state.memory_warmup = task
 
 
 @app.on_event("startup")
@@ -75,6 +96,11 @@ async def _maybe_enable_loop_debug() -> None:
     faulthandler.register(signal.SIGUSR1, all_threads=True, chain=False)
     LOGGER.warning("faulthandler crash+SIGUSR1 dumps registered")
 
+
+@app.on_event("shutdown")
+async def _shutdown_device_gateway() -> None:
+    await device_gateway.aclose()
+
 # CORS middleware for WebApp access
 app.add_middleware(
     CORSMiddleware,
@@ -86,6 +112,39 @@ app.add_middleware(
 
 STATIC_DIR = Path(__file__).parent / "webapp"
 app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
+
+
+def _device_api_token() -> str:
+    return (
+        os.getenv("OYI_DEVICE_API_TOKEN", "").strip()
+        or os.getenv("OYI_DEVICE_TOKEN", "").strip()
+    )
+
+
+def _require_device_api(authorization: str | None) -> None:
+    expected = _device_api_token()
+    if not expected:
+        raise HTTPException(
+            status_code=503,
+            detail="Device API is not configured. Set OYI_DEVICE_API_TOKEN (or OYI_DEVICE_TOKEN).",
+        )
+    supplied = (authorization or "").strip()
+    if not supplied.startswith("Bearer ") or not secrets.compare_digest(
+        supplied.removeprefix("Bearer ").strip(), expected
+    ):
+        raise HTTPException(status_code=401, detail="Invalid device API token.")
+
+
+def _device_ws_token_ok(websocket: WebSocket) -> bool:
+    expected = os.getenv("OYI_DEVICE_TOKEN", "").strip() or _device_api_token()
+    if not expected:
+        return False
+    supplied = websocket.headers.get("authorization", "").strip()
+    if supplied.startswith("Bearer "):
+        supplied = supplied.removeprefix("Bearer ").strip()
+    else:
+        supplied = websocket.query_params.get("token", "").strip()
+    return bool(supplied) and secrets.compare_digest(supplied, expected)
 
 
 def decode_audio_base64(audio_base64: str) -> bytes:
@@ -102,6 +161,9 @@ class TranscribeRequest(BaseModel):
 class ChatRequest(BaseModel):
     prompt: str
     thread_id: str = "webapp"
+    # The agent writes channel-neutral Markdown. Native clients (the Android
+    # app) ask for plain text; browser clients may render Markdown themselves.
+    plain: bool = False
 
 
 class VoiceTurnRequest(BaseModel):
@@ -161,17 +223,333 @@ async def api_health():
     }
 
 
+@app.get("/api/device/health")
+async def api_device_health(authorization: str | None = Header(default=None)):
+    """Health/capability probe for the Android app and channel adapters."""
+    _require_device_api(authorization)
+    devices = device_gateway.list_devices()
+    return {
+        "ok": True,
+        "model": os.getenv("OYI_DEVICE_VISION_MODEL", "nvidia/Nemotron-3.5-Super-VL"),
+        "vision_configured": bool(os.getenv("NEBIUS_API_KEY", "").strip()),
+        "devices_connected": sum(1 for device in devices if device.connected),
+        "devices": [device.model_dump() for device in devices],
+    }
+
+
+@app.get("/api/device/devices")
+async def api_device_devices(authorization: str | None = Header(default=None)):
+    _require_device_api(authorization)
+    return {"devices": [device.model_dump() for device in device_gateway.list_devices()]}
+
+
+@app.get("/api/device/status")
+async def api_device_status(
+    device_id: str = "",
+    authorization: str | None = Header(default=None),
+):
+    """Ask the phone what it is doing right now (current app + usage)."""
+    _require_device_api(authorization)
+    try:
+        return await device_gateway.request_status(device_id=device_id)
+    except (DeviceGatewayError, DeviceOfflineError) as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@app.post("/api/device/job")
+async def api_device_job(
+    req: CommandRequest,
+    authorization: str | None = Header(default=None),
+):
+    """Start a phone command whose planner runs outside this process.
+
+    Used by the Nebius Sandbox planner: the sandbox drives the decision loop
+    and the gateway stays the transport hub for the phone.
+    """
+    _require_device_api(authorization)
+    job = await device_gateway.create_job(
+        device_id=req.device_id,
+        instruction=req.text,
+        max_steps=req.max_steps,
+    )
+    return {"job_id": job.id, "device_id": job.device_id}
+
+
+@app.get("/api/device/job/{job_id}/observation")
+async def api_device_job_observation(
+    job_id: str,
+    authorization: str | None = Header(default=None),
+):
+    """The next screen for the planner (long poll)."""
+    _require_device_api(authorization)
+    try:
+        return await device_gateway.next_observation(job_id)
+    except DeviceGatewayError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@app.post("/api/device/job/{job_id}/action")
+async def api_device_job_action(
+    job_id: str,
+    payload: dict,
+    authorization: str | None = Header(default=None),
+):
+    """The planner's raw model output; the gateway validates and executes it."""
+    _require_device_api(authorization)
+    raw = str(payload.get("raw") or "")
+    try:
+        return await device_gateway.submit_action(job_id, raw)
+    except DeviceGatewayError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@app.post("/api/device/job/{job_id}/result")
+async def api_device_job_result(
+    job_id: str,
+    payload: dict,
+    authorization: str | None = Header(default=None),
+):
+    """The planner's final answer."""
+    _require_device_api(authorization)
+    try:
+        return await device_gateway.finish_job(
+            job_id,
+            status=str(payload.get("status") or "completed"),
+            message=str(payload.get("message") or ""),
+        )
+    except DeviceGatewayError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@app.post("/api/device/command")
+async def api_device_command(
+    req: CommandRequest,
+    authorization: str | None = Header(default=None),
+):
+    """Run one phone task and wait for the vision loop to finish.
+
+    The endpoint is intentionally synchronous from the caller's point of view:
+    Telegram sends one request and gets a final message.  The phone itself sends
+    observations/actions asynchronously over ``/ws/device``.
+
+    With OYI_SANDBOX_PLANNER=1 the decision loop runs inside a Nebius
+    Sandbox and this process only relays frames.
+    """
+    _require_device_api(authorization)
+    if sandbox_planner_enabled():
+        return await _run_command_in_sandbox(req)
+    try:
+        result = await device_gateway.execute_command(
+            text=req.text,
+            device_id=req.device_id,
+            max_steps=req.max_steps,
+            timeout_s=req.timeout_s,
+            thread_id=req.thread_id,
+        )
+    except (DeviceGatewayError, DeviceOfflineError) as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return result.model_dump()
+
+
+async def _run_command_in_sandbox(req: CommandRequest) -> dict:
+    """Drive the phone from a Nebius Sandbox instead of from this process."""
+    public_url = os.getenv("OYI_PUBLIC_URL", "").strip().rstrip("/")
+    if not public_url:
+        raise HTTPException(
+            status_code=500,
+            detail="OYI_PUBLIC_URL must be set so the sandbox can reach the gateway.",
+        )
+
+    job = await device_gateway.create_job(
+        device_id=req.device_id,
+        instruction=req.text,
+        max_steps=req.max_steps,
+    )
+    LOGGER.info("running command %s in a Nebius Sandbox", job.id)
+
+    planner_task = asyncio.create_task(
+        run_sandbox_planner(
+            gateway_url=public_url,
+            gateway_token=_device_api_token(),
+            job_id=job.id,
+            model=os.getenv("OYI_DEVICE_VISION_MODEL", "nvidia/Nemotron-3.5-Super-VL"),
+            max_steps=req.max_steps,
+            timeout_s=req.timeout_s + 120.0,
+        )
+    )
+    result_task = asyncio.create_task(
+        device_gateway.job_result(job.id, timeout=req.timeout_s + 60.0)
+    )
+    try:
+        # Wait for whichever finishes first. If the planner process dies before
+        # the phone job finishes, finish the job with the real error instead of
+        # leaving the request to wait out the full timeout.
+        done, _ = await asyncio.wait(
+            {planner_task, result_task},
+            return_when=asyncio.FIRST_COMPLETED,
+        )
+        if result_task in done:
+            return result_task.result().model_dump()
+
+        if planner_task.cancelled():
+            detail = "Sandbox planner was cancelled."
+        else:
+            error = planner_task.exception()
+            if error is not None:
+                LOGGER.error(
+                    "sandbox planner for job %s failed", job.id, exc_info=error
+                )
+                detail = f"Sandbox planner failed: {error}"
+            else:
+                info = planner_task.result() or {}
+                output = (info.get("stderr") or info.get("stdout") or "").strip()
+                LOGGER.error(
+                    "sandbox planner for job %s exited without a result: exit=%s %s",
+                    job.id,
+                    info.get("exit_code"),
+                    output[-1000:],
+                )
+                detail = f"Sandbox planner exited without a result (exit {info.get('exit_code')})."
+                if output:
+                    detail = f"{detail} {output[-500:]}"
+
+        await device_gateway.finish_job(job.id, status="error", message=detail)
+        return (await result_task).model_dump()
+    finally:
+        planner_task.cancel()
+        result_task.cancel()
+
+
+@app.post("/api/device/cancel/{command_id}")
+async def api_device_cancel(
+    command_id: str,
+    authorization: str | None = Header(default=None),
+):
+    _require_device_api(authorization)
+    return {"cancelled": await device_gateway.cancel(command_id, reason="Cancelled by user")}
+
+
+@app.websocket("/ws/device")
+async def device_ws(websocket: WebSocket):
+    """Persistent outbound WebSocket from the paired Android app.
+
+    The phone connects out, so OYI never needs an inbound port or ADB on the
+    device.  The first frame must be a ``hello`` with a stable device id.
+    """
+    await websocket.accept()
+    if not _device_ws_token_ok(websocket):
+        await websocket.close(code=1008, reason="Unauthorized device")
+        return
+
+    connection: DeviceConnection | None = None
+    try:
+        first = await asyncio.wait_for(websocket.receive_text(), timeout=15.0)
+        try:
+            hello = DeviceHello.model_validate_json(first)
+        except Exception:  # noqa: BLE001 - reject malformed handshakes
+            await websocket.close(code=1008, reason="Expected a valid hello frame")
+            return
+
+        connection = DeviceConnection(websocket=websocket, hello=hello)
+        await device_gateway.register(connection)
+        await connection.send(
+            {
+                "type": "hello_ack",
+                "device_id": hello.device_id,
+                "server_time": time.time(),
+                "model": os.getenv("OYI_DEVICE_VISION_MODEL", "nvidia/Nemotron-3.5-Super-VL"),
+            }
+        )
+        LOGGER.info("Device WebSocket ready id=%s", hello.device_id)
+
+        while True:
+            message = await websocket.receive_text()
+            await device_gateway.handle_message(connection, message)
+    except WebSocketDisconnect:
+        pass
+    except asyncio.TimeoutError:
+        await websocket.close(code=1008, reason="Timed out waiting for hello")
+    except Exception:
+        LOGGER.exception("Device WebSocket failed")
+    finally:
+        if connection is not None:
+            await device_gateway.unregister(connection)
+        try:
+            await websocket.close()
+        except Exception:  # noqa: BLE001 - already closed
+            pass
+
+
 @app.post("/api/chat")
 async def api_chat(req: ChatRequest):
-    """Run text prompt through OYI agent."""
+    """Run text prompt through OYI agent.
+
+    The async path is required: tools such as `control_phone` are coroutines,
+    and the synchronous agent entrypoint cannot invoke them.
+    """
     if not req.prompt.strip():
         return {"response": ""}
     try:
-        reply = await asyncio.to_thread(agent_service.chat, req.prompt, req.thread_id)
+        chunks: list[str] = []
+        async for chunk in agent_service.astream(req.prompt, req.thread_id):
+            chunks.append(chunk)
+        reply = "".join(chunks)
+        if req.plain:
+            # Strip once on the joined text: markup can be split across chunks.
+            reply = markdown_to_plain_text(reply, keep_urls=True)
         return {"response": reply}
     except Exception as exc:
         LOGGER.exception("Agent chat failed")
         raise HTTPException(status_code=500, detail=str(exc))
+
+
+async def _chat_events(prompt: str, thread_id: str):
+    """Structured agent events (tool/token) when the service has them."""
+    streamer = getattr(agent_service, "astream_events", None)
+    if streamer is not None:
+        async for event in streamer(prompt, thread_id):
+            yield event
+        return
+    async for chunk in agent_service.astream(prompt, thread_id):
+        yield {"type": "token", "text": chunk}
+
+
+@app.post("/api/chat/stream")
+async def api_chat_stream(req: ChatRequest):
+    """Stream the agent's reply as newline-delimited JSON.
+
+    Each line is {"text": "..."} so a client can render tokens as they
+    arrive.  Async tools (phone control) work on this path too.  Activity
+    lines ({"tool": {"name", "label", "state"}}) tell a client which tool the
+    agent is using; older clients only read "text" and skip them.
+    """
+    if not req.prompt.strip():
+        return StreamingResponse(iter(()), media_type="application/x-ndjson")
+
+    async def generate():
+        plain = MarkdownPlainStream(keep_urls=True) if req.plain else None
+        try:
+            async for event in _chat_events(req.prompt, req.thread_id):
+                if event.get("type") == "tool":
+                    tool = {k: event.get(k, "") for k in ("name", "label", "state")}
+                    yield json.dumps({"tool": tool}) + "\n"
+                    continue
+                chunk = event.get("text") if event.get("type") == "token" else ""
+                if not chunk:
+                    continue
+                text = plain.feed(chunk) if plain is not None else chunk
+                if text:
+                    yield json.dumps({"text": text}) + "\n"
+            if plain is not None:
+                tail = plain.flush()
+                if tail:
+                    yield json.dumps({"text": tail}) + "\n"
+        except Exception as exc:  # noqa: BLE001 - reported to the client
+            LOGGER.exception("Agent chat stream failed")
+            yield json.dumps({"error": str(exc)}) + "\n"
+        yield json.dumps({"done": True}) + "\n"
+
+    return StreamingResponse(generate(), media_type="application/x-ndjson")
 
 
 @app.post("/api/voice-turn")
@@ -210,6 +588,7 @@ async def api_voice_turn(req: VoiceTurnRequest):
                 if chunk:
                     chunks.append(chunk)
             bot_text = "".join(chunks).strip() or "I could not produce a response."
+            bot_text = markdown_to_plain_text(bot_text)
             LOGGER.info("OYI LLM response: '%s'", bot_text[:100])
         except Exception as exc:
             LOGGER.exception("Agent service chat failed")

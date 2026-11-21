@@ -5,6 +5,7 @@ description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
+    "contree-sdk==0.3.6",
     "deepagents>=0.7.19",
     "dotenv>=0.9.9",
     "grpcio>=1.60",

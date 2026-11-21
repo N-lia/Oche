@@ -6,6 +6,14 @@ dist/
 wheels/
 *.egg-info
 
+# Android / Gradle
+android/.gradle/
+android/build/
+android/app/build/
+android/local.properties
+android/.kotlin/
+*.apk
+
 # Virtual environments
 .venv
 .env
@@ -15,3 +23,6 @@ models/
 *.wav
 *.mp3
 *.log
+
+# The Android app has a source package called "data"; keep it tracked.
+!android/app/src/main/java/ai/oyi/device/data/

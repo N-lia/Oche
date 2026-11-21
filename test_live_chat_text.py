@@ -132,6 +132,78 @@ async def test_new_text_turn_supersedes_pending_reply() -> None:
     assert cancelled["value"] is True, "the superseded reply must be cancelled"
 
 
+async def test_voice_turn_forwards_tool_activity() -> None:
+    """Voice replies carry tool events too, so the phone's island can show them."""
+    events = [
+        {"type": "status", "phase": "thinking", "text": "Thinking…"},
+        {"type": "tool", "name": "tavily_search", "label": "Searching the web", "state": "start"},
+        {"type": "tool", "name": "tavily_search", "label": "Searching the web", "state": "done"},
+        {"type": "token", "text": "Found it."},
+        {"type": "done"},
+    ]
+    state: dict = {}
+    session, queue = _make_session(events, state)
+    await session.on_control({"type": "start"})
+    _drain(queue)
+
+    await session._run_agent("look it up", turn_id=7)
+    messages = _drain(queue)
+    tools = [m for m in messages if m["type"] == "tool"]
+    assert [t["state"] for t in tools] == ["start", "done"], tools
+    assert all(t["turn_id"] == 7 for t in tools)
+    # Only the session's own "Thinking…" status, not a duplicate from the stream.
+    assert _types(messages).count("status") == 1
+    assert state.get("tts_text") == "Found it."
+
+
+async def test_voice_turn_keeps_injected_token_streamer() -> None:
+    async def agent(text, turn_id):
+        yield "plain "
+        yield "tokens"
+
+    queue: asyncio.Queue = asyncio.Queue()
+    spoken: dict = {}
+
+    async def tts(text, mood):
+        spoken["text"] = text
+        return b"MP3"
+
+    session = VoiceSession(queue, agent_streamer=agent, tts=tts, clip_exists=lambda _p: True)
+    await session._run_agent("hi", turn_id=1)
+    assert spoken["text"] == "plain tokens"
+    assert "tool" not in _types(_drain(queue))
+
+
+async def test_chat_stream_sends_tool_lines() -> None:
+    """/api/chat/stream adds {"tool": ...} lines beside the text lines."""
+    import json
+
+    from fastapi.testclient import TestClient
+
+    import webapp_server
+
+    async def fake_events(prompt, thread_id):
+        yield {"type": "status", "phase": "thinking", "text": "Thinking…"}
+        yield {"type": "tool", "name": "tavily_search", "label": "Searching the web", "state": "start"}
+        yield {"type": "token", "text": "**Sunny** today."}
+        yield {"type": "done"}
+
+    original = webapp_server._chat_events
+    webapp_server._chat_events = fake_events
+    try:
+        client = TestClient(webapp_server.app)
+        response = client.post(
+            "/api/chat/stream", json={"prompt": "weather?", "thread_id": "t", "plain": True}
+        )
+    finally:
+        webapp_server._chat_events = original
+    lines = [json.loads(line) for line in response.text.splitlines() if line.strip()]
+    assert lines[0] == {"tool": {"name": "tavily_search", "label": "Searching the web", "state": "start"}}
+    text = "".join(line.get("text", "") for line in lines)
+    assert text == "Sunny today.", text
+    assert lines[-1] == {"done": True}
+
+
 async def _async_bytes(value: bytes) -> bytes:
     return value
 

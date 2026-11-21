@@ -1,23 +1,51 @@
 <!DOCTYPE html>
-<html lang="en" data-theme="light">
+<html lang="en" data-theme="dark">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
-  <meta name="color-scheme" content="light">
+  <meta name="color-scheme" content="dark">
   <title>OYI Live</title>
   <script src="https://telegram.org/js/telegram-web-app.js"></script>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
   <div class="app" id="app">
+    <!-- Top-docked Dynamic Island Notification & Live Telemetry Pill -->
+    <div class="island-wrap">
+      <div class="island" id="dynamicIsland" data-kind="idle" role="status" aria-live="polite">
+        <div class="island__bar">
+          <span class="stage__dot" id="connDot"></span>
+          <span class="island__brand">OYI</span>
+          <span class="island__sep">·</span>
+          <span class="stage__text" id="stageText">Connecting…</span>
+          <span class="island__badge" id="islandBadge">Standby</span>
+        </div>
+        <div class="island__body" id="islandBody" hidden>
+          <div class="island__title" id="islandTitle"></div>
+          <div class="island__subtitle" id="islandSubtitle"></div>
+          <div class="island__actions" id="islandActions" hidden>
+            <button type="button" class="island-btn island-btn--deny" id="btnIslandDeny">Deny</button>
+            <button type="button" class="island-btn island-btn--approve" id="btnIslandApprove">Approve</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
     <header class="stage" id="stage">
-      <!-- The mascot IS the interface: tap to talk, long-press for settings. -->
+      <!-- Tap mascot to toggle voice, long-press for settings. -->
       <div class="stage__figure" id="mascotFigure">
         <svg class="mascot" id="mascot" viewBox="0 0 400 320" role="img" aria-label="OYI mascot">
-        <g id="mascotBody" fill="#a021e9">
+        <defs>
+          <linearGradient id="oyiBodyGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+            <stop offset="0%" stop-color="#e58969"></stop>
+            <stop offset="60%" stop-color="#de7e5d"></stop>
+            <stop offset="100%" stop-color="#cb6d4e"></stop>
+          </linearGradient>
+        </defs>
+        <g id="mascotBody" fill="url(#oyiBodyGrad)">
           <circle cx="30" cy="214" r="56"></circle>
           <circle cx="112" cy="182" r="66"></circle>
           <circle cx="196" cy="152" r="80"></circle>
@@ -28,41 +56,36 @@
 
         <g id="mascotFace">
           <!-- brows -->
-          <path id="browL" d="M114 158 q27 -17 54 -5" fill="none" stroke="#5d0f9c" stroke-width="9" stroke-linecap="round"></path>
-          <path id="browR" d="M226 152 q27 -16 54 -4" fill="none" stroke="#5d0f9c" stroke-width="9" stroke-linecap="round"></path>
+          <path id="browL" d="M114 158 q27 -17 54 -5" fill="none" stroke="#181411" stroke-width="8" stroke-linecap="round"></path>
+          <path id="browR" d="M226 152 q27 -16 54 -4" fill="none" stroke="#181411" stroke-width="8" stroke-linecap="round"></path>
 
           <!-- eyes -->
           <g id="eyeL" class="eye">
-            <ellipse cx="142" cy="208" rx="35" ry="39" fill="#ffffff"></ellipse>
+            <ellipse cx="142" cy="208" rx="35" ry="39" fill="#f4e8c1"></ellipse>
             <g id="pupilL" class="pupil">
-              <circle cx="135" cy="215" r="20" fill="#0b0710"></circle>
+              <circle cx="135" cy="215" r="20" fill="#181411"></circle>
             </g>
           </g>
           <g id="eyeR" class="eye">
-            <ellipse cx="250" cy="200" rx="32" ry="36" fill="#ffffff"></ellipse>
+            <ellipse cx="250" cy="200" rx="32" ry="36" fill="#f4e8c1"></ellipse>
             <g id="pupilR" class="pupil">
-              <circle cx="255" cy="206" r="19" fill="#0b0710"></circle>
+              <circle cx="255" cy="206" r="19" fill="#181411"></circle>
             </g>
           </g>
 
           <!-- mouth -->
           <g id="mouthGroup">
-            <ellipse id="mouthOpen" cx="196" cy="262" rx="17" ry="1" fill="#2a0733"></ellipse>
-            <path id="mouth" d="M170 258 q10 12 20 0 q10 -12 20 0 q10 12 20 0" fill="none" stroke="#5d0f9c" stroke-width="7" stroke-linecap="round" stroke-linejoin="round"></path>
+            <ellipse id="mouthOpen" cx="196" cy="262" rx="17" ry="1" fill="#181411"></ellipse>
+            <path id="mouth" d="M170 258 q10 12 20 0 q10 -12 20 0 q10 12 20 0" fill="none" stroke="#181411" stroke-width="7" stroke-linecap="round" stroke-linejoin="round"></path>
           </g>
         </g>
       </svg>
       </div>
-
-      <div class="stage__caption ghost">
-        <span class="stage__dot" id="connDot"></span>
-        <span class="stage__text" id="stageText">Connecting…</span>
-      </div>
     </header>
 
-    <main class="feed ghost" id="feed" aria-live="polite"></main>
+    <main class="feed" id="feed" aria-live="polite"></main>
 
-    <footer class="composer ghost" id="composer">
+    <footer class="composer" id="composer">
       <form class="composer__row" id="chatForm" autocomplete="off">
         <button type="button" class="mic-btn" id="micButton" aria-label="Start voice chat">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
