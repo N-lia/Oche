@@ -1,6 +1,12 @@
 package ai.oyi.device.ui
 
+import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.animateFloatAsState
+import ai.oyi.device.ui.theme.GlassRimLight
+import ai.oyi.device.ui.theme.LocalGlassBackdrop
+import ai.oyi.device.ui.theme.OyiMotion
+import ai.oyi.device.ui.theme.PressMorph
+import ai.oyi.device.ui.theme.liquidGlass
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
@@ -57,9 +63,11 @@ internal object Oyi {
 
     val DarkRim = Brush.verticalGradient(listOf(Color(0x59FFFFFF), Color(0x14FFFFFF)))
     val WarmRim = Brush.verticalGradient(listOf(Color(0xB3FFF9F2), Color(0x2EFFFFFF)))
-    val SmokedGlass = Brush.linearGradient(listOf(Color(0xD926262D), Color(0xCC141418)))
-    val OrangeGlass = Brush.linearGradient(listOf(OrangeTop, Orange, OrangeBottom))
-    val CreamGlass = Brush.linearGradient(listOf(Color(0xFFFFF8E6), Cream))
+    // Glass fills sit over a blurred backdrop, so they are a little see-through.
+    val SmokedGlass = Brush.linearGradient(listOf(Color(0x8C2A2A31), Color(0x80141418)))
+    val OrangeGlass = Brush.linearGradient(listOf(OrangeTop.copy(alpha = 0.92f), Orange.copy(alpha = 0.88f), OrangeBottom.copy(alpha = 0.9f)))
+    val CreamGlass = Brush.linearGradient(listOf(Color(0xEBFFF8E6), Cream.copy(alpha = 0.9f)))
+    val YellowGlass = Brush.linearGradient(listOf(Color(0xEBFFF0A6), Yellow.copy(alpha = 0.9f)))
     val RingSweep = Brush.sweepGradient(listOf(OrangeTop, Yellow, Orange, OrangeTop))
 }
 
@@ -67,22 +75,23 @@ internal object Oyi {
 internal fun GlassCard(
     modifier: Modifier = Modifier,
     brush: Brush = Oyi.SmokedGlass,
-    rim: Brush = Oyi.DarkRim,
+    rim: Brush = GlassRimLight,
     content: @Composable ColumnScope.() -> Unit,
 ) {
     Column(
         modifier = modifier
             .fillMaxWidth()
-            .shadow(12.dp, Oyi.Card)
-            .clip(Oyi.Card)
-            .background(brush)
-            .border(1.dp, rim, Oyi.Card)
+            .liquidGlass(Oyi.Card, fill = brush, backdrop = LocalGlassBackdrop.current, rim = rim)
             .padding(20.dp),
         content = content,
     )
 }
 
-/** A small rounded choice. Dimmed (but still tappable) when [enabled] is false. */
+/**
+ * A small rounded choice with expressive press motion: it squishes and its
+ * corners tighten under the finger. Dimmed (but still tappable) when
+ * [enabled] is false.
+ */
 @Composable
 internal fun Pill(
     text: String,
@@ -91,29 +100,36 @@ internal fun Pill(
     onDark: Boolean = true,
     onClick: () -> Unit,
 ) {
-    val background = when {
-        selected && onDark -> Oyi.Cream
-        selected -> Oyi.Ink
-        onDark -> Color(0x14FFFFFF)
-        else -> Color(0x1F0A0807)
-    }
+    val background by animateColorAsState(
+        targetValue = when {
+            selected && onDark -> Oyi.Cream
+            selected -> Oyi.Ink
+            onDark -> Color(0x1AFFFFFF)
+            else -> Color(0x1F0A0807)
+        },
+        animationSpec = OyiMotion.defaultEffects(),
+        label = "pillBg",
+    )
     val foreground = when {
         selected && onDark -> Oyi.Ink
         selected -> Oyi.Cream
         onDark -> Oyi.OffWhite
         else -> Oyi.Ink
     }
-    Box(
-        modifier = Modifier
-            .alpha(if (enabled) 1f else 0.35f)
-            .clip(Oyi.Pill)
-            .background(background)
-            .border(1.dp, if (onDark) Oyi.Hairline else Color(0x33FFFFFF), Oyi.Pill)
-            .clickable(onClick = onClick)
-            .padding(horizontal = 14.dp, vertical = 8.dp),
-        contentAlignment = Alignment.Center,
-    ) {
-        Text(text, color = foreground, fontSize = 12.5.sp, fontWeight = FontWeight.SemiBold, maxLines = 1)
+    PressMorph(
+        onClick = onClick,
+        modifier = Modifier.alpha(if (enabled) 1f else 0.35f),
+        pressedPercent = 30f,
+    ) { shape ->
+        Box(
+            modifier = Modifier
+                .background(background, shape)
+                .border(1.dp, if (onDark) GlassRimLight else Brush.verticalGradient(listOf(Color(0x66FFFFFF), Color(0x1AFFFFFF))), shape)
+                .padding(horizontal = 16.dp, vertical = 9.dp),
+            contentAlignment = Alignment.Center,
+        ) {
+            Text(text, color = foreground, fontSize = 13.sp, fontWeight = FontWeight.Bold, maxLines = 1)
+        }
     }
 }
 

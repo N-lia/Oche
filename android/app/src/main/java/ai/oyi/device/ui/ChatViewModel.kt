@@ -56,7 +56,11 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     private var replyAudioPending = false
     private var turnEndedWhileSpeaking = false
 
+    private val interruptReply: () -> Unit = { voice.interrupt() }
+
     init {
+        // A double tap on the island cuts the spoken reply short.
+        island.onInterruptAgent = interruptReply
         viewModelScope.launch {
             voice.events.collect { event ->
                 when (event) {
@@ -255,5 +259,10 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
             }
             current.copy(messages = messages)
         }
+    }
+
+    override fun onCleared() {
+        if (island.onInterruptAgent === interruptReply) island.onInterruptAgent = null
+        super.onCleared()
     }
 }

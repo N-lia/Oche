@@ -73,6 +73,10 @@ dependencies {
     implementation("androidx.compose.ui:ui")
     implementation("androidx.compose.ui:ui-tooling-preview")
     implementation("androidx.compose.material3:material3")
+    // Material 3 Expressive shapes: polygons and morphs for the loader and buttons.
+    implementation("androidx.graphics:graphics-shapes:1.0.1")
+    // Backdrop blur for the liquid-glass surfaces (pinned to match Compose 1.7).
+    implementation("dev.chrisbanes.haze:haze:1.1.1")
 
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.9.0")
     implementation("com.squareup.okhttp3:okhttp:4.12.0")

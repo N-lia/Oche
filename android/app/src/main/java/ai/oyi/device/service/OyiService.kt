@@ -38,6 +38,7 @@ class OyiService : Service() {
 
     private lateinit var container: ai.oyi.device.AppContainer
     private lateinit var overlay: OverlayController
+    private lateinit var liveUpdates: LiveUpdateNotifier
     private lateinit var usageTracker: UsageTracker
     private var screenReceiver: BroadcastReceiver? = null
     private var settingsJob: Job? = null
@@ -49,7 +50,9 @@ class OyiService : Service() {
         createNotificationChannel()
         startForegroundCompat()
 
-        overlay = OverlayController(this, container.runtime, container.usage, scope)
+        overlay = OverlayController(this, container.runtime, container.usage, container.settings, scope)
+        liveUpdates = LiveUpdateNotifier(this, container.runtime, container.settings, overlay::isShowing, scope)
+        liveUpdates.start()
         usageTracker = UsageTracker(this, container.usage, container.runtime, scope)
         usageTracker.start()
 
@@ -72,6 +75,11 @@ class OyiService : Service() {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         when (intent?.action) {
+            // Buttons on the Live Update notification.
+            ACTION_APPROVE -> container.runtime.resolveApproval(true)
+            ACTION_DENY -> container.runtime.resolveApproval(false)
+            ACTION_CANCEL -> container.runtime.cancelActiveCommand()
+            ACTION_INTERRUPT -> container.runtime.interruptAgent()
             ACTION_STOP -> {
                 container.settings.setOverlayEnabled(false)
                 stopSelf()
@@ -86,6 +94,7 @@ class OyiService : Service() {
         screenReceiver = null
         settingsJob?.cancel()
         usageTracker.stop()
+        liveUpdates.stop()
         container.deviceClient.stop()
         overlay.hide()
         scope.cancel()
@@ -174,6 +183,10 @@ class OyiService : Service() {
 
     companion object {
         const val ACTION_STOP = "ai.oyi.device.action.STOP"
+        const val ACTION_APPROVE = "ai.oyi.device.action.APPROVE"
+        const val ACTION_DENY = "ai.oyi.device.action.DENY"
+        const val ACTION_CANCEL = "ai.oyi.device.action.CANCEL"
+        const val ACTION_INTERRUPT = "ai.oyi.device.action.INTERRUPT"
         private const val CHANNEL_ID = "oyi_device"
         private const val NOTIFICATION_ID = 4201
 

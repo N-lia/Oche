@@ -52,6 +52,11 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import ai.oyi.device.ui.theme.LocalGlassBackdrop
+import ai.oyi.device.ui.theme.OyiMotion
+import androidx.compose.foundation.shape.CornerSize
+import ai.oyi.device.ui.theme.PressMorph
+import ai.oyi.device.ui.theme.liquidGlass
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
@@ -103,16 +108,14 @@ fun ChatScreen(viewModel: ChatViewModel = viewModel()) {
     Column(
         modifier = Modifier
             .fillMaxSize()
-            .background(PitchBlack)
             .padding(horizontal = 16.dp)
     ) {
         Spacer(Modifier.height(6.dp))
         Row(verticalAlignment = Alignment.CenterVertically) {
             Text(
                 text = "Live Chat",
-                fontSize = 30.sp,
+                style = MaterialTheme.typography.displaySmall,
                 color = OffWhite,
-                fontWeight = FontWeight.Light,
                 modifier = Modifier.weight(1f),
             )
             Text(
@@ -164,16 +167,11 @@ fun ChatScreen(viewModel: ChatViewModel = viewModel()) {
         ) {
             if (state.messages.isEmpty() && state.livePartial.isBlank()) {
                 item {
-                    val introShape = RoundedCornerShape(26.dp)
-                    Surface(
-                        color = Color.Transparent,
-                        shape = introShape,
-                        border = BorderStroke(1.dp, WarmGlassRim),
+                    val introShape = RoundedCornerShape(28.dp)
+                    Box(
                         modifier = Modifier
                             .fillMaxWidth(0.90f)
-                            .shadow(12.dp, introShape)
-                            .clip(introShape)
-                            .background(OrangeBubbleBrush),
+                            .liquidGlass(introShape, fill = Oyi.OrangeGlass, backdrop = LocalGlassBackdrop.current),
                     ) {
                         Column(modifier = Modifier.padding(horizontal = 18.dp, vertical = 16.dp)) {
                             Text(
@@ -226,18 +224,13 @@ fun ChatScreen(viewModel: ChatViewModel = viewModel()) {
             }
         }
 
-        // Liquid Glass floating pill composer bar
+        // Liquid glass floating pill composer bar
         val composerShape = RoundedCornerShape(999.dp)
-        Surface(
-            color = Color.Transparent,
-            shape = composerShape,
-            border = BorderStroke(1.dp, DarkGlassRim),
+        Box(
             modifier = Modifier
                 .fillMaxWidth()
                 .padding(vertical = 10.dp)
-                .shadow(14.dp, composerShape)
-                .clip(composerShape)
-                .background(SmokedGlassBrush),
+                .liquidGlass(composerShape, fill = Oyi.SmokedGlass, backdrop = LocalGlassBackdrop.current, elevation = 14.dp),
         ) {
             Row(
                 modifier = Modifier
@@ -280,14 +273,17 @@ fun ChatScreen(viewModel: ChatViewModel = viewModel()) {
                 )
                 Spacer(Modifier.width(6.dp))
                 val canSend = state.draft.isNotBlank() && !state.sending
-                Box(
-                    modifier = Modifier
-                        .size(44.dp)
-                        .clip(CircleShape)
-                        .background(if (canSend) UserCreamBubble else Color(0x1FFFFFFF))
-                        .clickable(enabled = canSend, onClick = viewModel::send),
-                    contentAlignment = Alignment.Center,
-                ) {
+                PressMorph(
+                    onClick = viewModel::send,
+                    enabled = canSend,
+                    modifier = Modifier.size(44.dp),
+                    pressedPercent = 30f,
+                ) { shape ->
+                    Box(
+                        Modifier
+                            .matchParentSize()
+                            .background(if (canSend) UserCreamBubble else Color(0x1FFFFFFF), shape),
+                    )
                     Icon(
                         painter = painterResource(R.drawable.ic_island_send),
                         contentDescription = "Send",
@@ -318,10 +314,16 @@ private fun MicButton(active: Boolean, level: Float, onClick: () -> Unit) {
                     .background(AgentOrangeBubble.copy(alpha = 0.28f)),
             )
         }
+        // Expressive toggle: the round button squares off while live.
+        val corner by animateFloatAsState(
+            targetValue = if (active) 30f else 50f,
+            animationSpec = OyiMotion.fastSpatial(),
+            label = "micCorner",
+        )
         Box(
             modifier = Modifier
                 .size(44.dp)
-                .clip(CircleShape)
+                .clip(RoundedCornerShape(CornerSize(corner)))
                 .background(if (active) AgentOrangeBubble else Color(0x2EFFFFFF))
                 .clickable(onClick = onClick),
             contentAlignment = Alignment.Center,

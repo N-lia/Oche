@@ -392,6 +392,15 @@ class LiveVoiceController(
         stopPlayback(notifyServer = false)
     }
 
+    /** Cuts the spoken reply short (a double tap on the Dynamic Island). */
+    fun interrupt() {
+        scope.launch(Dispatchers.Main) {
+            if (!agentSpeaking) return@launch
+            stopPlayback(notifyServer = true)
+            if (_active.value) emit(Event.Status("Listening…"))
+        }
+    }
+
     /** Plays a filler/backchannel clip (an MP3 URL). */
     fun playClip(url: String) {
         if (url.isBlank() || agentSpeaking) return

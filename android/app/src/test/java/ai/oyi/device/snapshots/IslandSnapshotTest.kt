@@ -15,6 +15,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.unit.DpSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import app.cash.paparazzi.DeviceConfig
@@ -112,11 +113,43 @@ class IslandSnapshotTest {
         )
     }
 
+    @Test
+    fun cameraAndStacking() = paparazzi.snapshot {
+        val camera = DpSize(26.dp, 26.dp)
+        Gallery(
+            "Two at once: phone control, OYI talking behind" to Sample(
+                IslandState(kind = IslandKind.WORKING, title = "Controlling Settings", subtitle = "Tapping Wi-Fi", step = 3),
+                secondary = IslandState(kind = IslandKind.SPEAKING, title = "Speaking", fromAgent = true),
+            ),
+            "On the camera, resting" to Sample(IslandState(), cutout = camera),
+            "On the camera, thinking" to Sample(
+                IslandState(kind = IslandKind.THINKING, title = "Thinking…", startedAt = now - 2_300),
+                cutout = camera,
+            ),
+            "On the camera, approval" to Sample(
+                IslandState(
+                    kind = IslandKind.APPROVAL_REQUIRED,
+                    title = "Send this WhatsApp message?",
+                    subtitle = "\"On my way, see you at 6\" to John",
+                    commandId = "c1",
+                ),
+                cutout = camera,
+            ),
+            "Wallpaper accent" to Sample(
+                IslandState(kind = IslandKind.TOOL, title = "Searching the web", startedAt = now - 3_100),
+                accent = Color(0xFF8AB4F8),
+            ),
+        )
+    }
+
     private data class Sample(
         val state: IslandState,
         val expanded: Boolean = false,
         val level: Float = 0f,
         val idle: IslandIdleInfo? = null,
+        val secondary: IslandState? = null,
+        val cutout: DpSize = DpSize.Zero,
+        val accent: Color? = null,
     )
 
     @Composable
@@ -137,6 +170,9 @@ class IslandSnapshotTest {
                     level = sample.level,
                     onAction = {},
                     initiallyExpanded = sample.expanded,
+                    secondary = sample.secondary,
+                    cutout = sample.cutout,
+                    accent = sample.accent ?: Color(0xFFF08A65),
                     modifier = Modifier.padding(horizontal = 16.dp),
                 )
             }
