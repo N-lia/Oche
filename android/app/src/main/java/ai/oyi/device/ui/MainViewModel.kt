@@ -42,6 +42,12 @@ data class UiState(
     val currentApp: ForegroundApp? = null,
     val topApps: List<AppUsage> = emptyList(),
     val island: IslandState = IslandState(),
+    /** An activity running behind [island], shown as a second bubble. */
+    val islandSecondary: IslandState? = null,
+    val islandNudgeXDp: Int = 0,
+    val islandNudgeYDp: Int = 0,
+    val wallpaperColors: Boolean = false,
+    val liveUpdates: Boolean = true,
 )
 
 class MainViewModel(application: Application) : AndroidViewModel(application) {
@@ -65,6 +71,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         gatewayUrl = settings.gatewayUrl,
                         token = settings.token,
                         deviceId = settings.deviceId,
+                        islandNudgeXDp = settings.islandNudgeXDp,
+                        islandNudgeYDp = settings.islandNudgeYDp,
+                        wallpaperColors = settings.wallpaperColors,
+                        liveUpdates = settings.liveUpdates,
                     )
                 }
             }
@@ -97,6 +107,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch {
             container.runtime.island.collect { island ->
                 _state.update { it.copy(island = island) }
+            }
+        }
+        viewModelScope.launch {
+            container.runtime.islandSecondary.collect { secondary ->
+                _state.update { it.copy(islandSecondary = secondary) }
             }
         }
         refresh()
@@ -152,6 +167,37 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun stopActiveTask() {
         container.runtime.cancelActiveCommand()
+    }
+
+    fun interruptAgent() {
+        container.runtime.interruptAgent()
+    }
+
+    fun swapIsland() {
+        container.runtime.swapIsland()
+    }
+
+    fun setIslandNudge(xDp: Int, yDp: Int) {
+        container.settings.setIslandNudge(xDp, yDp)
+    }
+
+    fun setWallpaperColors(enabled: Boolean) {
+        container.settings.setWallpaperColors(enabled)
+    }
+
+    fun setLiveUpdates(enabled: Boolean) {
+        container.settings.setLiveUpdates(enabled)
+    }
+
+    /** Two things at once: phone control in front, OYI talking behind it. */
+    fun previewStack() {
+        previewIslandState(IslandKind.SPEAKING)
+        container.runtime.showWorking(
+            commandId = "preview_cmd",
+            title = "Step 2 · Controlling Settings",
+            subtitle = "Tapping 'Display & Brightness'",
+            step = 2,
+        )
     }
 
     fun previewIslandState(kind: IslandKind) {

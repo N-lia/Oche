@@ -15,6 +15,13 @@ data class DeviceSettings(
     val overlayEnabled: Boolean = false,
     val autoStart: Boolean = false,
     val deviceId: String = "",
+    /** Calibration of the island over the camera, in dp. */
+    val islandNudgeXDp: Int = 0,
+    val islandNudgeYDp: Int = 0,
+    /** Material You: take the accent from the wallpaper instead of OYI orange. */
+    val wallpaperColors: Boolean = false,
+    /** Mirror busy states as an Android 16 Live Update when the island cannot show. */
+    val liveUpdates: Boolean = true,
 )
 
 /** The app currently in the foreground. */

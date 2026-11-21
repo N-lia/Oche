@@ -23,6 +23,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -102,10 +103,8 @@ fun FocusScreen(viewModel: FocusViewModel = viewModel()) {
             Spacer(Modifier.height(6.dp))
             Text(
                 text = if (state.session != null) "In\nFocus" else "Focus",
-                fontSize = 36.sp,
-                lineHeight = 40.sp,
+                style = MaterialTheme.typography.displaySmall,
                 color = Oyi.OffWhite,
-                fontWeight = FontWeight.Light,
             )
             if (notice.isNotEmpty()) {
                 Spacer(Modifier.height(8.dp))

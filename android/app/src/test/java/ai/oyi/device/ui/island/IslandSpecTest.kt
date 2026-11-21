@@ -129,4 +129,32 @@ class IslandSpecTest {
         assertEquals("1h 05m", formatDuration(3_900_000))
         assertEquals("3.4s", formatTenths(3_460))
     }
+
+    @Test
+    fun eachStateMovesItsOwnWay() {
+        fun motion(kind: IslandKind, done: Boolean = false) =
+            islandSpec(IslandState(kind = kind, toolDone = done), idle, expanded = false).motion
+        assertEquals(IslandMotion.BREATHE, motion(IslandKind.LISTENING))
+        assertEquals(IslandMotion.WOBBLE, motion(IslandKind.THINKING))
+        assertEquals(IslandMotion.TYPE, motion(IslandKind.TOOL))
+        assertEquals(IslandMotion.BOUNCE, motion(IslandKind.TOOL, done = true))
+        assertEquals(IslandMotion.PULSE, motion(IslandKind.SPEAKING))
+        assertEquals(IslandMotion.SHAKE, motion(IslandKind.APPROVAL_REQUIRED))
+        assertEquals(IslandMotion.STILL, motion(IslandKind.IDLE))
+    }
+
+    @Test
+    fun rimLightRunsOnlyWhileWorking() {
+        assertTrue(islandSpec(IslandState(kind = IslandKind.THINKING), idle, false).progressRim)
+        assertTrue(islandSpec(IslandState(kind = IslandKind.TOOL), idle, false).progressRim)
+        assertEquals(false, islandSpec(IslandState(kind = IslandKind.TOOL, toolDone = true), idle, false).progressRim)
+        assertEquals(false, islandSpec(IslandState(kind = IslandKind.LISTENING), idle, false).progressRim)
+    }
+
+    @Test
+    fun doubleTapInterruptsSpeechAndStopsPhoneControl() {
+        assertEquals(IslandAction.INTERRUPT, islandSpec(IslandState(kind = IslandKind.SPEAKING), idle, false).doubleTap)
+        assertEquals(IslandAction.STOP, islandSpec(IslandState(kind = IslandKind.WORKING), idle, false).doubleTap)
+        assertEquals(null, islandSpec(IslandState(kind = IslandKind.THINKING), idle, false).doubleTap)
+    }
 }

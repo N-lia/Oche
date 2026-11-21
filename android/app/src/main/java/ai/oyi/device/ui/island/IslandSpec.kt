@@ -31,8 +31,28 @@ enum class IslandTrail { NONE, TIMER, ELAPSED, BARS, SPINNER, CHECK, STEP, CLOCK
  */
 enum class IslandFace { NEUTRAL, COOL, THINKING, LAUGHING, TALKING, CODING, IDEA, SLEEPING, SCREENS }
 
-/** A button on an expanded card. */
-enum class IslandAction { APPROVE, DENY, STOP, DISMISS, OPEN_APP }
+/** A button on an expanded card, or what a gesture on the island does. */
+enum class IslandAction {
+    APPROVE,
+    DENY,
+    STOP,
+    DISMISS,
+    OPEN_APP,
+
+    /** Double tap while OYI speaks: cut the reply short. */
+    INTERRUPT,
+
+    /** Tap on the second bubble, or a sideways swipe: bring the other activity forward. */
+    SWAP,
+}
+
+/**
+ * How the face moves for a state. Each state gets its own motion so the
+ * island reads at a glance: breathing while it listens, a wobble while it
+ * thinks, a typing bob while a tool runs, a pulse while it talks, a bounce
+ * when something lands and a shake when it needs you.
+ */
+enum class IslandMotion { STILL, BREATHE, WOBBLE, TYPE, PULSE, BOUNCE, SHAKE }
 
 /** What is in the idle pill when nothing else is going on. */
 data class IslandIdleInfo(
@@ -59,6 +79,12 @@ data class IslandSpec(
     val dismissable: Boolean = false,
     /** The expression shown for this state. */
     val face: IslandFace = IslandFace.NEUTRAL,
+    /** How the face moves. */
+    val motion: IslandMotion = IslandMotion.STILL,
+    /** Work is under way: a light runs around the island's rim. */
+    val progressRim: Boolean = false,
+    /** What a double tap does, if anything. */
+    val doubleTap: IslandAction? = null,
 )
 
 /**
@@ -68,7 +94,39 @@ data class IslandSpec(
  * the telemetry drawer of the idle pill.
  */
 fun islandSpec(state: IslandState, idle: IslandIdleInfo, expanded: Boolean): IslandSpec =
-    baseSpec(state, idle, expanded).copy(face = faceFor(state, expanded))
+    baseSpec(state, idle, expanded).copy(
+        face = faceFor(state, expanded),
+        motion = motionFor(state),
+        progressRim = showsProgressRim(state),
+        doubleTap = doubleTapFor(state),
+    )
+
+/** The face's motion for each state (see [IslandMotion]). */
+fun motionFor(state: IslandState): IslandMotion = when (state.kind) {
+    IslandKind.IDLE -> IslandMotion.STILL
+    IslandKind.LISTENING -> IslandMotion.BREATHE
+    IslandKind.THINKING -> IslandMotion.WOBBLE
+    IslandKind.TOOL -> if (state.toolDone) IslandMotion.BOUNCE else IslandMotion.TYPE
+    IslandKind.REPLYING -> IslandMotion.TYPE
+    IslandKind.SPEAKING -> IslandMotion.PULSE
+    IslandKind.WORKING -> IslandMotion.TYPE
+    IslandKind.COMPLETED -> IslandMotion.BOUNCE
+    IslandKind.APPROVAL_REQUIRED, IslandKind.ERROR -> IslandMotion.SHAKE
+}
+
+/** The rim light runs while something is being worked on. */
+fun showsProgressRim(state: IslandState): Boolean = when (state.kind) {
+    IslandKind.THINKING, IslandKind.REPLYING, IslandKind.WORKING -> true
+    IslandKind.TOOL -> !state.toolDone
+    else -> false
+}
+
+/** Double tap interrupts a spoken reply, or stops phone control. */
+fun doubleTapFor(state: IslandState): IslandAction? = when (state.kind) {
+    IslandKind.SPEAKING -> IslandAction.INTERRUPT
+    IslandKind.WORKING -> IslandAction.STOP
+    else -> null
+}
 
 /**
  * Which expression goes with which state: asleep when nothing is going on,
