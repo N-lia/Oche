@@ -178,16 +178,38 @@ fun DynamicIsland(
     Row(modifier, verticalAlignment = Alignment.Top) {
         Spacer(Modifier.width(bubbleSlot))
         Island(state, idle, level, onAction, onLongPress, inApp, faces, initiallyExpanded, secondary != null, cutout, accent)
-        Box(Modifier.width(bubbleSlot), contentAlignment = Alignment.CenterEnd) {
-            AnimatedVisibility(
-                visible = secondary != null,
-                enter = scaleIn(OyiMotion.bouncy(), initialScale = 0.2f) + fadeIn(OyiMotion.fastEffects()) +
-                    expandHorizontally(OyiMotion.defaultSpatial(), expandFrom = Alignment.Start),
-                exit = scaleOut(OyiMotion.fastEffects(), targetScale = 0.4f) + fadeOut(OyiMotion.fastEffects()) +
-                    shrinkHorizontally(OyiMotion.defaultSpatial(), shrinkTowards = Alignment.Start),
-            ) {
-                SecondaryBubble(lastSecondary, faces, accent, compactHeight(cutout)) { onAction(IslandAction.SWAP) }
-            }
+        BubbleSlot(
+            width = bubbleSlot,
+            visible = secondary != null,
+            state = lastSecondary,
+            faces = faces,
+            accent = accent,
+            height = compactHeight(cutout),
+            onTap = { onAction(IslandAction.SWAP) },
+        )
+    }
+}
+
+/** The second bubble, kept out of the Row so AnimatedVisibility is the plain one. */
+@Composable
+private fun BubbleSlot(
+    width: Dp,
+    visible: Boolean,
+    state: IslandState,
+    faces: Boolean,
+    accent: Color,
+    height: Dp,
+    onTap: () -> Unit,
+) {
+    Box(Modifier.width(width), contentAlignment = Alignment.CenterEnd) {
+        AnimatedVisibility(
+            visible = visible,
+            enter = scaleIn(OyiMotion.bouncy(), initialScale = 0.2f) + fadeIn(OyiMotion.fastEffects()) +
+                expandHorizontally(OyiMotion.defaultSpatial(), expandFrom = Alignment.Start),
+            exit = scaleOut(OyiMotion.fastEffects(), targetScale = 0.4f) + fadeOut(OyiMotion.fastEffects()) +
+                shrinkHorizontally(OyiMotion.defaultSpatial(), shrinkTowards = Alignment.Start),
+        ) {
+            SecondaryBubble(state, faces, accent, height, onTap)
         }
     }
 }
@@ -474,7 +496,7 @@ private fun RestPill(spec: IslandSpec, idle: IslandIdleInfo, tone: Color, cutout
             cutout = cutout,
             height = compactHeight(cutout),
             modifier = Modifier
-                .width(cutout.width + 12.dp + 2 * 58.dp)
+                .width(cutout.width + 128.dp)
                 .padding(horizontal = 6.dp),
             start = lead,
             end = clock,
