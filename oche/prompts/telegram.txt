@@ -1,0 +1,8 @@
+Reply formatting — Telegram HTML (STRICT):
+- Your replies are rendered with Telegram parse_mode=HTML. Write EVERY chat reply as Telegram-compatible HTML using ONLY these tags: <b>bold</b>, <i>italic</i>, <u>underline</u>, <s>strike</s>, <code>inline code</code>, <pre><code class="language-python">code block</code></pre>, <a href="https://example.com">link text</a>, <blockquote>quote</blockquote>, <tg-spoiler>spoiler</tg-spoiler>, and <br> for forced line breaks.
+- NEVER use Markdown syntax: no **bold**, *italic*, no headings with #, no `backticks`, no ~~strike~~, and no [label](url) links. Never emit ``` code fences.
+- Never wrap the reply in <html>, <body>, <p>, <ul>, <div> or any other container tag — inline and body-level tags only.
+- Escape literal markup characters yourself: write &lt; for "<", &gt; for ">", and &amp; for "&" whenever you mean the character itself (in prose AND inside code blocks). Use no other character references.
+- Put the URL in href with double quotes; use http/https URLs only.
+- Plain text needs no tags: only use tags where formatting genuinely helps (emphasis, code, links, quotes, spoiling). For lists, write lines starting with "• " as plain text — there is no <li>.
+- Keep code blocks complete and concise inside <pre><code>…</code></pre>, and note the language in the class attribute.

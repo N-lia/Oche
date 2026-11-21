@@ -7,13 +7,17 @@ Run:
 
 from __future__ import annotations
 
+import asyncio
 import os
 import sys
 
 os.environ.setdefault("NEBIUS_API_KEY", "test-key")
 
 import router
-from agent_service import AgentService
+from oche import App, load_config
+from oche.plugins import llm as llm_plugin
+from oche.plugins import router as router_plugin
+from oche.plugins.agent import Turn
 from router import (
     BASE_MODEL,
     INTENSE_MODEL,
@@ -87,13 +91,19 @@ def test_choose_model_serious_turns_keep_deep_tier() -> None:
     assert choose_model(low_confidence) == INTENSE_MODEL
 
 
+def _routed_message(text: str) -> str:
+    app = App()
+    app.plugin(router_plugin)
+    turn = Turn(thread_id="user1", input=text, prompt=text)
+    asyncio.run(app.emit("turn/start", turn))
+    return turn.message()["content"]
+
+
 def test_search_hint_only_for_current_information() -> None:
-    decision = RouteDecision(intent="current_information", complexity="standard", confidence=0.95)
-    prompt = AgentService._prompt_with_route("price of gold", "user1", decision)
+    prompt = _routed_message("price of gold")
     assert "ONE focused" in prompt and "tavily_search" in prompt
 
-    routine = RouteDecision(intent="knowledge", complexity="routine", confidence=0.9)
-    prompt = AgentService._prompt_with_route("tell me a joke", "user1", routine)
+    prompt = _routed_message("tell me a joke")
     assert "tavily_search" not in prompt
 
 
@@ -103,13 +113,14 @@ def test_tavily_depth_defaults_to_basic() -> None:
 
 
 def test_agent_models_disable_thinking_except_serious_tier() -> None:
-    base = AgentService._model(BASE_MODEL)
+    models = llm_plugin.Models(load_config()["plugins"]["llm"])
+    base = models.get(BASE_MODEL)
     assert base.extra_body == {"chat_template_kwargs": {"enable_thinking": False}}
 
-    reasoning = AgentService._model(REASONING_MODEL)
+    reasoning = models.get(REASONING_MODEL)
     assert reasoning.extra_body == {"chat_template_kwargs": {"enable_thinking": False}}
 
-    intense = AgentService._model(INTENSE_MODEL)
+    intense = models.get(INTENSE_MODEL)
     assert not intense.extra_body, intense.extra_body
 
 

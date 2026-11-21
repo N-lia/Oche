@@ -20,6 +20,8 @@ RUN --mount=type=cache,target=/root/.cache/uv \
 
 COPY config.py main.py agent_service.py memory.py privacy.py router.py telegram_support.py telegram_format.py TG.py voice.py subagent.py tool.py asr_client.py oyi_asr_pb2.py oyi_asr_pb2_grpc.py docker-entrypoint.sh ./
 COPY --chown=65532:65532 tavily_response/ ./tavily_response/
+COPY --chown=65532:65532 oche.toml ./
+COPY --chown=65532:65532 oche/ ./oche/
 
 RUN mkdir -p /data/oyi-memory/workspace \
     && chmod 0555 /app/docker-entrypoint.sh \

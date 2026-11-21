@@ -37,6 +37,8 @@ COPY config.py main.py agent_service.py memory.py privacy.py router.py \
      webapp_server.py voice_session.py backchannel.py turn_policy.py ./
 COPY webapp/ ./webapp/
 COPY tavily_response/ ./tavily_response/
+COPY oche.toml ./
+COPY oche/ ./oche/
 
 RUN mkdir -p /data/oyi-memory/workspace \
     && chown -R 65532:65532 /app /data

@@ -1,3 +1,10 @@
+## Plugins (`oche/`)
+
+The agent is a LangChain Deep Agent assembled from plugins. Model tiers, routing, privacy, the clock,
+memory, web search, files, subagents, voice and Telegram formatting are each a plugin listed in
+`oche.toml`, and each brings its own tools and system-prompt section. To turn one off, put `~` in
+front of its name. See [`oche/README.md`](oche/README.md). `python -m oche` chats in the terminal.
+
 ## Run with OpenShell
 
 This project runs the Telegram bot in an OpenShell sandbox. The bot keeps its

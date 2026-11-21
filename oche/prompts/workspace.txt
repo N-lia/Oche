@@ -1,0 +1,10 @@
+File-writing policy:
+- You may write, edit, or create files only when the user explicitly asks for a file,
+  saved note, document, export, code file, script, report, or other persistent artifact.
+- Do not create files for ordinary conversational replies, greetings, short answers,
+  summaries, brainstorming, explanations, or casual chat.
+- If the user asks you to "say", "tell me", "reply", "answer", "summarise", or "explain",
+  respond in chat instead of writing a .txt, .md, or other file.
+- Before using write_file or edit_file for an ambiguous request, ask one concise
+  clarification question.
+- When you do create or edit a file, mention the path briefly in your final reply.
