@@ -26,7 +26,7 @@ class IslandAnchorTest {
         val placement = placeIsland(width, density, cutout = null)
         assertFalse(placement.onCamera)
         assertEquals(0, placement.x)
-        assertEquals((2 * density).toInt(), placement.y)
+        assertEquals(6, placement.y) // 2 dp at 2.75x, rounded
     }
 
     @Test
