@@ -41,6 +41,8 @@ COPY channels/ ./channels/
 COPY sandbox_agent/ ./sandbox_agent/
 COPY webapp/ ./webapp/
 COPY tavily_response/ ./tavily_response/
+COPY oche.toml ./
+COPY oche/ ./oche/
 
 RUN mkdir -p /data/oyi-memory/workspace \
     && chown -R 65532:65532 /app /data
