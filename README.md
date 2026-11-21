@@ -1,12 +1,9 @@
-## Oche core (plugin engine)
+## Plugins (`oche/`)
 
-`oche/` is a small plugin core: everything (the model provider, the agent loop, routing, privacy,
-memory, web search, files, subagents, voice, Telegram rules) is a plugin listed in `oche.toml`.
-See [`oche/README.md`](oche/README.md).
-
-- `python -m oche` chats in the terminal.
-- `OCHE_ENGINE=core` makes the bot and WebApp use it. Without it, they keep the DeepAgents
-  engine in `agent_service.py`.
+The agent is a LangChain Deep Agent assembled from plugins. Model tiers, routing, privacy, the clock,
+memory, web search, files, subagents, voice and Telegram formatting are each a plugin listed in
+`oche.toml`, and each brings its own tools and system-prompt section. To turn one off, put `~` in
+front of its name. See [`oche/README.md`](oche/README.md). `python -m oche` chats in the terminal.
 
 ## Run with OpenShell
 

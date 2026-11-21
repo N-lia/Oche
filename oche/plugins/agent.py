@@ -1,43 +1,32 @@
-"""The agent loop, as a plugin (pi-style: small, plain, inspectable).
+"""The engine: a LangChain Deep Agent assembled from whatever the plugins registered.
 
-Provides the ``agent`` service. One call to ``agent.run(text, thread_id)``:
+Provides the ``agent`` service. Each turn:
 
 1. builds a ``Turn`` and fires ``turn/start`` so plugins can rewrite the
-   prompt, pick a model, or add context lines (router, clock, privacy...);
-2. sends history + system prompt + tools to the ``model`` service;
-3. streams text (piped through ``turn/text``), runs any tool calls, feeds the
-   results back, and repeats until the model answers without tools;
-4. stores the exchange and fires ``turn/end``.
+   prompt, pick a model, or add context lines (privacy, clock, router...);
+2. runs a Deep Agent whose tools and system prompt are every tool and prompt
+   section currently registered (rebuilt automatically when plugins change);
+3. pipes each streamed text chunk through ``turn/text``;
+4. fires ``turn/end`` with the final reply.
 
-It yields the same event dicts the WebApp already consumes:
-``status``, ``tool`` (start/done), ``token``, and a final ``done``.
+The public methods match the old ``AgentService`` (``chat``, ``stream``,
+``astream``, ``astream_events``, ``get_config``, ``assistant_text_chunk``),
+so ``main.py``, the bot and the WebApp do not change.
 """
 
 from __future__ import annotations
 
-import json
+import asyncio
 import logging
-from collections.abc import AsyncIterator
-from contextvars import ContextVar
 from dataclasses import dataclass, field
 from typing import Any
 
 from oche.core import Context
 
 name = "agent"
-inject = ["model"]
+inject = ["llm"]
 
 LOGGER = logging.getLogger("oche.agent")
-
-_CURRENT_TURN: ContextVar[Turn | None] = ContextVar("oche_current_turn", default=None)
-
-BASE_PROMPT = """You are a helpful personal assistant. Answer directly and concisely.
-Use tools only when they genuinely help; never expose raw tool output or internal reasoning."""
-
-
-def current_turn() -> Turn | None:
-    """The turn a tool is running inside (thread id, state, ...)."""
-    return _CURRENT_TURN.get()
 
 
 @dataclass
@@ -45,125 +34,195 @@ class Turn:
     thread_id: str
     input: str  # what the user sent, untouched
     prompt: str  # what the model will see; plugins may rewrite it
-    model: str | None = None  # None = provider default
+    model: str | None = None  # None = the llm plugin's default
     context: list[str] = field(default_factory=list)  # header lines prefixed to the prompt
     state: dict[str, Any] = field(default_factory=dict)  # per-turn scratch space for plugins
     text: str = ""  # final visible reply
-    exclude_tools: set[str] = field(default_factory=set)
-    system_extra: str = ""
+
+    def message(self) -> dict[str, str]:
+        content = "\n".join(self.context) + "\n\n" + self.prompt if self.context else self.prompt
+        return {"role": "user", "content": content}
+
+
+def _register_harness_profile() -> None:
+    """Disable Deep Agents' blocking ``task`` subagent and dummy ``execute`` tool."""
+    from deepagents import GeneralPurposeSubagentProfile, HarnessProfile, register_harness_profile
+
+    register_harness_profile(
+        "openai",
+        HarnessProfile(
+            excluded_tools=frozenset({"execute"}),
+            general_purpose_subagent=GeneralPurposeSubagentProfile(enabled=False),
+        ),
+    )
+
+
+def _as_langchain(tool: Any) -> Any:
+    from langchain_core.tools import BaseTool
+    from langchain_core.tools import tool as make_tool
+
+    return tool if isinstance(tool, BaseTool) else make_tool(tool)
 
 
 class Agent:
     def __init__(self, ctx: Context, config: dict[str, Any]) -> None:
+        from langgraph.checkpoint.memory import MemorySaver
+
         self.ctx = ctx
-        self.max_steps = int(config.get("max_steps", 12))
-        self.max_history = int(config.get("max_history", 60))
-        self.history: dict[str, list[dict[str, Any]]] = {}
+        self.checkpointer = MemorySaver()
+        self._agents: dict[str, Any] = {}
+        self._version = -1
 
-    def tool_label(self, name: str) -> str:
-        tool = self.ctx.tools.get(name)
-        return (tool.label if tool else "") or name
+    # Assembly -----------------------------------------------------------------
 
-    async def chat(self, text: str, thread_id: str = "me", **options: Any) -> str:
-        """Run a turn and return only the final reply text."""
-        parts = [event["text"] async for event in self.run(text, thread_id, **options) if event["type"] == "token"]
-        return "".join(parts)
+    def build(self, model_name: str | None = None, *, exclude: set[str] = frozenset(), **create: Any) -> Any:
+        """A Deep Agent over the current plugin tools and prompt (uncached)."""
+        from deepagents import create_deep_agent
 
-    async def run(
-        self,
-        text: str,
-        thread_id: str = "me",
-        *,
-        model: str | None = None,
-        system_extra: str = "",
-        exclude_tools: set[str] | None = None,
-    ) -> AsyncIterator[dict[str, Any]]:
-        ctx = self.ctx
-        turn = Turn(
-            thread_id=thread_id,
-            input=text,
-            prompt=text,
-            model=model,
-            system_extra=system_extra,
-            exclude_tools=set(exclude_tools or ()),
+        tools = [_as_langchain(t) for n, t in self.ctx.tools.items() if n not in exclude]
+        backend = self.ctx.get("backend")
+        if backend is not None:
+            create.setdefault("backend", backend)
+        create.setdefault("system_prompt", self.ctx.system_prompt())
+        return create_deep_agent(model=self.ctx.llm.get(model_name), tools=tools, **create)
+
+    def agent_for(self, model_name: str | None) -> Any:
+        if self._version != self.ctx.version:  # a plugin added/removed a tool or prompt section
+            self._agents.clear()
+            self._version = self.ctx.version
+        key = model_name or ""
+        if key not in self._agents:
+            self._agents[key] = self.build(model_name, checkpointer=self.checkpointer)
+        return self._agents[key]
+
+    # Turn helpers ---------------------------------------------------------------
+
+    @staticmethod
+    def get_config(thread_id: str = "me") -> dict[str, dict[str, str]]:
+        return {"configurable": {"thread_id": thread_id}}
+
+    @staticmethod
+    def assistant_text_chunk(chunk: Any) -> str:
+        if getattr(chunk, "type", "") not in {"AIMessage", "AIMessageChunk", "ai"}:
+            return ""
+        content = getattr(chunk, "content", "")
+        if isinstance(content, str):
+            return content
+        if not isinstance(content, list):
+            return ""
+        return "".join(
+            str(block.get("text") or "") for block in content if isinstance(block, dict) and block.get("type") == "text"
         )
-        await ctx.emit("turn/start", turn)
-        yield {"type": "status", "phase": "thinking", "text": "Thinking…"}
 
-        history = self.history.setdefault(thread_id, [])
-        content = "\n".join(turn.context) + "\n\n" + turn.prompt if turn.context else turn.prompt
-        new_messages: list[dict[str, Any]] = [{"role": "user", "content": content}]
+    @staticmethod
+    def _final_text(response: dict[str, Any]) -> str:
+        last = response["messages"][-1]
+        raw = getattr(last, "content", None)
+        if raw is None and isinstance(last, dict):
+            raw = last.get("content", "")
+        if isinstance(raw, list):
+            raw = "".join(b.get("text", "") if isinstance(b, dict) else str(b) for b in raw)
+        return str(raw or "")
 
-        system = await ctx.system_prompt(turn)
-        if turn.system_extra:
-            system = f"{system}\n\n{turn.system_extra}".strip()
-        tools = {n: t for n, t in ctx.tools.items() if n not in turn.exclude_tools}
-        schemas = [t.schema() for t in tools.values()]
-        visible: list[str] = []
+    async def _start(self, text: str, thread_id: str) -> Turn:
+        turn = Turn(thread_id=thread_id, input=text, prompt=text)
+        await self.ctx.emit("turn/start", turn)
+        return turn
 
-        for _step in range(self.max_steps):
-            messages = [{"role": "system", "content": system}, *history, *new_messages]
-            text_parts: list[str] = []
-            calls: list[dict[str, Any]] = []
-            async for event in ctx.model.stream(messages=messages, tools=schemas, model=turn.model):
-                if event["type"] == "text":
-                    text_parts.append(event["text"])
-                    shown = await ctx.pipe("turn/text", event["text"], turn)
-                    if shown:
-                        visible.append(shown)
-                        yield {"type": "token", "text": shown}
-                elif event["type"] == "tool_call":
-                    calls.append(event)
+    async def _end(self, turn: Turn) -> None:
+        await self.ctx.emit("turn/end", turn)
 
-            assistant: dict[str, Any] = {"role": "assistant", "content": "".join(text_parts) or None}
-            if calls:
-                assistant["tool_calls"] = [
-                    {"id": c["id"], "type": "function", "function": {"name": c["name"], "arguments": c["arguments"]}}
-                    for c in calls
-                ]
-            new_messages.append(assistant)
-            if not calls:
-                break
+    def _scope(self, thread_id: str) -> Any:
+        """Tools read the current user/chat id from memory's context variable."""
+        from memory import set_current_user_id
 
-            for call in calls:
-                label = self.tool_label(call["name"])
-                yield {"type": "tool", "name": call["name"], "label": label, "state": "start"}
-                result = await self._run_tool(tools, call, turn)
-                new_messages.append({"role": "tool", "tool_call_id": call["id"], "content": result})
-                yield {"type": "tool", "name": call["name"], "label": label, "state": "done"}
-        else:
-            LOGGER.warning("turn hit max_steps=%s on thread %s", self.max_steps, thread_id)
+        return set_current_user_id(thread_id)
 
-        history.extend(new_messages)
-        if len(history) > self.max_history:
-            del history[: len(history) - self.max_history]
-            # Never start history on an orphaned tool result.
-            while history and history[0]["role"] != "user":
-                history.pop(0)
-        turn.text = "".join(visible)
-        await ctx.emit("turn/end", turn)
-        yield {"type": "done"}
+    @staticmethod
+    def _unscope(token: Any) -> None:
+        from memory import reset_current_user_id
 
-    async def _run_tool(self, tools: dict[str, Any], call: dict[str, Any], turn: Turn) -> str:
-        tool = tools.get(call["name"])
-        if tool is None:
-            return f"Error: unknown tool {call['name']!r}."
+        reset_current_user_id(token)
+
+    # Public API (same shape as the old AgentService) ------------------------------
+
+    def chat(self, user_input: str, thread_id: str = "me") -> str:
+        turn = asyncio.run(self._start(user_input, thread_id))
+        token = self._scope(thread_id)
         try:
-            args = json.loads(call["arguments"] or "{}")
-        except json.JSONDecodeError as exc:
-            return f"Error: tool arguments were not valid JSON ({exc})."
-        token = _CURRENT_TURN.set(turn)
-        try:
-            return await tool(**args)
-        except Exception as exc:  # noqa: BLE001 - errors go back to the model
-            LOGGER.exception("tool %s failed", call["name"])
-            return f"Error running {call['name']}: {exc}"
+            response = self.agent_for(turn.model).invoke({"messages": [turn.message()]}, config=self.get_config(thread_id))
         finally:
-            _CURRENT_TURN.reset(token)
+            self._unscope(token)
+        turn.text = self.ctx.pipe_sync("turn/text", self._final_text(response), turn)
+        asyncio.run(self._end(turn))
+        return turn.text
+
+    def stream(self, user_input: str, thread_id: str = "me"):
+        turn = asyncio.run(self._start(user_input, thread_id))
+        visible: list[str] = []
+        token = self._scope(thread_id)
+        try:
+            for chunk, _ in self.agent_for(turn.model).stream(
+                {"messages": [turn.message()]}, config=self.get_config(thread_id), stream_mode="messages"
+            ):
+                text = self.assistant_text_chunk(chunk)
+                if text:
+                    text = self.ctx.pipe_sync("turn/text", text, turn)
+                    visible.append(text)
+                    yield text
+        finally:
+            self._unscope(token)
+        turn.text = "".join(visible)
+        asyncio.run(self._end(turn))
+
+    async def astream(self, user_input: str, thread_id: str = "me"):
+        async for event in self.astream_events(user_input, thread_id):
+            if event["type"] == "token":
+                yield event["text"]
+
+    async def astream_events(self, user_input: str, thread_id: str = "me"):
+        """Structured stream for rich clients: ``status`` / ``tool`` / ``token`` events, then ``done``."""
+        turn = await self._start(user_input, thread_id)
+        visible: list[str] = []
+        announced: set[str] = set()
+        token = self._scope(thread_id)
+        try:
+            yield {"type": "status", "phase": "thinking", "text": "Thinking…"}
+            async for chunk, _meta in self.agent_for(turn.model).astream(
+                {"messages": [turn.message()]}, config=self.get_config(thread_id), stream_mode="messages"
+            ):
+                try:
+                    if getattr(chunk, "type", "") == "tool":
+                        tool_name = getattr(chunk, "name", None) or "tool"
+                        yield {"type": "tool", "name": tool_name, "label": self.ctx.label(tool_name), "state": "done"}
+                    else:
+                        for call in getattr(chunk, "tool_calls", None) or []:
+                            tool_name = call.get("name") if isinstance(call, dict) else getattr(call, "name", None)
+                            if tool_name and tool_name not in announced:
+                                announced.add(tool_name)
+                                yield {
+                                    "type": "tool",
+                                    "name": tool_name,
+                                    "label": self.ctx.label(tool_name),
+                                    "state": "start",
+                                }
+                except Exception:  # noqa: BLE001 - activity is best-effort
+                    pass
+                text = self.assistant_text_chunk(chunk)
+                if text:
+                    text = self.ctx.pipe_sync("turn/text", text, turn)
+                    visible.append(text)
+                    yield {"type": "token", "text": text}
+        finally:
+            self._unscope(token)
+        turn.text = "".join(visible)
+        await self._end(turn)
+        yield {"type": "done"}
 
 
 def apply(ctx: Context, config: dict[str, Any]) -> None:
-    prompt = config.get("prompt", BASE_PROMPT)
-    if prompt:
-        ctx.prompt(prompt, order=0)
+    _register_harness_profile()
+    from oche.loader import prompt_file
+
+    ctx.prompt(config.get("prompt") or prompt_file("agent"), order=0)
     ctx.provide("agent", Agent(ctx, config))

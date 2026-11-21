@@ -60,3 +60,11 @@ def create_app(config: dict[str, Any] | None = None, *, only: set[str] | None = 
             continue
         app.plugin(resolve(spec), _expand(plugin_config or {}))
     return app
+
+
+PROMPTS_DIR = Path(__file__).resolve().parent / "prompts"
+
+
+def prompt_file(name: str) -> str:
+    """Text of ``oche/prompts/<name>.txt`` (each plugin's slice of the system prompt)."""
+    return (PROMPTS_DIR / f"{name}.txt").read_text(encoding="utf-8")

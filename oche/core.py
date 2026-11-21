@@ -10,8 +10,10 @@ plugins) is tracked by its scope and undone when the scope is disposed.
 all present waits in a pending state, activates as soon as they appear, and
 is deactivated again (back to pending) if one of them goes away.
 
-The core knows nothing about models, chat, Telegram or memory. Those are
-plugins too, including the agent loop itself (``oche.plugins.agent``).
+The core knows nothing about models, chat, Telegram or memory, and does not
+import LangChain. Those are plugins too, including the Deep Agents engine
+itself (``oche.plugins.agent``), which turns the registered tools and prompt
+sections into a LangChain Deep Agent.
 """
 
 from __future__ import annotations
@@ -20,68 +22,11 @@ import asyncio
 import inspect
 import logging
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass, field
 from typing import Any
 
 LOGGER = logging.getLogger("oche")
 
 Disposer = Callable[[], Any]
-
-
-# --------------------------------------------------------------------------- tools
-
-
-@dataclass
-class Tool:
-    """A model-callable function. ``parameters`` is a JSON Schema object."""
-
-    name: str
-    description: str
-    parameters: dict[str, Any]
-    run: Callable[..., Any]
-    label: str = ""  # friendly activity label for rich clients
-
-    async def __call__(self, **kwargs: Any) -> str:
-        result = self.run(**kwargs)
-        if inspect.isawaitable(result):
-            result = await result
-        return result if isinstance(result, str) else str(result)
-
-    def schema(self) -> dict[str, Any]:
-        """OpenAI-style function schema."""
-        return {
-            "type": "function",
-            "function": {
-                "name": self.name,
-                "description": self.description,
-                "parameters": self.parameters,
-            },
-        }
-
-
-_JSON_TYPES = {str: "string", int: "integer", float: "number", bool: "boolean", list: "array", dict: "object"}
-
-
-def schema_from_signature(fn: Callable[..., Any]) -> dict[str, Any]:
-    """Infer a minimal JSON Schema from simple type hints (str/int/float/bool/list/dict)."""
-    hints = {}
-    try:
-        hints = inspect.get_annotations(fn, eval_str=True)
-    except Exception:  # noqa: BLE001 - fall back to strings
-        pass
-    properties: dict[str, Any] = {}
-    required: list[str] = []
-    for name, param in inspect.signature(fn).parameters.items():
-        if param.kind in (param.VAR_POSITIONAL, param.VAR_KEYWORD):
-            continue
-        hint = hints.get(name, str)
-        origin = getattr(hint, "__origin__", hint)
-        properties[name] = {"type": _JSON_TYPES.get(origin, "string")}
-        if param.default is inspect.Parameter.empty:
-            required.append(name)
-        else:
-            properties[name]["default"] = param.default
-    return {"type": "object", "properties": properties, "required": required}
 
 
 # --------------------------------------------------------------------------- scope
@@ -161,8 +106,10 @@ class _Root:
     def __init__(self) -> None:
         self.services: dict[str, Any] = {}
         self.listeners: dict[str, list[Callable[..., Any]]] = {}
-        self.tools: dict[str, Tool] = {}
-        self.prompts: list[tuple[int, Any]] = []
+        self.tools: dict[str, Any] = {}  # name -> LangChain tool or plain function
+        self.labels: dict[str, str] = {}  # name -> friendly activity label
+        self.prompts: list[tuple[int, str]] = []
+        self.version = 0  # bumped whenever tools or prompt sections change
         self.scopes: dict[Scope, None] = {}  # ordered set, load order
         self.tasks: set[asyncio.Task[Any]] = set()
         self.ready = False
@@ -305,54 +252,73 @@ class Context:
                 value = result
         return value
 
+    def pipe_sync(self, name: str, value: Any, *args: Any) -> Any:
+        """Synchronous ``pipe`` for hot paths (every streamed token). Handlers must be sync."""
+        for handler in list(self._root.listeners.get(name, ())):
+            result = handler(value, *args)
+            if inspect.isawaitable(result):
+                LOGGER.warning("async handler for sync pipe %r ignored", name)
+                getattr(result, "close", lambda: None)()
+            elif result is not None:
+                value = result
+        return value
+
     # Tools and prompt ---------------------------------------------------------
 
-    def tool(self, fn_or_tool: Any = None, /, **options: Any) -> Any:
-        """Register a tool. Use as ``ctx.tool(Tool(...))``, ``@ctx.tool`` or ``@ctx.tool(label=...)``."""
-        if fn_or_tool is None:
-            return lambda fn: self.tool(fn, **options)
-        tool = fn_or_tool if isinstance(fn_or_tool, Tool) else Tool(
-            name=options.get("name") or fn_or_tool.__name__,
-            description=options.get("description") or inspect.cleandoc(fn_or_tool.__doc__ or ""),
-            parameters=options.get("parameters") or schema_from_signature(fn_or_tool),
-            run=fn_or_tool,
-            label=options.get("label", ""),
-        )
-        tools = self._root.tools
-        if tool.name in tools:
-            LOGGER.warning("tool %s is being replaced", tool.name)
-        tools[tool.name] = tool
+    def tool(self, tool: Any = None, /, *, label: str = "") -> Any:
+        """Register a tool: a LangChain tool, or a plain function with a docstring.
+
+        Use as ``ctx.tool(some_tool)``, ``@ctx.tool`` or ``@ctx.tool(label="Searching")``.
+        """
+        if tool is None:
+            return lambda fn: self.tool(fn, label=label)
+        root = self._root
+        tool_name = getattr(tool, "name", None) or tool.__name__
+        if tool_name in root.tools:
+            LOGGER.warning("tool %s is being replaced", tool_name)
+        root.tools[tool_name] = tool
+        if label:
+            root.labels[tool_name] = label
+        root.version += 1
 
         def remove() -> None:
-            if tools.get(tool.name) is tool:
-                del tools[tool.name]
+            if root.tools.get(tool_name) is tool:
+                del root.tools[tool_name]
+                root.labels.pop(tool_name, None)
+                root.version += 1
 
         self.effect(remove)
-        return fn_or_tool
+        return tool
 
     @property
-    def tools(self) -> dict[str, Tool]:
+    def tools(self) -> dict[str, Any]:
         return dict(self._root.tools)
 
-    def prompt(self, section: str | Callable[..., Any], *, order: int = 50) -> Disposer:
-        """Contribute a system-prompt section (text, or ``fn(turn) -> str | None``)."""
-        entry = (order, section)
-        self._root.prompts.append(entry)
-        self._root.prompts.sort(key=lambda item: item[0])
+    def label(self, tool_name: str) -> str:
+        return self._root.labels.get(tool_name, tool_name)
+
+    def prompt(self, section: str, *, order: int = 50) -> Disposer:
+        """Contribute a system-prompt section. Lower ``order`` comes first."""
+        root = self._root
+        entry = (order, inspect.cleandoc(section))
+        root.prompts.append(entry)
+        root.prompts.sort(key=lambda item: item[0])
+        root.version += 1
 
         def remove() -> None:
-            if entry in self._root.prompts:
-                self._root.prompts.remove(entry)
+            if entry in root.prompts:
+                root.prompts.remove(entry)
+                root.version += 1
 
         return self.effect(remove)
 
-    async def system_prompt(self, turn: Any = None) -> str:
-        parts: list[str] = []
-        for _, section in list(self._root.prompts):
-            text = await _call(section, turn) if callable(section) else section
-            if text:
-                parts.append(inspect.cleandoc(text))
-        return "\n\n".join(parts)
+    def system_prompt(self) -> str:
+        return "\n\n".join(text for _, text in self._root.prompts if text)
+
+    @property
+    def version(self) -> int:
+        """Changes whenever tools or prompt sections change (for rebuilding cached agents)."""
+        return self._root.version
 
     # Background work ----------------------------------------------------------
 

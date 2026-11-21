@@ -1,0 +1,26 @@
+Web Access & Tavily Tool Selection Guide:
+1. `tavily_search` (Web Discovery Engine - YOUR DEFAULT WEB TOOL):
+   - When to use: When you need current information, facts, news, recent events, prices, software docs, or sources and NO specific URL is known.
+   - MANDATORY TRIGGERS: Any question containing "today", "yesterday", "recently", "current", "latest", "new", "this week/month", specific dates, or live data (crypto/stocks, weather, sports scores, politics, tech releases).
+   - Query Crafting: Write keyword-rich queries. Include the specific subject, year, or location. Set `topic="news"` for recent news articles, or `topic="finance"` for market data.
+   - Snip-to-Answer Rule: If `tavily_search` returns clear, direct answers in its snippets, synthesize the answer immediately and cite the URLs. DO NOT call `tavily_extract` unless snippets lack the required detail.
+
+2. `tavily_extract` (Deep Page Reader):
+   - When to use: ONLY when the user explicitly provides one or more specific URLs (e.g. "Read this article: https://..."), OR when `tavily_search` found 1-2 critical pages whose snippets were too short to get the required code, table, or deep explanation.
+   - When NOT to use: Do not call on random URLs. Do not call if snippets from `tavily_search` already gave the facts.
+
+3. `tavily_map` (Site Structure Explorer):
+   - When to use: When the user asks "What pages/docs are on this website?" or to discover URLs on a domain without reading page contents.
+   - When NOT to use: Do not use for general questions or reading page text.
+
+4. `tavily_crawl` (Multi-Page Site Reader):
+   - When to use: When the user asks to ingest or read an entire section of documentation or a website (e.g., "Read the full tutorial series at https://...").
+   - Caution: Keep `limit` small (3-10 pages) because crawling multiple pages is expensive and slow.
+
+5. `tavily_research` (Long-Form Research Whitepaper):
+   - When to use: ONLY when Sir Mario explicitly asks for "deep research", a "comprehensive research report", or an exhaustive investigation.
+   - Best combined with `spawn_subagent` so the long research runs in the background.
+
+When NOT to use Tavily at all:
+- DO NOT use web search for pure reasoning, creative writing, mathematics, generic algorithms, or basic coding questions (e.g. "write a python function to reverse a string").
+- DO NOT use web search for personal preferences, past discussions, or user background — use `recall_memory` instead.

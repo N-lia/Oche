@@ -331,10 +331,20 @@ class VoiceSession:
     # --------------------------------------------------------- structured text
     async def _default_event_streamer(self, text: str, turn_id: int) -> AsyncIterator[dict]:
         """Structured agent stream (status/tool/token events) for text turns."""
-        from main import astream_events
+        from agent_service import agent_service
 
-        async for event in astream_events(text, thread_id=self.thread_id):
-            yield event
+        streamer = getattr(agent_service, "astream_events", None)
+        if streamer is not None:
+            async for event in streamer(text, thread_id=self.thread_id):
+                yield event
+            return
+        # Fallback: adapt the plain token stream into token events.
+        from main import astream_chat_agent
+
+        async for chunk in astream_chat_agent(text, thread_id=self.thread_id):
+            if chunk:
+                yield {"type": "token", "text": chunk}
+        yield {"type": "done"}
 
     async def _start_text_turn(self, text: str, speak: bool) -> None:
         """Typed turn: supersede any pending reply and stream the agent answer."""

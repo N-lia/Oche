@@ -14,7 +14,6 @@ inject = ["agent"]
 
 def apply(ctx: Context, config: dict[str, Any]) -> None:
     thread_id = config.get("thread_id", "cli")
-    show_tools = config.get("show_tools", True)
 
     async def repl() -> None:
         print("oche ready. Ctrl-D to quit.", file=sys.stderr)
@@ -25,16 +24,12 @@ def apply(ctx: Context, config: dict[str, Any]) -> None:
                 break
             if not line.strip():
                 continue
-            async for event in ctx.agent.run(line, thread_id):
+            async for event in ctx.agent.astream_events(line, thread_id):
                 if event["type"] == "token":
                     print(event["text"], end="", flush=True)
-                elif event["type"] == "tool" and event["state"] == "start" and show_tools:
+                elif event["type"] == "tool" and event["state"] == "start":
                     print(f"\n[{event['label']}…]", file=sys.stderr, flush=True)
             print()
         await ctx.emit("exit")
 
-    def notify(target: str, title: str, text: str) -> None:
-        print(f"\n── {title} ──\n{text}\n", flush=True)
-
-    ctx.on("notify", notify)
     ctx.on("ready", lambda: ctx.task(repl()))
