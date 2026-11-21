@@ -18,7 +18,14 @@
   }
 
   const haptic = (style = 'light') => {
-    try { if (tg && tg.HapticFeedback) tg.HapticFeedback.impactOccurred(style); } catch (_) {}
+    try {
+      if (!tg || !tg.HapticFeedback) return;
+      if (style === 'success' || style === 'error' || style === 'warning') {
+        tg.HapticFeedback.notificationOccurred(style);
+      } else {
+        tg.HapticFeedback.impactOccurred(style);
+      }
+    } catch (_) {}
   };
 
   // ------------------------------------------------------------------- DOM
@@ -45,6 +52,9 @@
   // The mascot: one purple blob that blinks, looks around and talks.
   const mascot = window.createMascot ? window.createMascot($('mascot')) : null;
 
+  // The Dynamic Island at the top: the one place that says what OYI is doing.
+  const island = window.createIsland ? window.createIsland($('island'), { haptic }) : null;
+
   // ----------------------------------------------------------------- state
   const S = {
     socket: null,
@@ -68,6 +78,15 @@
     voiceActive: false,
     activityStartedAt: 0,
     activityInterval: null,
+    // What the island shows (see islandView): the current activity, whether
+    // OYI is talking, the listening caption and the tools used this turn.
+    activity: null,
+    speaking: false,
+    holding: false,
+    listenText: 'Listening',
+    turnTools: [],
+    turnError: false,
+    islandKey: '',
   };
 
   const PREROLL_FRAMES = 16;
@@ -130,6 +149,49 @@
     S.wsState = state;
     connDot.className = `stage__dot is-${state}`;
     if (text) stageText.textContent = text;
+    syncIsland();
+  }
+
+  // ---------------------------------------------------------------- island
+  // The island is derived from session state, so every handler just updates
+  // S and calls syncIsland(); the most important thing wins.
+  function toolSummary() {
+    return S.turnTools.length ? `Tools: ${S.turnTools.join(' · ')}` : '';
+  }
+
+  function islandView() {
+    if (S.wsState === 'offline') {
+      return ['offline', { detail: S.wantSocket ? 'Reconnecting automatically…' : '' }];
+    }
+    if (S.wsState === 'connecting') return ['connecting', {}];
+    if (S.speaking) return ['speaking', { detail: toolSummary() }];
+    if (S.activity) return [S.activity.kind, { ...S.activity, detail: S.activity.detail || toolSummary() }];
+    if (S.voiceActive) return [S.holding ? 'holding' : 'listening', { title: S.listenText }];
+    return ['idle', {}];
+  }
+
+  function applyIsland([state, opts]) {
+    const key = JSON.stringify([state, opts]);
+    if (key === S.islandKey) return; // nothing new: let a "Done" finish
+    S.islandKey = key;
+    island.set(state, opts);
+  }
+
+  function syncIsland() {
+    if (island) applyIsland(islandView());
+  }
+
+  // A turn is over: flash "Done" (with the tools it used) before settling.
+  function finishIsland() {
+    const failed = S.turnError;
+    const detail = toolSummary();
+    S.turnTools = [];
+    S.turnError = false;
+    if (!island) return;
+    const view = islandView();
+    if (failed || (view[0] !== 'idle' && view[0] !== 'listening')) { applyIsland(view); return; }
+    S.islandKey = JSON.stringify(view);
+    island.set('done', { detail, after: () => islandView() });
   }
 
   function setCaption(text) {
@@ -140,6 +202,9 @@
   // or speaking (with the mouth moving while the agent talks).
   function setVoiceState(state, text) {
     if (text) setCaption(text);
+    S.holding = state === 'holding';
+    if ((state === 'listening' || state === 'holding') && text) S.listenText = text;
+    syncIsland();
     if (!mascot) return;
     if (state === 'speaking') mascot.setState('speaking');
     else if (state === 'thinking') mascot.setState('thinking');
@@ -147,7 +212,9 @@
     else mascot.setState(S.voiceActive ? 'listening' : 'idle');
   }
 
-  function showActivity(text) {
+  function showActivity(text, kind = 'thinking', extra = {}) {
+    S.activity = { kind, title: text || 'Working…', ...extra };
+    syncIsland();
     setCaption(text || 'Working…');
     if (mascot) mascot.setState('thinking');
     if (!S.activityStartedAt) {
@@ -159,7 +226,9 @@
     }
   }
 
-  function hideActivity() {
+  function hideActivity(next = null) {
+    S.activity = next;
+    syncIsland();
     S.activityStartedAt = 0;
     if (S.activityInterval) { clearInterval(S.activityInterval); S.activityInterval = null; }
     if (mascot) mascot.setState(S.voiceActive ? 'listening' : 'idle');
@@ -167,7 +236,8 @@
   }
 
   let toastTimer = null;
-  function toast(text) {
+  function toast(text, kind = 'info', detail = '') {
+    if (island) { island.alert({ kind, title: text, detail }); return; }
     toastEl.textContent = text;
     toastEl.hidden = false;
     clearTimeout(toastTimer);
@@ -200,7 +270,8 @@
       if (mascot) mascot.pulse();
     }
     S.botBubble.textContent += delta;
-    hideActivity();
+    // Keep the island busy (and its timer running) while the text streams.
+    hideActivity(S.speaking ? null : { kind: 'replying', title: 'Replying…' });
     scrollDown();
   }
 
@@ -360,11 +431,14 @@
         showActivity(msg.text || 'Working…');
         break;
 
-      case 'tool':
+      case 'tool': {
         if (msg.turn_id && msg.turn_id <= S.interruptedTurnId) break;
-        addTool(msg.label || msg.name, msg.state);
-        showActivity(msg.label || 'Working…');
+        const label = msg.label || msg.name || 'Tool';
+        addTool(label, msg.state);
+        if (!S.turnTools.includes(label)) S.turnTools.push(label);
+        showActivity(label, 'tool', msg.state === 'done' ? { trail: 'check' } : {});
         break;
+      }
 
       case 'backchannel':
         if (!S.backchannels) break;
@@ -389,6 +463,7 @@
         break;
 
       case 'interrupted':
+        S.turnTools = [];
         hideActivity();
         stopOverlays();
         stopBotAudio();
@@ -399,8 +474,9 @@
         break;
 
       case 'error':
+        S.turnError = true;
         hideActivity();
-        toast(msg.message || 'Something went wrong.');
+        toast('Something went wrong', 'error', msg.message || '');
         addMessage('error', msg.message || 'Something went wrong.');
         S.busy = false;
         finalizeBotBubble();
@@ -410,9 +486,12 @@
         if (msg.turn_id && msg.turn_id <= S.interruptedTurnId) break;
         finalizeBotBubble();
         finalizeUserBubble();
-        hideActivity();
         S.busy = false;
+        S.activity = null;
         if (S.voiceActive) setVoiceState('listening', 'Listening');
+        hideActivity();
+        // While OYI is still talking, "Done" waits for the audio to end.
+        if (!S.speaking) finishIsland();
         break;
 
       default:
@@ -466,6 +545,7 @@
       }
       const rms = Math.sqrt(sum / buffer.length);
       if (mascot) mascot.setLevel(Math.min(1, rms * 3.4));
+      if (island) island.setLevel(Math.min(1, rms * 3.4));
     }, 55);
   }
 
@@ -497,6 +577,7 @@
       wsSend({ type: 'playback_end' });
       return;
     }
+    S.speaking = true;
     setVoiceState('speaking', 'Speaking…');
     if (mascot) mascot.setSpeaking(true);
     ensureTurnTaker().agentOutputStart();
@@ -504,13 +585,19 @@
     botAudio = new Audio(`data:audio/mpeg;base64,${base64}`);
     botAudio.onended = () => {
       botAudio = null;
+      S.speaking = false;
       stopLevelMeter();
       if (mascot) mascot.setSpeaking(false);
       ensureTurnTaker().agentOutputEnd();
       wsSend({ type: 'playback_end' });
       if (S.voiceActive) setVoiceState('listening', 'Listening');
+      if (!S.busy) finishIsland();
+      else syncIsland();
     };
     botAudio.play().then(() => startLevelMeter(botAudio)).catch(() => {
+      botAudio = null;
+      S.speaking = false;
+      syncIsland();
       stopLevelMeter();
       if (mascot) mascot.setSpeaking(false);
       ensureTurnTaker().agentOutputEnd();
@@ -639,6 +726,8 @@
 
     // Turn timing is decided locally from the level — not from transcripts and
     // not with a server round-trip.
+    if (island && !S.speaking) island.setLevel(Math.min(1, level * 9));
+
     const turn = ensureTurnTaker();
     turn.level(level);
     if (turn.shouldSend(level)) S.socket.send(pcm.buffer);
@@ -660,6 +749,8 @@
       // turn-taking on the server side.
       wsSend({ type: 'playback_end' });
     }
+    S.speaking = false;
+    syncIsland();
     stopLevelMeter();
     if (mascot) mascot.setSpeaking(false);
     if (turnTaker) turnTaker.agentOutputEnd();
@@ -711,7 +802,7 @@
       haptic('medium');
       await ensureSocket();
     } catch (err) {
-      toast(`Microphone unavailable: ${err.message || err}`);
+      toast('Microphone unavailable', 'error', String(err.message || err));
       addMessage('error', `Microphone unavailable: ${err.message || err}`);
       await stopVoice();
     }
@@ -727,6 +818,9 @@
     if (micStream) { micStream.getTracks().forEach((t) => t.stop()); micStream = null; }
     if (audioContext) { await audioContext.close(); audioContext = null; analyser = null; }
     if (botAudio) { botAudio.pause(); botAudio = null; }
+    S.speaking = false;
+    S.holding = false;
+    syncIsland();
     stopLevelMeter();
     if (mascot) mascot.setSpeaking(false);
     stopOverlays();

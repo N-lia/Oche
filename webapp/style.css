@@ -526,3 +526,197 @@ body {
 @media (max-height: 620px) {
   .mascot { width: min(110vw, 460px); }
 }
+
+/* ---------------------------------------------------------------- island
+   The Dynamic Island: one black capsule at the top that morphs between a
+   resting pill, a compact status pill and an expanded card. Sizes animate
+   on a spring; the contents fade in once the shape has settled. */
+.island {
+  --island-bg: #0b0710;
+  --island-ink: #ffffff;
+  --island-dim: rgba(255, 255, 255, 0.62);
+  --tone: #c77dff;
+  --spring: cubic-bezier(0.32, 1.32, 0.52, 1);
+
+  position: fixed;
+  top: calc(env(safe-area-inset-top, 0px) + 10px);
+  left: 50%;
+  z-index: 30;
+  transform: translateX(-50%);
+  width: 112px;
+  height: 32px;
+  border-radius: 999px;
+  background: var(--island-bg);
+  color: var(--island-ink);
+  box-shadow: 0 10px 28px rgba(20, 6, 34, 0.22), 0 1px 0 rgba(255, 255, 255, 0.04) inset;
+  display: grid;
+  grid-template-columns: 28px 1fr auto;
+  align-items: center;
+  gap: 10px;
+  padding: 0 14px 0 8px;
+  overflow: hidden;
+  cursor: pointer;
+  user-select: none;
+  -webkit-user-select: none;
+  transition:
+    width 520ms var(--spring),
+    height 520ms var(--spring),
+    border-radius 520ms var(--spring),
+    padding 520ms var(--spring),
+    box-shadow 300ms ease;
+}
+
+.island[data-size='compact'] { width: min(300px, calc(100vw - 32px)); height: 38px; }
+
+.island[data-size='expanded'] {
+  width: min(380px, calc(100vw - 24px));
+  height: 82px;
+  border-radius: 30px;
+  grid-template-columns: 44px 1fr auto;
+  padding: 0 18px 0 14px;
+  gap: 12px;
+  box-shadow: 0 18px 40px rgba(20, 6, 34, 0.3);
+}
+
+.island[data-tone='live'] { --tone: #34d17a; }
+.island[data-tone='ok'] { --tone: #34d17a; }
+.island[data-tone='warn'] { --tone: #f5a524; }
+.island[data-tone='bad'] { --tone: #ff5a75; }
+.island[data-tone='muted'] { --tone: rgba(255, 255, 255, 0.55); }
+
+/* Contents hide while resting and fade in after the shape grows. */
+.island__lead,
+.island__body,
+.island__trail {
+  opacity: 0;
+  transition: opacity 160ms ease;
+  min-width: 0;
+}
+
+.island:not([data-size='rest']) .island__lead,
+.island:not([data-size='rest']) .island__body,
+.island:not([data-size='rest']) .island__trail {
+  opacity: 1;
+  transition: opacity 240ms ease 170ms;
+}
+
+.island__lead {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  color: var(--tone);
+}
+
+.island[data-size='expanded'] .island__lead {
+  width: 44px;
+  height: 44px;
+  border-radius: 50%;
+  background: color-mix(in srgb, var(--tone) 20%, transparent);
+}
+
+.island__icon { display: flex; width: 18px; height: 18px; }
+.island__icon svg { width: 100%; height: 100%; }
+.island[data-size='expanded'] .island__icon { width: 22px; height: 22px; }
+
+.island__body { display: flex; flex-direction: column; justify-content: center; overflow: hidden; }
+
+.island__title {
+  font-size: 13.5px;
+  font-weight: 700;
+  letter-spacing: -0.1px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.island[data-size='expanded'] .island__title { font-size: 15px; }
+
+.island__detail {
+  margin-top: 2px;
+  font-size: 12.5px;
+  font-weight: 500;
+  line-height: 1.3;
+  color: var(--island-dim);
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+}
+
+.island:not([data-size='expanded']) .island__detail { display: none; }
+
+.island__trail {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  color: var(--tone);
+  font-family: var(--mono);
+  font-size: 12px;
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+}
+
+.island__time { color: var(--island-dim); min-width: 4ch; text-align: right; }
+
+.island__spinner {
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  border: 2.2px solid color-mix(in srgb, var(--tone) 28%, transparent);
+  border-top-color: var(--tone);
+  animation: island-spin 0.8s linear infinite;
+}
+
+.island__dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: var(--tone);
+  animation: pulse-dot 1.1s ease-in-out infinite;
+}
+
+.island__orb {
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: radial-gradient(circle at 35% 30%, #e3b5ff, var(--accent) 60%, #5d0f9c);
+  animation: island-orb 1.6s ease-in-out infinite;
+}
+
+.island__bars { display: flex; align-items: center; gap: 3px; height: 18px; }
+
+.island__bars i {
+  display: block;
+  width: 3px;
+  height: 100%;
+  border-radius: 2px;
+  background: var(--tone);
+  transform: scaleY(0.18);
+  transform-origin: center;
+  transition: transform 70ms linear;
+}
+
+/* The check draws itself when a turn finishes. */
+.island[data-state='done'] .island__icon svg path {
+  stroke-dasharray: 24;
+  stroke-dashoffset: 24;
+  animation: island-check 420ms ease-out 180ms forwards;
+}
+
+.island[data-state='alert'][data-tone='bad'] { animation: island-shake 420ms ease 120ms; }
+
+@keyframes island-spin { to { transform: rotate(360deg); } }
+@keyframes island-orb { 0%, 100% { transform: scale(0.88); } 50% { transform: scale(1.06); } }
+@keyframes island-check { to { stroke-dashoffset: 0; } }
+@keyframes island-shake {
+  0%, 100% { transform: translateX(-50%); }
+  25% { transform: translateX(calc(-50% - 5px)); }
+  60% { transform: translateX(calc(-50% + 4px)); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .island { transition-duration: 1ms; }
+  .island__spinner, .island__dot, .island__orb { animation: none; }
+}

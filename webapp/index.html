@@ -12,6 +12,16 @@
   <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
+  <!-- The Dynamic Island: what OYI is doing right now. Tap for detail. -->
+  <div class="island" id="island" data-size="rest" data-state="idle" role="status" aria-live="polite">
+    <div class="island__lead"></div>
+    <div class="island__body">
+      <div class="island__title"></div>
+      <div class="island__detail"></div>
+    </div>
+    <div class="island__trail"></div>
+  </div>
+
   <div class="app" id="app">
     <header class="stage" id="stage">
       <!-- The mascot IS the interface: tap to talk, long-press for settings. -->
@@ -140,6 +150,7 @@
 
   <script src="/static/turn-taking.js"></script>
   <script src="/static/mascot.js"></script>
+  <script src="/static/island.js"></script>
   <script src="/static/app.js"></script>
 </body>
 </html>

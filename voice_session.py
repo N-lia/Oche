@@ -163,6 +163,9 @@ class VoiceSession:
 
         self._agent_streamer = agent_streamer
         self._event_streamer = event_streamer or self._default_event_streamer
+        # Voice turns use the structured stream too (so the WebApp's island
+        # can show tools), unless a caller injected a plain token streamer.
+        self._voice_uses_events = agent_streamer is _default_agent_streamer
         self._tts = tts
         self._stream_factory = stream_factory
         self._clip_exists = clip_exists
@@ -342,6 +345,17 @@ class VoiceSession:
         from main import astream_chat_agent
 
         async for chunk in astream_chat_agent(text, thread_id=self.thread_id):
+            if chunk:
+                yield {"type": "token", "text": chunk}
+        yield {"type": "done"}
+
+    async def _voice_events(self, text: str, turn_id: int) -> AsyncIterator[dict]:
+        """Agent events for a voice turn: structured when possible, else tokens."""
+        if self._voice_uses_events:
+            async for event in self._event_streamer(text, turn_id):
+                yield event
+            return
+        async for chunk in self._agent_streamer(text, turn_id):
             if chunk:
                 yield {"type": "token", "text": chunk}
         yield {"type": "done"}
@@ -654,10 +668,17 @@ class VoiceSession:
         )
         try:
             chunks: list[str] = []
-            async for chunk in self._agent_streamer(user_text, turn_id):
-                if chunk:
-                    chunks.append(chunk)
-                    await self.send({"type": "bot_text_delta", "text": chunk, "turn_id": turn_id})
+            async for event in self._voice_events(user_text, turn_id):
+                etype = event.get("type")
+                if etype == "token" and event.get("text"):
+                    chunks.append(event["text"])
+                    await self.send(
+                        {"type": "bot_text_delta", "text": event["text"], "turn_id": turn_id}
+                    )
+                elif etype == "tool":
+                    await self.send({**event, "turn_id": turn_id})
+                elif etype == "done":
+                    break
             reply = "".join(chunks).strip() or "I could not produce a response."
         except asyncio.CancelledError:
             raise

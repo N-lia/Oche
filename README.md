@@ -115,6 +115,11 @@ messages and shows a live **agent-activity** stream (thinking, tool use).
   partial transcripts, and runs the backchannel policy in `backchannel.py`.
 - `voice_session.py` holds the turn state machine: audio/text → ASR → backchannels
   → agent → TTS. It is web-framework free so the turn-taking logic is unit-tested.
+- **Dynamic Island.** `webapp/island.js` draws a black pill at the top of the
+  screen that shows what OYI is doing: listening (live mic bars), thinking (with
+  a timer), the tool it is using, replying, speaking, then a short "Done". It
+  grows into a card for errors and notices, and a tap shows the tools used in
+  the turn. Voice turns send the same `status`/`tool` events as typed ones.
 - **Turn-taking is local and acoustic.** `webapp/turn-taking.js` runs a
   BargeKit-style state machine on the microphone level (`armed → user_speaking →
   cooldown`, `agent_speaking → barge_pending → interrupted`). The client owns
