@@ -104,6 +104,25 @@ class IslandSpecTest {
     }
 
     @Test
+    fun eachStateGetsItsExpression() {
+        fun face(kind: IslandKind, fromAgent: Boolean = false, expanded: Boolean = false) =
+            islandSpec(IslandState(kind = kind, fromAgent = fromAgent), idle, expanded).face
+
+        assertEquals(IslandFace.SLEEPING, face(IslandKind.IDLE))
+        assertEquals(IslandFace.NEUTRAL, face(IslandKind.IDLE, expanded = true))
+        assertEquals(IslandFace.NEUTRAL, face(IslandKind.LISTENING))
+        assertEquals(IslandFace.THINKING, face(IslandKind.THINKING))
+        assertEquals(IslandFace.CODING, face(IslandKind.TOOL))
+        assertEquals(IslandFace.TALKING, face(IslandKind.REPLYING))
+        assertEquals(IslandFace.TALKING, face(IslandKind.SPEAKING))
+        assertEquals(IslandFace.SCREENS, face(IslandKind.WORKING))
+        assertEquals(IslandFace.IDEA, face(IslandKind.APPROVAL_REQUIRED))
+        assertEquals(IslandFace.LAUGHING, face(IslandKind.COMPLETED, fromAgent = true))
+        assertEquals(IslandFace.COOL, face(IslandKind.COMPLETED))
+        assertEquals(IslandFace.THINKING, face(IslandKind.ERROR))
+    }
+
+    @Test
     fun durationsReadNaturally() {
         assertEquals("12s", formatDuration(12_400))
         assertEquals("4m", formatDuration(245_000))

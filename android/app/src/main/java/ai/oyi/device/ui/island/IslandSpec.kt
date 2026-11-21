@@ -25,6 +25,12 @@ enum class IslandLead { DOT, MIC, SPINNER, TOOL, PEN, ORB, PHONE, CHECK, ALERT, 
 /** The live accessory on the right of a compact pill. */
 enum class IslandTrail { NONE, TIMER, ELAPSED, BARS, SPINNER, CHECK, STEP, CLOCK }
 
+/**
+ * Caleb's expression stickers (res/drawable-nodpi/oyi_face_*.png). One
+ * pops up on the island for each state.
+ */
+enum class IslandFace { NEUTRAL, COOL, THINKING, LAUGHING, TALKING, CODING, IDEA, SLEEPING, SCREENS }
+
 /** A button on an expanded card. */
 enum class IslandAction { APPROVE, DENY, STOP, DISMISS, OPEN_APP }
 
@@ -51,6 +57,8 @@ data class IslandSpec(
     val expandable: Boolean = false,
     /** A swipe up or tap closes it. */
     val dismissable: Boolean = false,
+    /** The expression shown for this state. */
+    val face: IslandFace = IslandFace.NEUTRAL,
 )
 
 /**
@@ -59,7 +67,28 @@ data class IslandSpec(
  * [expanded] is the user's tap: it opens the detail of a compact state, or
  * the telemetry drawer of the idle pill.
  */
-fun islandSpec(state: IslandState, idle: IslandIdleInfo, expanded: Boolean): IslandSpec {
+fun islandSpec(state: IslandState, idle: IslandIdleInfo, expanded: Boolean): IslandSpec =
+    baseSpec(state, idle, expanded).copy(face = faceFor(state, expanded))
+
+/**
+ * Which expression goes with which state: asleep when nothing is going on,
+ * hand on chin while thinking, at the laptop while a tool runs, "…" while
+ * replying or speaking, shades and screens while driving the phone, a
+ * lightbulb when OYI needs a yes, a laugh when a turn lands.
+ */
+fun faceFor(state: IslandState, expanded: Boolean): IslandFace = when (state.kind) {
+    IslandKind.IDLE -> if (expanded) IslandFace.NEUTRAL else IslandFace.SLEEPING
+    IslandKind.LISTENING -> IslandFace.NEUTRAL
+    IslandKind.THINKING -> IslandFace.THINKING
+    IslandKind.TOOL -> IslandFace.CODING
+    IslandKind.REPLYING, IslandKind.SPEAKING -> IslandFace.TALKING
+    IslandKind.WORKING -> IslandFace.SCREENS
+    IslandKind.APPROVAL_REQUIRED -> IslandFace.IDEA
+    IslandKind.COMPLETED -> if (state.fromAgent) IslandFace.LAUGHING else IslandFace.COOL
+    IslandKind.ERROR -> IslandFace.THINKING
+}
+
+private fun baseSpec(state: IslandState, idle: IslandIdleInfo, expanded: Boolean): IslandSpec {
     val tools = state.tools.joinToString(" · ")
     return when (state.kind) {
         IslandKind.IDLE -> if (expanded) {

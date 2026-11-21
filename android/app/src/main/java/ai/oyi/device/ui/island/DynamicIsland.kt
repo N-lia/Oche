@@ -21,7 +21,15 @@ import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.scaleIn
 import androidx.compose.animation.togetherWith
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.scaleOut
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.Image
+import androidx.compose.foundation.layout.requiredSize
+import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.staticCompositionLocalOf
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.platform.LocalInspectionMode
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -120,6 +128,8 @@ fun DynamicIsland(
     onLongPress: () -> Unit = {},
     /** Inside OYI itself: no "Open OYI" button. */
     inApp: Boolean = false,
+    /** Show Caleb's expression stickers instead of plain icons. */
+    faces: Boolean = true,
     initiallyExpanded: Boolean = false,
 ) {
     var expanded by remember { mutableStateOf(initiallyExpanded) }
@@ -208,10 +218,12 @@ fun DynamicIsland(
             },
             label = "island",
         ) { target ->
-            when (target.size) {
-                IslandSize.REST -> RestPill(target, idle, tone)
-                IslandSize.COMPACT -> CompactPill(target, state, level, tone)
-                IslandSize.EXPANDED -> ExpandedCard(target, state, level, tone, onAction)
+            CompositionLocalProvider(LocalIslandFaces provides faces) {
+                when (target.size) {
+                    IslandSize.REST -> RestPill(target, idle, tone)
+                    IslandSize.COMPACT -> CompactPill(target, state, level, tone)
+                    IslandSize.EXPANDED -> ExpandedCard(target, state, level, tone, onAction)
+                }
             }
         }
     }
@@ -225,10 +237,27 @@ private fun RestPill(spec: IslandSpec, idle: IslandIdleInfo, tone: Color) {
         modifier = Modifier
             .height(34.dp)
             .widthIn(min = 112.dp, max = 236.dp)
-            .padding(horizontal = 14.dp),
+            .padding(start = if (LocalIslandFaces.current) 6.dp else 14.dp, end = 14.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        LinkDot(tone, pulsing = spec.tone == IslandTone.WARN)
+        if (LocalIslandFaces.current) {
+            // The face, with the link state as a small dot on its shoulder.
+            Box(Modifier.size(26.dp)) {
+                Face(spec.face, size = 26.dp)
+                Box(
+                    Modifier
+                        .align(Alignment.BottomEnd)
+                        .size(9.dp)
+                        .clip(CircleShape)
+                        .background(IslandColors.Shell)
+                        .padding(1.5.dp),
+                ) {
+                    LinkDot(tone, pulsing = spec.tone == IslandTone.WARN, size = 6.dp)
+                }
+            }
+        } else {
+            LinkDot(tone, pulsing = spec.tone == IslandTone.WARN)
+        }
         Spacer(Modifier.width(8.dp))
         Text(
             text = spec.title,
@@ -259,11 +288,11 @@ private fun CompactPill(spec: IslandSpec, state: IslandState, level: Float, tone
             .height(40.dp)
             .widthIn(max = 300.dp)
             .fillMaxWidth()
-            .padding(start = 8.dp, end = 14.dp),
+            .padding(start = 4.dp, end = 14.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Box(Modifier.size(28.dp), contentAlignment = Alignment.Center) {
-            Lead(spec.lead, tone, iconSize = 18.dp)
+        Box(Modifier.size(32.dp), contentAlignment = Alignment.Center) {
+            if (LocalIslandFaces.current) Face(spec.face, size = 34.dp) else Lead(spec.lead, tone, iconSize = 18.dp)
         }
         Spacer(Modifier.width(10.dp))
         Text(
@@ -295,14 +324,19 @@ private fun ExpandedCard(
             .padding(start = 14.dp, end = 16.dp, top = 14.dp, bottom = 14.dp),
     ) {
         Row(verticalAlignment = Alignment.CenterVertically) {
-            Box(
-                modifier = Modifier
-                    .size(44.dp)
-                    .clip(CircleShape)
-                    .background(tone.copy(alpha = 0.18f)),
-                contentAlignment = Alignment.Center,
-            ) {
-                Lead(spec.lead, tone, iconSize = 22.dp)
+            Box(modifier = Modifier.size(48.dp), contentAlignment = Alignment.Center) {
+                Box(
+                    Modifier
+                        .matchParentSize()
+                        .clip(CircleShape)
+                        .background(tone.copy(alpha = 0.18f)),
+                )
+                if (LocalIslandFaces.current) {
+                    // A little bigger than its circle, so it pops out of it.
+                    Face(spec.face, size = 56.dp)
+                } else {
+                    Lead(spec.lead, tone, iconSize = 22.dp)
+                }
             }
             Spacer(Modifier.width(12.dp))
             Column(Modifier.weight(1f)) {
@@ -356,6 +390,54 @@ private fun ExpandedCard(
 }
 
 // ------------------------------------------------------------- pieces
+
+private val LocalIslandFaces = staticCompositionLocalOf { true }
+
+@DrawableRes
+private fun faceRes(face: IslandFace): Int = when (face) {
+    IslandFace.NEUTRAL -> R.drawable.oyi_face_neutral
+    IslandFace.COOL -> R.drawable.oyi_face_cool
+    IslandFace.THINKING -> R.drawable.oyi_face_thinking
+    IslandFace.LAUGHING -> R.drawable.oyi_face_laughing
+    IslandFace.TALKING -> R.drawable.oyi_face_talking
+    IslandFace.CODING -> R.drawable.oyi_face_coding
+    IslandFace.IDEA -> R.drawable.oyi_face_idea
+    IslandFace.SLEEPING -> R.drawable.oyi_face_sleeping
+    IslandFace.SCREENS -> R.drawable.oyi_face_screens
+}
+
+/**
+ * One expression sticker. It pops in with a bouncy spring when it first
+ * shows, and swaps with a pop when the state changes.
+ */
+@Composable
+private fun Face(face: IslandFace, size: Dp) {
+    val still = LocalInspectionMode.current
+    val pop = remember { Animatable(if (still) 1f else 0.35f) }
+    LaunchedEffect(Unit) {
+        if (!still) pop.animateTo(1f, spring(dampingRatio = 0.42f, stiffness = Spring.StiffnessMediumLow))
+    }
+    AnimatedContent(
+        targetState = face,
+        transitionSpec = {
+            (scaleIn(spring(dampingRatio = 0.45f, stiffness = Spring.StiffnessMedium), initialScale = 0.3f) +
+                fadeIn(tween(120)))
+                .togetherWith(scaleOut(tween(140), targetScale = 0.5f) + fadeOut(tween(110)))
+                .using(SizeTransform(clip = false))
+        },
+        modifier = Modifier.graphicsLayer {
+            scaleX = pop.value
+            scaleY = pop.value
+        },
+        label = "face",
+    ) { current ->
+        Image(
+            painter = painterResource(faceRes(current)),
+            contentDescription = null,
+            modifier = Modifier.requiredSize(size),
+        )
+    }
+}
 
 @Composable
 private fun Lead(lead: IslandLead, tone: Color, iconSize: Dp) {

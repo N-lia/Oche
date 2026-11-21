@@ -262,6 +262,21 @@ buttons). The size changes on a spring.
 | Approval | a card with **Deny** / **Approve** |
 | Focus nudge, errors | a card that folds away on its own |
 
+Each state also pops up one of Caleb's expression stickers
+(`res/drawable-nodpi/oyi_face_*.png`, cut from his sheet). They are picked in
+`faceFor()`:
+
+| State | Expression |
+| --- | --- |
+| Idle | asleep (Zzz) |
+| Listening, idle card | neutral smirk |
+| Thinking, errors | hand on chin with "?" |
+| Tool | at the laptop with `</>` |
+| Replying, speaking | "…" speech bubble |
+| Phone control | shades with screens |
+| Approval | lightbulb, finger up |
+| Turn done / phone task done | laughing / shades |
+
 Gestures: tap opens or closes the detail, a swipe up folds it away, and a long
 press opens OYI.
 
