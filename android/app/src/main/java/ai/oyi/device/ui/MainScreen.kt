@@ -60,6 +60,9 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import ai.oyi.device.model.ConnectionState
 import ai.oyi.device.model.IslandKind
 import ai.oyi.device.model.IslandState
+import ai.oyi.device.ui.island.DynamicIsland
+import ai.oyi.device.ui.island.IslandAction
+import ai.oyi.device.ui.island.IslandIdleInfo
 
 private val PitchBlack = Color(0xFF070708)
 private val SoftDarkCard = Color(0xCC1A1A1F)
@@ -119,13 +122,34 @@ fun MainScreen(viewModel: MainViewModel = viewModel()) {
                 .background(PitchBlack)
                 .padding(padding)
         ) {
-            DynamicIslandHeader(
-                state = state,
-                onApprove = viewModel::approveIsland,
-                onDeny = viewModel::denyIsland,
-                onDismiss = viewModel::dismissIsland,
-                onStop = viewModel::stopActiveTask,
-            )
+            val level by viewModel.voiceLevel.collectAsStateWithLifecycle()
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(top = 6.dp, bottom = 4.dp),
+                contentAlignment = Alignment.TopCenter,
+            ) {
+                DynamicIsland(
+                    state = state.island,
+                    idle = IslandIdleInfo(
+                        appLabel = "",
+                        link = state.connection,
+                        linkError = state.connectionError,
+                    ),
+                    level = level,
+                    inApp = true,
+                    onAction = { action ->
+                        when (action) {
+                            IslandAction.APPROVE -> viewModel.approveIsland()
+                            IslandAction.DENY -> viewModel.denyIsland()
+                            IslandAction.STOP -> viewModel.stopActiveTask()
+                            IslandAction.DISMISS -> viewModel.dismissIsland()
+                            IslandAction.OPEN_APP -> Unit
+                        }
+                    },
+                    modifier = Modifier.padding(horizontal = 16.dp),
+                )
+            }
 
             MinimalPillTabs(
                 selectedTab = tab,
@@ -136,201 +160,6 @@ fun MainScreen(viewModel: MainViewModel = viewModel()) {
                 0 -> FocusScreen()
                 1 -> SetupList(state = state, viewModel = viewModel)
                 else -> ChatScreen()
-            }
-        }
-    }
-}
-
-@Composable
-private fun DynamicIslandHeader(
-    state: UiState,
-    onApprove: () -> Unit,
-    onDeny: () -> Unit,
-    onDismiss: () -> Unit,
-    onStop: () -> Unit,
-) {
-    val island: IslandState = state.island
-    val isActiveCard = island.kind != IslandKind.IDLE
-    val shape = RoundedCornerShape(if (isActiveCard) 28.dp else 999.dp)
-    val rimBrush = if (isActiveCard) WarmGlassRim else DarkGlassRim
-    val bgBrush = if (isActiveCard) OrangeGlassBrush else SmokedGlassBrush
-    val primaryTextColor = if (isActiveCard) DarkInk else OffWhite
-    val secondaryTextColor = if (isActiveCard) SecondaryInk else MutedWarmGrey
-    val dotColor = when {
-        isActiveCard -> DarkInk
-        state.connection == ConnectionState.CONNECTED -> AgentOrange
-        state.connection == ConnectionState.CONNECTING -> UserCream
-        else -> MutedWarmGrey
-    }
-    val appLabel = state.currentApp?.label ?: "System Ready"
-
-    Box(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(horizontal = 16.dp, vertical = 10.dp),
-        contentAlignment = Alignment.Center,
-    ) {
-        Surface(
-            color = Color.Transparent,
-            shape = shape,
-            border = BorderStroke(1.dp, rimBrush),
-            modifier = Modifier
-                .fillMaxWidth(if (isActiveCard) 1f else 0.90f)
-                .shadow(elevation = 16.dp, shape = shape)
-                .clip(shape)
-                .background(bgBrush),
-        ) {
-            Column(
-                modifier = Modifier.padding(
-                    horizontal = if (isActiveCard) 18.dp else 16.dp,
-                    vertical = if (isActiveCard) 14.dp else 10.dp,
-                ),
-            ) {
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    modifier = Modifier.fillMaxWidth(),
-                ) {
-                    Box(
-                        modifier = Modifier
-                            .size(8.dp)
-                            .clip(CircleShape)
-                            .background(dotColor)
-                    )
-                    Spacer(Modifier.width(8.dp))
-                    Text(
-                        text = "OYI",
-                        color = primaryTextColor,
-                        fontSize = 12.sp,
-                        fontWeight = FontWeight.Bold,
-                        letterSpacing = 0.6.sp,
-                    )
-                    Text(
-                        text = "  ·  ",
-                        color = secondaryTextColor,
-                        fontSize = 12.sp,
-                    )
-                    Text(
-                        text = appLabel,
-                        color = secondaryTextColor,
-                        fontSize = 12.sp,
-                        fontWeight = FontWeight.Medium,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                        modifier = Modifier.weight(1f),
-                    )
-                    val modeTag = when (island.kind) {
-                        IslandKind.IDLE -> if (state.connection == ConnectionState.CONNECTED) "Live" else "Standby"
-                        IslandKind.WORKING -> "Step ${island.step.coerceAtLeast(1)}"
-                        IslandKind.COMPLETED -> "Done"
-                        IslandKind.APPROVAL_REQUIRED -> "Approve"
-                        IslandKind.ERROR -> "Alert"
-                    }
-                    Surface(
-                        color = if (isActiveCard) AgentOrangeGlassPill else SoftDarkInner,
-                        shape = RoundedCornerShape(999.dp),
-                        border = BorderStroke(
-                            0.8.dp,
-                            if (isActiveCard) Color(0x4DFFFFFF) else Color(0x26FFFFFF),
-                        ),
-                    ) {
-                        Text(
-                            text = modeTag,
-                            color = if (isActiveCard) DarkInk else UserCream,
-                            fontSize = 11.sp,
-                            fontWeight = FontWeight.Bold,
-                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 3.dp),
-                        )
-                    }
-                }
-
-                if (isActiveCard) {
-                    Spacer(Modifier.height(10.dp))
-                    Text(
-                        text = island.title.ifBlank {
-                            when (island.kind) {
-                                IslandKind.WORKING -> "Controlling Phone"
-                                IslandKind.COMPLETED -> "Task Completed"
-                                IslandKind.APPROVAL_REQUIRED -> "Approval Required"
-                                IslandKind.ERROR -> "Task Stopped"
-                                else -> ""
-                            }
-                        },
-                        color = DarkInk,
-                        fontSize = 16.5.sp,
-                        fontWeight = FontWeight.ExtraBold,
-                    )
-                    if (island.subtitle.isNotBlank()) {
-                        Spacer(Modifier.height(3.dp))
-                        Text(
-                            text = island.subtitle,
-                            color = SecondaryInk,
-                            fontSize = 13.5.sp,
-                            fontWeight = FontWeight.Medium,
-                            maxLines = 3,
-                            overflow = TextOverflow.Ellipsis,
-                        )
-                    }
-                    Spacer(Modifier.height(12.dp))
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.End,
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        when (island.kind) {
-                            IslandKind.APPROVAL_REQUIRED -> {
-                                Button(
-                                    onClick = onDeny,
-                                    shape = RoundedCornerShape(999.dp),
-                                    border = BorderStroke(1.dp, Color(0x52FFFFFF)),
-                                    colors = ButtonDefaults.buttonColors(
-                                        containerColor = AgentOrangeGlassPill,
-                                        contentColor = DarkInk,
-                                    ),
-                                ) {
-                                    Text("Deny", fontSize = 12.5.sp, fontWeight = FontWeight.Bold)
-                                }
-                                Spacer(Modifier.width(8.dp))
-                                Button(
-                                    onClick = onApprove,
-                                    shape = RoundedCornerShape(999.dp),
-                                    border = BorderStroke(1.dp, Color(0x66FFFFFF)),
-                                    colors = ButtonDefaults.buttonColors(
-                                        containerColor = Color(0xEB0B0A09),
-                                        contentColor = Color(0xFFFFF8E7),
-                                    ),
-                                ) {
-                                    Text("Approve", fontSize = 12.5.sp, fontWeight = FontWeight.Bold)
-                                }
-                            }
-                            IslandKind.WORKING -> {
-                                Button(
-                                    onClick = onStop,
-                                    shape = RoundedCornerShape(999.dp),
-                                    border = BorderStroke(1.dp, Color(0x66FFFFFF)),
-                                    colors = ButtonDefaults.buttonColors(
-                                        containerColor = Color(0xEB0B0A09),
-                                        contentColor = OffWhite,
-                                    ),
-                                ) {
-                                    Text("Stop", fontSize = 12.5.sp, fontWeight = FontWeight.Bold)
-                                }
-                            }
-                            else -> {
-                                Button(
-                                    onClick = onDismiss,
-                                    shape = RoundedCornerShape(999.dp),
-                                    border = BorderStroke(1.dp, Color(0x66FFFFFF)),
-                                    colors = ButtonDefaults.buttonColors(
-                                        containerColor = Color(0xEB0B0A09),
-                                        contentColor = Color(0xFFFFF8E7),
-                                    ),
-                                ) {
-                                    Text("Done", fontSize = 12.5.sp, fontWeight = FontWeight.Bold)
-                                }
-                            }
-                        }
-                    }
-                }
             }
         }
     }
@@ -664,35 +493,53 @@ private fun RunCard(
                 )
             }
             Spacer(Modifier.height(10.dp))
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(6.dp),
-            ) {
-                val modes = listOf(
+            Text(
+                text = "Preview the island",
+                fontSize = 11.5.sp,
+                fontWeight = FontWeight.Medium,
+                color = Color(0xFF3D3624),
+                modifier = Modifier.padding(bottom = 6.dp),
+            )
+            val previewRows = listOf(
+                listOf(
+                    "Listen" to IslandKind.LISTENING,
+                    "Think" to IslandKind.THINKING,
+                    "Tool" to IslandKind.TOOL,
+                    "Speak" to IslandKind.SPEAKING,
+                ),
+                listOf(
                     "Idle" to IslandKind.IDLE,
-                    "Working" to IslandKind.WORKING,
-                    "Done" to IslandKind.COMPLETED,
+                    "Phone" to IslandKind.WORKING,
                     "Approve" to IslandKind.APPROVAL_REQUIRED,
-                )
-                modes.forEach { (label, kind) ->
-                    Surface(
-                        color = Color(0x1F0A0807),
-                        shape = RoundedCornerShape(999.dp),
-                        border = BorderStroke(0.8.dp, Color(0x66FFFFFF)),
-                        modifier = Modifier
-                            .weight(1f)
-                            .clickable { onPreviewIsland(kind) },
-                    ) {
-                        Box(
-                            modifier = Modifier.padding(vertical = 8.dp),
-                            contentAlignment = Alignment.Center,
+                    "Done" to IslandKind.COMPLETED,
+                ),
+            )
+            previewRows.forEachIndexed { rowIndex, modes ->
+                if (rowIndex > 0) Spacer(Modifier.height(6.dp))
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                ) {
+                    modes.forEach { (label, kind) ->
+                        Surface(
+                            color = Color(0x1F0A0807),
+                            shape = RoundedCornerShape(999.dp),
+                            border = BorderStroke(0.8.dp, Color(0x66FFFFFF)),
+                            modifier = Modifier
+                                .weight(1f)
+                                .clickable { onPreviewIsland(kind) },
                         ) {
-                            Text(
-                                text = label,
-                                color = DarkInk,
-                                fontSize = 11.5.sp,
-                                fontWeight = FontWeight.Bold,
-                            )
+                            Box(
+                                modifier = Modifier.padding(vertical = 8.dp),
+                                contentAlignment = Alignment.Center,
+                            ) {
+                                Text(
+                                    text = label,
+                                    color = DarkInk,
+                                    fontSize = 11.5.sp,
+                                    fontWeight = FontWeight.Bold,
+                                )
+                            }
                         }
                     }
                 }

@@ -27,7 +27,16 @@ import androidx.compose.material3.AssistChipDefaults
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Icon
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.OutlinedTextFieldDefaults
+import androidx.compose.animation.core.Spring
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.spring
+import androidx.compose.foundation.clickable
+import androidx.compose.ui.draw.scale
+import androidx.compose.ui.res.painterResource
+import ai.oyi.device.R
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -75,6 +84,7 @@ private val SmokedGlassBrush = Brush.linearGradient(
 @Composable
 fun ChatScreen(viewModel: ChatViewModel = viewModel()) {
     val state by viewModel.state.collectAsStateWithLifecycle()
+    val level by viewModel.voiceLevel.collectAsStateWithLifecycle()
     val context = LocalContext.current
     val listState = rememberLazyListState()
 
@@ -105,31 +115,12 @@ fun ChatScreen(viewModel: ChatViewModel = viewModel()) {
                 fontWeight = FontWeight.Light,
                 modifier = Modifier.weight(1f),
             )
-            if (state.liveActive) {
-                Surface(
-                    color = AgentOrangeBubble,
-                    shape = RoundedCornerShape(999.dp),
-                ) {
-                    Row(
-                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        Box(
-                            modifier = Modifier
-                                .size(7.dp)
-                                .clip(CircleShape)
-                                .background(DarkInk)
-                        )
-                        Spacer(Modifier.width(6.dp))
-                        Text(
-                            text = state.liveStatus.ifBlank { "Listening…" },
-                            style = MaterialTheme.typography.labelSmall,
-                            color = DarkInk,
-                            fontWeight = FontWeight.SemiBold,
-                        )
-                    }
-                }
-            }
+            Text(
+                text = if (state.liveActive) "Live" else "Text or voice",
+                fontSize = 12.sp,
+                color = if (state.liveActive) AgentOrangeBubble else MutedWarmGrey,
+                fontWeight = FontWeight.SemiBold,
+            )
         }
         Spacer(Modifier.height(10.dp))
 
@@ -257,13 +248,22 @@ fun ChatScreen(viewModel: ChatViewModel = viewModel()) {
                 OutlinedTextField(
                     value = state.draft,
                     onValueChange = viewModel::setDraft,
-                    placeholder = { Text("Tap here to message…", color = MutedWarmGrey, fontSize = 13.5.sp) },
+                    placeholder = { Text("Message OYI…", color = MutedWarmGrey, fontSize = 14.sp) },
                     modifier = Modifier.weight(1f),
                     shape = RoundedCornerShape(999.dp),
                     maxLines = 3,
+                    colors = OutlinedTextFieldDefaults.colors(
+                        focusedBorderColor = Color.Transparent,
+                        unfocusedBorderColor = Color.Transparent,
+                        focusedTextColor = OffWhite,
+                        unfocusedTextColor = OffWhite,
+                        cursorColor = AgentOrangeBubble,
+                    ),
                 )
                 Spacer(Modifier.width(6.dp))
-                Button(
+                MicButton(
+                    active = state.liveActive,
+                    level = level,
                     onClick = {
                         if (state.liveActive) {
                             viewModel.toggleLive()
@@ -277,32 +277,69 @@ fun ChatScreen(viewModel: ChatViewModel = viewModel()) {
                             micPermission.launch(Manifest.permission.RECORD_AUDIO)
                         }
                     },
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = if (state.liveActive) AgentOrangeBubble else Color(0x2EFFFFFF),
-                        contentColor = if (state.liveActive) DarkInk else OffWhite,
-                    ),
-                    border = BorderStroke(1.dp, Color(0x4DFFFFFF)),
-                    shape = CircleShape,
+                )
+                Spacer(Modifier.width(6.dp))
+                val canSend = state.draft.isNotBlank() && !state.sending
+                Box(
+                    modifier = Modifier
+                        .size(44.dp)
+                        .clip(CircleShape)
+                        .background(if (canSend) UserCreamBubble else Color(0x1FFFFFFF))
+                        .clickable(enabled = canSend, onClick = viewModel::send),
+                    contentAlignment = Alignment.Center,
                 ) {
-                    Text(
-                        text = if (state.liveActive) "■" else "🎙",
-                        fontWeight = FontWeight.Bold,
-                        fontSize = 13.sp,
+                    Icon(
+                        painter = painterResource(R.drawable.ic_island_send),
+                        contentDescription = "Send",
+                        tint = if (canSend) DarkInk else MutedWarmGrey,
+                        modifier = Modifier.size(19.dp),
                     )
                 }
-                Spacer(Modifier.width(6.dp))
-                Button(
-                    onClick = viewModel::send,
-                    enabled = state.draft.isNotBlank() && !state.sending,
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = UserCreamBubble,
-                        contentColor = DarkInk,
-                    ),
-                    border = BorderStroke(1.dp, Color(0x80FFFFFF)),
-                    shape = RoundedCornerShape(999.dp),
-                ) {
-                    Text("Send", fontWeight = FontWeight.Bold, fontSize = 13.sp)
-                }
+            }
+        }
+    }
+}
+
+/** The live-voice switch. While on, a ring breathes with your voice. */
+@Composable
+private fun MicButton(active: Boolean, level: Float, onClick: () -> Unit) {
+    val ring by animateFloatAsState(
+        targetValue = if (active) 1f + level.coerceIn(0f, 1f) * 0.45f else 1f,
+        animationSpec = spring(dampingRatio = 0.6f, stiffness = Spring.StiffnessMedium),
+        label = "micRing",
+    )
+    Box(modifier = Modifier.size(44.dp), contentAlignment = Alignment.Center) {
+        if (active) {
+            Box(
+                modifier = Modifier
+                    .size(44.dp)
+                    .scale(ring)
+                    .clip(CircleShape)
+                    .background(AgentOrangeBubble.copy(alpha = 0.28f)),
+            )
+        }
+        Box(
+            modifier = Modifier
+                .size(44.dp)
+                .clip(CircleShape)
+                .background(if (active) AgentOrangeBubble else Color(0x2EFFFFFF))
+                .clickable(onClick = onClick),
+            contentAlignment = Alignment.Center,
+        ) {
+            if (active) {
+                Box(
+                    Modifier
+                        .size(13.dp)
+                        .clip(RoundedCornerShape(3.dp))
+                        .background(DarkInk),
+                )
+            } else {
+                Icon(
+                    painter = painterResource(R.drawable.ic_island_mic),
+                    contentDescription = "Start live voice",
+                    tint = OffWhite,
+                    modifier = Modifier.size(20.dp),
+                )
             }
         }
     }

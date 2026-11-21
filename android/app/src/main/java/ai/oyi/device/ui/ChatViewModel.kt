@@ -46,6 +46,16 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
 
     val voiceEvents = voice.events
 
+    /** Microphone level for the mic button's ring. */
+    val voiceLevel: StateFlow<Float> = container.runtime.voiceLevel
+
+    /** Everything a turn does also shows on the Dynamic Island. */
+    private val island = container.runtime
+
+    /** A spoken reply is playing (or about to): "Done" waits for it. */
+    private var replyAudioPending = false
+    private var turnEndedWhileSpeaking = false
+
     init {
         viewModelScope.launch {
             voice.events.collect { event ->
@@ -54,9 +64,16 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                         _state.update {
                             it.copy(liveStatus = "Listening…", livePartial = "")
                         }
+                        island.agentListening()
                     }
-                    is LiveVoiceController.Event.Partial ->
+                    is LiveVoiceController.Event.Partial -> {
                         _state.update { it.copy(livePartial = event.text) }
+                        if (event.text.isNotBlank() && !replyAudioPending) {
+                            island.agentListening("Hearing you…")
+                        }
+                    }
+                    is LiveVoiceController.Event.Tool ->
+                        island.agentTool(event.label, event.done)
                     is LiveVoiceController.Event.UserText -> {
                         _state.update {
                             it.copy(
@@ -65,9 +82,12 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                             )
                         }
                     }
-                    is LiveVoiceController.Event.BotText ->
+                    is LiveVoiceController.Event.BotText -> {
                         appendAgentText(event.text)
+                        if (!replyAudioPending) island.agentReplying()
+                    }
                     is LiveVoiceController.Event.BotAudio -> {
+                        replyAudioPending = true
                         val last = _state.value.messages.lastOrNull()
                         if (last == null || last.role != ChatRole.AGENT || !last.pending) {
                             appendAgentText(event.text)
@@ -77,11 +97,22 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                     is LiveVoiceController.Event.Filler -> {
                         if (event.url.isNotBlank()) voice.playClip(event.url)
                     }
-                    is LiveVoiceController.Event.Status ->
+                    is LiveVoiceController.Event.Status -> {
                         _state.update { it.copy(liveStatus = event.text) }
-                    is LiveVoiceController.Event.Failed ->
+                        onVoiceStatus(event.text)
+                    }
+                    is LiveVoiceController.Event.Failed -> {
                         _state.update { it.copy(error = event.message, liveStatus = "") }
-                    is LiveVoiceController.Event.TurnEnded ->
+                        replyAudioPending = false
+                        turnEndedWhileSpeaking = false
+                        island.agentError(event.message)
+                    }
+                    is LiveVoiceController.Event.TurnEnded -> {
+                        if (replyAudioPending) {
+                            turnEndedWhileSpeaking = true
+                        } else {
+                            island.agentTurnDone(listening = voice.active.value)
+                        }
                         _state.update { current ->
                             current.copy(
                                 liveStatus = "Listening…",
@@ -94,13 +125,40 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                                 },
                             )
                         }
+                    }
                 }
             }
         }
         viewModelScope.launch {
             voice.active.collect { active ->
                 _state.update { it.copy(liveActive = active) }
+                if (!active) {
+                    replyAudioPending = false
+                    turnEndedWhileSpeaking = false
+                    island.setVoiceLevel(0f)
+                    if (!_state.value.sending) island.agentRest(listening = false)
+                }
             }
+        }
+        viewModelScope.launch {
+            voice.level.collect { level -> island.setVoiceLevel(level) }
+        }
+    }
+
+    /** Maps live-voice captions to island states. */
+    private fun onVoiceStatus(text: String) {
+        val listening = voice.active.value
+        when {
+            text.startsWith("Thinking") -> island.agentThinking(text)
+            text.startsWith("Speaking") -> island.agentSpeaking()
+            text.startsWith("Listening") || text.startsWith("Go ahead") -> {
+                // Playback finished or was cut off.
+                val finished = turnEndedWhileSpeaking
+                replyAudioPending = false
+                turnEndedWhileSpeaking = false
+                if (finished) island.agentTurnDone(listening) else island.agentListening(text.trimEnd('…'))
+            }
+            else -> if (!replyAudioPending) island.agentListening(text)
         }
     }
 
@@ -120,14 +178,22 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                 error = "",
             )
         }
+        island.agentThinking()
         viewModelScope.launch {
             var answered = false
             try {
-                chat.stream(text, threadId).collect { delta ->
-                    answered = true
-                    appendAgentText(delta)
+                chat.stream(text, threadId).collect { event ->
+                    when (event) {
+                        is ChatClient.StreamEvent.Tool -> island.agentTool(event.label, event.done)
+                        is ChatClient.StreamEvent.Text -> {
+                            answered = true
+                            appendAgentText(event.text)
+                            island.agentReplying()
+                        }
+                    }
                 }
             } catch (error: Exception) {
+                island.agentError(error.message ?: "Could not reach OYI")
                 _state.update {
                     it.copy(
                         sending = false,
@@ -157,6 +223,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                 }
                 current.copy(sending = false, messages = messages)
             }
+            island.agentTurnDone(listening = voice.active.value)
         }
     }
 
@@ -165,6 +232,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         if (_state.value.liveActive) {
             voice.stop()
             _state.update { it.copy(liveStatus = "", livePartial = "") }
+            island.agentRest(listening = false)
         } else {
             voice.start(threadId)
             _state.update { it.copy(liveStatus = "Connecting…", error = "") }

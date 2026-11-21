@@ -45,9 +45,23 @@ data class ActionResult(
     val message: String = "",
 )
 
-/** Visual mode of the OYI Dynamic Island overlay and in-app banner. */
+/**
+ * What the OYI Dynamic Island is showing.
+ *
+ * The first group follows a chat or live-voice turn; the second follows a
+ * phone-control task (and focus nudges, which reuse ERROR).
+ */
 enum class IslandKind {
     IDLE,
+
+    // Agent turn (chat or live voice)
+    LISTENING,
+    THINKING,
+    TOOL,
+    REPLYING,
+    SPEAKING,
+
+    // Phone control, focus and alerts
     WORKING,
     COMPLETED,
     APPROVAL_REQUIRED,
@@ -62,4 +76,14 @@ data class IslandState(
     val step: Int = 0,
     val commandId: String = "",
     val updatedAt: Long = System.currentTimeMillis(),
+    /** When the current busy stretch began; drives the live timer (0 = none). */
+    val startedAt: Long = 0L,
+    /** How long the finished turn took, shown on COMPLETED (0 = unknown). */
+    val elapsedMs: Long = 0L,
+    /** Tools the agent used in this turn, in order. */
+    val tools: List<String> = emptyList(),
+    /** TOOL only: the tool has finished. */
+    val toolDone: Boolean = false,
+    /** Set by a chat or live-voice turn (as opposed to phone control or focus). */
+    val fromAgent: Boolean = false,
 )

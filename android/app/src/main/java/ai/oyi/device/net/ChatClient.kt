@@ -86,13 +86,22 @@ class ChatClient(private val settings: SettingsStore) {
         }
     }
 
+    /** One line of the streamed reply. */
+    sealed interface StreamEvent {
+        data class Text(val text: String) : StreamEvent
+
+        /** The agent started ([done] = false) or finished a tool. */
+        data class Tool(val name: String, val label: String, val done: Boolean) : StreamEvent
+    }
+
     /**
      * Streams the agent's reply token by token.
      *
      * The server answers with newline-delimited JSON: {"text": "..."} per
-     * chunk and a final {"done": true}.
+     * chunk, {"tool": {"name", "label", "state"}} when the agent uses a tool,
+     * and a final {"done": true}.
      */
-    fun stream(prompt: String, threadId: String): Flow<String> = flow {
+    fun stream(prompt: String, threadId: String): Flow<StreamEvent> = flow {
         val base = baseUrl()
         if (base == null) {
             throw IllegalStateException("Set the OYI gateway URL first")
@@ -111,7 +120,7 @@ class ChatClient(private val settings: SettingsStore) {
             if (response.code == 404) {
                 // Older server without the streaming endpoint.
                 val fallback = send(prompt, threadId).getOrThrow()
-                if (fallback.isNotEmpty()) emit(fallback)
+                if (fallback.isNotEmpty()) emit(StreamEvent.Text(fallback))
                 return@use
             }
             if (!response.isSuccessful) {
@@ -126,8 +135,20 @@ class ChatClient(private val settings: SettingsStore) {
                 obj.optString("error").takeIf { it.isNotBlank() }?.let {
                     throw IllegalStateException(it)
                 }
+                val tool = obj.optJSONObject("tool")
+                if (tool != null) {
+                    val name = tool.optString("name")
+                    emit(
+                        StreamEvent.Tool(
+                            name = name,
+                            label = tool.optString("label").ifBlank { name },
+                            done = tool.optString("state") == "done",
+                        )
+                    )
+                    continue
+                }
                 val text = obj.optString("text")
-                if (text.isNotEmpty()) emit(text)
+                if (text.isNotEmpty()) emit(StreamEvent.Text(text))
             }
         }
     }.flowOn(Dispatchers.IO)
