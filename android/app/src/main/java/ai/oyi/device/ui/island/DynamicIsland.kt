@@ -6,6 +6,7 @@ import ai.oyi.device.model.IslandState
 import ai.oyi.device.ui.theme.MorphingLoader
 import ai.oyi.device.ui.theme.OyiMotion
 import ai.oyi.device.ui.theme.PressMorph
+import ai.oyi.device.ui.theme.TabularNumbers
 import ai.oyi.device.ui.theme.liquidGlass
 import androidx.annotation.DrawableRes
 import androidx.compose.animation.AnimatedContent
@@ -90,7 +91,7 @@ import androidx.compose.ui.semantics.LiveRegionMode
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.liveRegion
 import androidx.compose.ui.semantics.semantics
-import androidx.compose.ui.text.font.FontFamily
+
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
@@ -104,7 +105,7 @@ import kotlin.math.sin
 
 /** Colours of the island: black glass that hides the camera, one accent per state. */
 internal object IslandColors {
-    val Shell = Color(0xFF050506)
+    val Shell = Color(0xFF000000)
     val Ink = Color(0xFFF8F6F1)
     val Dim = Color(0xFF9C978E)
     val Cream = Color(0xFFF7EDD0)
@@ -112,7 +113,7 @@ internal object IslandColors {
     val BrandAccent = Color(0xFFF08A65)
 
     /** A thin, top-lit rim: the glass edge catching light above the camera. */
-    val Rim = Brush.verticalGradient(listOf(Color(0x59FFFFFF), Color(0x0FFFFFFF), Color(0x05FFFFFF), Color(0x1FFFFFFF)))
+    val Rim = Brush.verticalGradient(listOf(Color(0x2EFFFFFF), Color(0x14FFFFFF), Color(0x14FFFFFF)))
 
     fun tone(tone: IslandTone, accent: Color = BrandAccent): Color = when (tone) {
         IslandTone.NEUTRAL -> Color(0xFF8A867E)
@@ -291,12 +292,6 @@ private fun Island(
         animationSpec = OyiMotion.slowEffects(),
         label = "rimAlpha",
     )
-    // A soft glow of the state's colour along the bottom edge.
-    val glow by animateFloatAsState(
-        targetValue = if (spec.size == IslandSize.REST || spec.tone == IslandTone.NEUTRAL) 0f else 1f,
-        animationSpec = OyiMotion.slowEffects(),
-        label = "glow",
-    )
 
     Box(
         modifier = Modifier
@@ -313,14 +308,6 @@ private fun Island(
             )
             .drawWithContent {
                 drawContent()
-                if (glow > 0f) {
-                    drawRect(
-                        brush = Brush.verticalGradient(
-                            0.55f to Color.Transparent,
-                            1f to tone.copy(alpha = 0.16f * glow),
-                        ),
-                    )
-                }
                 if (rimAlpha > 0f) {
                     drawRimLight(shape.createOutline(size, layoutDirection, this), rimPhase, tone, rimAlpha)
                 }
@@ -462,18 +449,11 @@ private fun RestPill(spec: IslandSpec, idle: IslandIdleInfo, tone: Color, cutout
     val lead: @Composable () -> Unit = {
         if (faces) {
             // The face, with the link state as a small dot on its shoulder.
-            Box(Modifier.size(26.dp)) {
-                Face(spec.face, spec.motion, size = 26.dp)
-                Box(
-                    Modifier
-                        .align(Alignment.BottomEnd)
-                        .size(9.dp)
-                        .clip(CircleShape)
-                        .background(IslandColors.Shell)
-                        .padding(1.5.dp),
-                ) {
-                    LinkDot(tone, pulsing = spec.tone == IslandTone.WARN, size = 6.dp)
-                }
+            // The face, with the link state as a small dot beside it (never on it).
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Face(spec.face, spec.motion, size = 30.dp)
+                Spacer(Modifier.width(5.dp))
+                LinkDot(tone, pulsing = spec.tone == IslandTone.WARN, size = 6.dp)
             }
         } else {
             LinkDot(tone, pulsing = spec.tone == IslandTone.WARN)
@@ -485,7 +465,7 @@ private fun RestPill(spec: IslandSpec, idle: IslandIdleInfo, tone: Color, cutout
                 text = formatDuration(idle.sessionMs),
                 color = IslandColors.Cream,
                 fontSize = 11.5.sp,
-                fontFamily = FontFamily.Monospace,
+                fontFeatureSettings = TabularNumbers,
                 maxLines = 1,
             )
         }
@@ -873,7 +853,7 @@ private fun MonoText(text: String) {
         text = text,
         color = IslandColors.Dim,
         fontSize = 12.sp,
-        fontFamily = FontFamily.Monospace,
+        fontFeatureSettings = TabularNumbers,
         maxLines = 1,
     )
 }

@@ -4,7 +4,10 @@ import android.content.Intent
 import android.os.Bundle
 import android.provider.Settings
 import androidx.activity.ComponentActivity
+import androidx.activity.SystemBarStyle
 import androidx.activity.compose.setContent
+import androidx.activity.enableEdgeToEdge
+import android.graphics.Color as AndroidColor
 import androidx.core.content.ContextCompat
 import ai.oyi.device.service.OyiService
 import androidx.compose.runtime.getValue
@@ -16,6 +19,12 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        // Draw under the status and navigation bars: the black runs to the
+        // edges and the island sits right under the camera.
+        enableEdgeToEdge(
+            statusBarStyle = SystemBarStyle.dark(AndroidColor.TRANSPARENT),
+            navigationBarStyle = SystemBarStyle.dark(AndroidColor.TRANSPARENT),
+        )
         applyDebugOverrides(intent)
         ensureOyiServiceRunning()
         val settings = (application as OyiApplication).container.settings.settings

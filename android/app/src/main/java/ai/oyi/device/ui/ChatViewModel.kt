@@ -7,6 +7,9 @@ import ai.oyi.device.OyiApplication
 import ai.oyi.device.net.ChatClient
 import ai.oyi.device.voice.LiveVoiceController
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharingStarted
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
@@ -48,6 +51,11 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
 
     /** Microphone level for the mic button's ring. */
     val voiceLevel: StateFlow<Float> = container.runtime.voiceLevel
+
+    /** No gateway yet: the chat shows a setup card instead of a dead composer. */
+    val needsSetup: StateFlow<Boolean> = container.settings.settings
+        .map { it.gatewayUrl.isBlank() }
+        .stateIn(viewModelScope, SharingStarted.Eagerly, container.settings.settings.value.gatewayUrl.isBlank())
 
     /** Everything a turn does also shows on the Dynamic Island. */
     private val island = container.runtime
@@ -198,13 +206,14 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                 }
             } catch (error: Exception) {
                 island.agentError(error.message ?: "Could not reach OYI")
+                // The failure shows once, as a notice in the conversation,
+                // not again in the error bar.
                 _state.update {
                     it.copy(
                         sending = false,
-                        error = error.message ?: "Chat failed",
                         messages = it.messages + ChatMessage(
                             role = ChatRole.SYSTEM,
-                            text = "Could not reach OYI: ${error.message ?: "unknown error"}",
+                            text = "Couldn't reach OYI. ${error.message ?: "Check the gateway link in Space."}".trim(),
                         ),
                     )
                 }

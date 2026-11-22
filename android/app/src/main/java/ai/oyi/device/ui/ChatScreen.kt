@@ -1,43 +1,47 @@
 package ai.oyi.device.ui
 
+import ai.oyi.device.R
+import ai.oyi.device.ui.theme.MorphingLoader
+import ai.oyi.device.ui.theme.OyiMotion
+import ai.oyi.device.ui.theme.PressMorph
 import android.Manifest
 import android.content.pm.PackageManager
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.foundation.BorderStroke
+import androidx.annotation.DrawableRes
+import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.imePadding
+import androidx.compose.foundation.layout.isImeVisible
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material3.AssistChip
-import androidx.compose.material3.AssistChipDefaults
-import androidx.compose.material3.Button
-import androidx.compose.material3.ButtonDefaults
-import androidx.compose.material3.MaterialTheme
+import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.Icon
-import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.OutlinedTextFieldDefaults
-import androidx.compose.animation.core.Spring
-import androidx.compose.animation.core.animateFloatAsState
-import androidx.compose.animation.core.spring
-import androidx.compose.foundation.clickable
-import androidx.compose.ui.draw.scale
-import androidx.compose.ui.res.painterResource
-import ai.oyi.device.R
-import androidx.compose.material3.Surface
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -46,46 +50,21 @@ import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.draw.shadow
-import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.draw.scale
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.KeyboardCapitalization
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import ai.oyi.device.ui.theme.LocalGlassBackdrop
-import ai.oyi.device.ui.theme.OyiMotion
-import androidx.compose.foundation.shape.CornerSize
-import ai.oyi.device.ui.theme.PressMorph
-import ai.oyi.device.ui.theme.liquidGlass
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
-
-private val PitchBlack = Color(0xFF070708)
-private val OffWhite = Color(0xFFF8F6F1)
-private val MutedWarmGrey = Color(0xFFA09C94)
-private val UserCreamBubble = Color(0xFFF7EDD0)
-private val AgentOrangeBubble = Color(0xFFF08A65)
-private val DarkInk = Color(0xFF0A0807)
-private val OrangeMetaInk = Color(0xFF24140D)
-private val CreamMetaInk = Color(0xFF423822)
-
-private val DarkGlassRim = Brush.verticalGradient(
-    colors = listOf(Color(0x59FFFFFF), Color(0x14FFFFFF)),
-)
-private val WarmGlassRim = Brush.verticalGradient(
-    colors = listOf(Color(0xB8FFF9F2), Color(0x33FFFFFF)),
-)
-private val OrangeBubbleBrush = Brush.linearGradient(
-    colors = listOf(Color(0xFFFFA584), Color(0xFFF08A65), Color(0xFFE07450)),
-)
-private val CreamBubbleBrush = Brush.linearGradient(
-    colors = listOf(Color(0xFFFFF9EA), Color(0xFFF7EDD0), Color(0xFFEBDDBE)),
-)
-private val SmokedGlassBrush = Brush.linearGradient(
-    colors = listOf(Color(0xD926262D), Color(0xCC141418)),
-)
 
 /** Everything the chat screen can ask for. The defaults do nothing, for previews. */
 class ChatActions(
@@ -93,12 +72,23 @@ class ChatActions(
     val send: () -> Unit = {},
     /** The mic button: starts or stops live voice (asking for the mic first). */
     val toggleMic: () -> Unit = {},
+    /** Takes the person to Space to link a gateway. */
+    val openSetup: () -> Unit = {},
+)
+
+private class Suggestion(val text: String, val prompt: String, @DrawableRes val icon: Int)
+
+private val Suggestions = listOf(
+    Suggestion("What's on my screen?", "What is on my screen right now?", R.drawable.ic_visibility),
+    Suggestion("My screen time today", "How much time have I used today?", R.drawable.ic_timer),
+    Suggestion("Open Settings for me", "Open the Settings app on my phone", R.drawable.ic_smartphone),
 )
 
 @Composable
-fun ChatScreen(viewModel: ChatViewModel = viewModel()) {
+fun ChatScreen(viewModel: ChatViewModel = viewModel(), onOpenSetup: () -> Unit = {}) {
     val state by viewModel.state.collectAsStateWithLifecycle()
     val level by viewModel.voiceLevel.collectAsStateWithLifecycle()
+    val needsSetup by viewModel.needsSetup.collectAsStateWithLifecycle()
     val context = LocalContext.current
 
     val micPermission = rememberLauncherForActivityResult(
@@ -106,7 +96,7 @@ fun ChatScreen(viewModel: ChatViewModel = viewModel()) {
     ) { granted ->
         if (granted) viewModel.toggleLive() else viewModel.clearError()
     }
-    val actions = remember(viewModel) {
+    val actions = remember(viewModel, onOpenSetup) {
         ChatActions(
             setDraft = viewModel::setDraft,
             send = viewModel::send,
@@ -120,196 +110,383 @@ fun ChatScreen(viewModel: ChatViewModel = viewModel()) {
                     micPermission.launch(Manifest.permission.RECORD_AUDIO)
                 }
             },
+            openSetup = onOpenSetup,
         )
     }
-    ChatContent(state, level, actions)
+    ChatContent(state, level, actions, needsSetup)
+}
+
+/** One row of the conversation, with repeats of the same notice folded together. */
+private class ChatRow(val message: ChatMessage, val repeats: Int, val firstOfRun: Boolean)
+
+private fun foldRows(messages: List<ChatMessage>): List<ChatRow> {
+    val rows = mutableListOf<ChatRow>()
+    messages.forEach { message ->
+        val last = rows.lastOrNull()
+        if (last != null && message.role == ChatRole.SYSTEM &&
+            last.message.role == ChatRole.SYSTEM && last.message.text == message.text
+        ) {
+            rows[rows.lastIndex] = ChatRow(message, last.repeats + 1, last.firstOfRun)
+        } else {
+            rows += ChatRow(message, 1, firstOfRun = last?.message?.role != message.role)
+        }
+    }
+    return rows
 }
 
 /** The chat screen itself, without a view model (previews and snapshots use it). */
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
-fun ChatContent(state: ChatState, level: Float, actions: ChatActions) {
+fun ChatContent(state: ChatState, level: Float, actions: ChatActions, needsSetup: Boolean = false) {
     val listState = rememberLazyListState()
+    val rows = remember(state.messages) { foldRows(state.messages) }
+    val empty = state.messages.isEmpty() && state.livePartial.isBlank()
 
-    LaunchedEffect(state.messages.size) {
-        if (state.messages.isNotEmpty()) {
-            listState.animateScrollToItem(state.messages.lastIndex)
-        }
+    LaunchedEffect(rows.size, state.livePartial.isNotBlank()) {
+        val count = listState.layoutInfo.totalItemsCount
+        if (count > 0) listState.animateScrollToItem(count - 1)
     }
 
+    // The error bar only says what the conversation does not already say.
+    val error = state.error.takeIf { err ->
+        err.isNotBlank() && state.messages.none { it.role == ChatRole.SYSTEM && it.text.contains(err) }
+    }.orEmpty()
+
+    val imeOpen = WindowInsets.isImeVisible
     Column(
         modifier = Modifier
             .fillMaxSize()
-            .padding(horizontal = 16.dp)
+            .imePadding()
+            .then(
+                if (imeOpen) {
+                    Modifier.padding(bottom = 8.dp)
+                } else {
+                    Modifier.navigationBarsPadding().padding(bottom = ComposerLift)
+                },
+            ),
     ) {
-        Spacer(Modifier.height(6.dp))
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Text(
-                text = "Live Chat",
-                style = MaterialTheme.typography.displaySmall,
-                color = OffWhite,
+        Box(Modifier.padding(horizontal = Gutter)) {
+            ScreenTitle(
+                title = "Chat",
+                subtitle = when {
+                    needsSetup -> "Not linked yet"
+                    state.liveActive -> state.liveStatus.ifBlank { "Listening" }
+                    else -> "Type, or tap the mic and talk"
+                },
+                trailing = {
+                    if (state.liveActive) StatusLabel("Live", Oyi.Orange)
+                },
+            )
+        }
+
+        when {
+            needsSetup -> SetupState(actions.openSetup, Modifier.weight(1f))
+            empty -> EmptyState(actions, Modifier.weight(1f))
+            else -> LazyColumn(
+                state = listState,
                 modifier = Modifier.weight(1f),
-            )
-            Text(
-                text = if (state.liveActive) "Live" else "Text or voice",
-                fontSize = 12.sp,
-                color = if (state.liveActive) AgentOrangeBubble else MutedWarmGrey,
-                fontWeight = FontWeight.SemiBold,
-            )
-        }
-        Spacer(Modifier.height(10.dp))
-
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            val chipColors = AssistChipDefaults.assistChipColors(
-                containerColor = Color(0x18FFFFFF),
-                labelColor = OffWhite,
-            )
-            val chipBorder = AssistChipDefaults.assistChipBorder(
-                enabled = true,
-                borderColor = Color(0x3DFFFFFF),
-            )
-            AssistChip(
-                onClick = { actions.setDraft("What is on my screen right now?"); actions.send() },
-                label = { Text("On screen", fontSize = 12.sp) },
-                shape = RoundedCornerShape(999.dp),
-                colors = chipColors,
-                border = chipBorder,
-            )
-            AssistChip(
-                onClick = { actions.setDraft("How much time have I used today?"); actions.send() },
-                label = { Text("Screen time", fontSize = 12.sp) },
-                shape = RoundedCornerShape(999.dp),
-                colors = chipColors,
-                border = chipBorder,
-            )
-            AssistChip(
-                onClick = { actions.setDraft("Open the Settings app on my phone"); actions.send() },
-                label = { Text("Settings", fontSize = 12.sp) },
-                shape = RoundedCornerShape(999.dp),
-                colors = chipColors,
-                border = chipBorder,
-            )
-        }
-        Spacer(Modifier.height(12.dp))
-
-        LazyColumn(
-            state = listState,
-            modifier = Modifier.weight(1f),
-            verticalArrangement = Arrangement.spacedBy(10.dp),
-        ) {
-            if (state.messages.isEmpty() && state.livePartial.isBlank()) {
-                item {
-                    val introShape = RoundedCornerShape(28.dp)
-                    Box(
-                        modifier = Modifier
-                            .fillMaxWidth(0.90f)
-                            .liquidGlass(introShape, fill = Oyi.OrangeGlass, backdrop = LocalGlassBackdrop.current),
-                    ) {
-                        Column(modifier = Modifier.padding(horizontal = 18.dp, vertical = 16.dp)) {
-                            Text(
-                                text = "OYI",
-                                color = OrangeMetaInk,
-                                fontSize = 11.sp,
-                                fontWeight = FontWeight.Bold,
-                            )
-                            Spacer(Modifier.height(4.dp))
-                            Text(
-                                text = "Speak naturally or type a task for your phone. You can interrupt me mid-sentence anytime.",
-                                color = DarkInk,
-                                fontSize = 14.5.sp,
-                                fontWeight = FontWeight.Medium,
-                                lineHeight = 20.sp,
+                contentPadding = PaddingValues(horizontal = Gutter, vertical = 8.dp),
+            ) {
+                items(rows, key = { it.message.id }) { row ->
+                    Box(Modifier.padding(top = if (row.firstOfRun) 14.dp else 4.dp)) {
+                        MessageRow(row)
+                    }
+                }
+                if (state.livePartial.isNotBlank()) {
+                    item(key = "partial") {
+                        Box(Modifier.padding(top = 14.dp)) {
+                            MessageRow(
+                                ChatRow(ChatMessage(role = ChatRole.USER, text = state.livePartial, pending = true), 1, true),
                             )
                         }
                     }
                 }
             }
-            items(state.messages, key = { it.id }) { message ->
-                MessageBubble(message)
-            }
-            if (state.livePartial.isNotBlank()) {
-                item {
-                    MessageBubble(ChatMessage(role = ChatRole.USER, text = state.livePartial, pending = true))
-                }
-            }
         }
 
-        if (state.error.isNotBlank()) {
-            val errShape = RoundedCornerShape(18.dp)
-            Surface(
-                color = Color.Transparent,
-                shape = errShape,
-                border = BorderStroke(1.dp, WarmGlassRim),
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(vertical = 4.dp)
-                    .clip(errShape)
-                    .background(OrangeBubbleBrush),
-            ) {
-                Text(
-                    text = state.error,
-                    style = MaterialTheme.typography.labelMedium,
-                    color = DarkInk,
-                    fontWeight = FontWeight.SemiBold,
-                    modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp),
-                )
-            }
-        }
-
-        // Liquid glass floating pill composer bar
-        val composerShape = RoundedCornerShape(999.dp)
-        Box(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(vertical = 10.dp)
-                .liquidGlass(composerShape, fill = Oyi.SmokedGlass, backdrop = LocalGlassBackdrop.current, elevation = 14.dp),
-        ) {
+        if (error.isNotBlank()) {
+            val shape = RoundedCornerShape(16.dp)
             Row(
                 modifier = Modifier
+                    .padding(horizontal = Gutter, vertical = 6.dp)
                     .fillMaxWidth()
-                    .padding(horizontal = 8.dp, vertical = 6.dp),
+                    .clip(shape)
+                    .background(Oyi.Raised)
+                    .border(1.dp, Oyi.Hairline, shape)
+                    .padding(horizontal = 14.dp, vertical = 10.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                OutlinedTextField(
-                    value = state.draft,
-                    onValueChange = actions.setDraft,
-                    placeholder = { Text("Message OYI…", color = MutedWarmGrey, fontSize = 14.sp) },
-                    modifier = Modifier.weight(1f),
-                    shape = RoundedCornerShape(999.dp),
-                    maxLines = 3,
-                    colors = OutlinedTextFieldDefaults.colors(
-                        focusedBorderColor = Color.Transparent,
-                        unfocusedBorderColor = Color.Transparent,
-                        focusedTextColor = OffWhite,
-                        unfocusedTextColor = OffWhite,
-                        cursorColor = AgentOrangeBubble,
-                    ),
-                )
-                Spacer(Modifier.width(6.dp))
-                MicButton(
-                    active = state.liveActive,
-                    level = level,
-                    onClick = actions.toggleMic,
-                )
-                Spacer(Modifier.width(6.dp))
-                val canSend = state.draft.isNotBlank() && !state.sending
-                PressMorph(
-                    onClick = actions.send,
-                    enabled = canSend,
-                    modifier = Modifier.size(44.dp),
-                    pressedPercent = 30f,
-                ) { shape ->
-                    Box(
-                        Modifier
-                            .matchParentSize()
-                            .background(if (canSend) UserCreamBubble else Color(0x1FFFFFFF), shape),
-                    )
-                    Icon(
-                        painter = painterResource(R.drawable.ic_island_send),
-                        contentDescription = "Send",
-                        tint = if (canSend) DarkInk else MutedWarmGrey,
-                        modifier = Modifier.size(19.dp),
-                    )
+                Icon(painterResource(R.drawable.ic_cloud_off), null, tint = Oyi.Bad, modifier = Modifier.size(18.dp))
+                Spacer(Modifier.width(10.dp))
+                Text(error, color = Oyi.Muted, fontSize = 13.sp, lineHeight = 18.sp, maxLines = 2)
+            }
+        }
+
+        if (!needsSetup) {
+            Composer(state, level, actions)
+        }
+    }
+}
+
+/** How far the composer sits above the bottom: clear of the floating nav. */
+private val ComposerLift = NavHeight + NavBottomMargin + 10.dp
+
+@Composable
+private fun SetupState(onSetup: () -> Unit, modifier: Modifier) {
+    Column(
+        modifier = modifier
+            .fillMaxWidth()
+            .padding(horizontal = Gutter),
+        verticalArrangement = Arrangement.Center,
+        horizontalAlignment = Alignment.CenterHorizontally,
+    ) {
+        Image(painterResource(R.drawable.oyi_face_sleeping), contentDescription = null, modifier = Modifier.size(104.dp))
+        Spacer(Modifier.height(20.dp))
+        Text(
+            "Link OYI to start chatting",
+            style = MaterialTheme.typography.headlineSmall,
+            color = Oyi.OffWhite,
+            textAlign = TextAlign.Center,
+        )
+        Spacer(Modifier.height(8.dp))
+        Text(
+            "Add your gateway address and pairing token in Space. It takes a minute.",
+            color = Oyi.Muted,
+            fontSize = 14.sp,
+            lineHeight = 20.sp,
+            textAlign = TextAlign.Center,
+            modifier = Modifier.widthIn(max = 300.dp),
+        )
+        Spacer(Modifier.height(24.dp))
+        OyiButton(text = "Set up in Space", onClick = onSetup, icon = R.drawable.ic_link)
+        Spacer(Modifier.height(48.dp))
+    }
+}
+
+@Composable
+private fun EmptyState(actions: ChatActions, modifier: Modifier) {
+    Column(
+        modifier = modifier
+            .fillMaxWidth()
+            .padding(horizontal = Gutter),
+    ) {
+        Column(
+            modifier = Modifier.fillMaxWidth().weight(1f),
+            verticalArrangement = Arrangement.Center,
+            horizontalAlignment = Alignment.CenterHorizontally,
+        ) {
+            Image(painterResource(R.drawable.oyi_face_idea), contentDescription = null, modifier = Modifier.size(96.dp))
+            Spacer(Modifier.height(16.dp))
+            Text("What can I do for you?", style = MaterialTheme.typography.headlineSmall, color = Oyi.OffWhite)
+            Spacer(Modifier.height(6.dp))
+            Text(
+                "Ask anything, or have OYI work your phone. You can cut in while it talks.",
+                color = Oyi.Muted,
+                fontSize = 14.sp,
+                lineHeight = 20.sp,
+                textAlign = TextAlign.Center,
+                modifier = Modifier.widthIn(max = 300.dp),
+            )
+        }
+        OyiCard(padding = PaddingValues(horizontal = 14.dp, vertical = 4.dp)) {
+            Suggestions.forEachIndexed { index, suggestion ->
+                if (index > 0) RowDivider(inset = 50.dp)
+                ListRow(
+                    title = suggestion.text,
+                    leading = { IconTile(suggestion.icon, size = 36.dp) },
+                    onClick = {
+                        actions.setDraft(suggestion.prompt)
+                        actions.send()
+                    },
+                ) {
+                    Icon(painterResource(R.drawable.ic_arrow_upward), null, tint = Oyi.Faint, modifier = Modifier.size(18.dp))
                 }
+            }
+        }
+        Spacer(Modifier.height(10.dp))
+    }
+}
+
+@Composable
+private fun MessageRow(row: ChatRow) {
+    val message = row.message
+    when (message.role) {
+        ChatRole.SYSTEM -> SystemNotice(message.text, row.repeats)
+        ChatRole.USER -> Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.CenterEnd) {
+            Bubble(
+                text = message.text,
+                background = if (message.pending) Oyi.Cream.copy(alpha = 0.55f) else Oyi.Cream,
+                textColor = Oyi.Ink,
+                shape = RoundedCornerShape(
+                    topStart = 22.dp,
+                    topEnd = if (row.firstOfRun) 22.dp else 8.dp,
+                    bottomStart = 22.dp,
+                    bottomEnd = 8.dp,
+                ),
+                modifier = Modifier.padding(start = 56.dp),
+            )
+        }
+        ChatRole.AGENT -> Row(Modifier.fillMaxWidth().padding(end = 40.dp), verticalAlignment = Alignment.Top) {
+            if (row.firstOfRun) {
+                Image(
+                    painterResource(if (message.pending) R.drawable.oyi_face_talking else R.drawable.oyi_face_neutral),
+                    contentDescription = "OYI",
+                    modifier = Modifier.size(30.dp),
+                )
+            } else {
+                Spacer(Modifier.width(30.dp))
+            }
+            Spacer(Modifier.width(8.dp))
+            if (message.pending && message.text.isBlank()) {
+                Box(
+                    Modifier
+                        .clip(RoundedCornerShape(22.dp))
+                        .background(Oyi.Raised)
+                        .padding(horizontal = 18.dp, vertical = 14.dp),
+                ) {
+                    MorphingLoader(color = Oyi.Muted, size = 18.dp)
+                }
+            } else {
+                Bubble(
+                    text = message.text,
+                    background = Oyi.Raised,
+                    textColor = Oyi.OffWhite,
+                    shape = RoundedCornerShape(
+                        topStart = if (row.firstOfRun) 8.dp else 22.dp,
+                        topEnd = 22.dp,
+                        bottomStart = 22.dp,
+                        bottomEnd = 22.dp,
+                    ),
+                    bordered = true,
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun Bubble(
+    text: String,
+    background: Color,
+    textColor: Color,
+    shape: RoundedCornerShape,
+    modifier: Modifier = Modifier,
+    bordered: Boolean = false,
+) {
+    Text(
+        text = text,
+        color = textColor,
+        fontSize = 15.sp,
+        lineHeight = 21.sp,
+        modifier = modifier
+            .clip(shape)
+            .background(background)
+            .then(if (bordered) Modifier.border(1.dp, Oyi.Hairline, shape) else Modifier)
+            .padding(horizontal = 16.dp, vertical = 11.dp),
+    )
+}
+
+/** A quiet centred line: the conversation's own small print. */
+@Composable
+private fun SystemNotice(text: String, repeats: Int) {
+    Row(
+        modifier = Modifier.fillMaxWidth().padding(vertical = 2.dp, horizontal = 24.dp),
+        horizontalArrangement = Arrangement.Center,
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(
+            text = text,
+            color = Oyi.Faint,
+            fontSize = 12.5.sp,
+            lineHeight = 17.sp,
+            textAlign = TextAlign.Center,
+            modifier = Modifier.weight(1f, fill = false),
+        )
+        if (repeats > 1) {
+            Spacer(Modifier.width(6.dp))
+            Text(
+                "×$repeats",
+                color = Oyi.Muted,
+                fontSize = 11.sp,
+                fontWeight = FontWeight.Bold,
+                modifier = Modifier
+                    .clip(Oyi.Pill)
+                    .background(Oyi.Raised)
+                    .padding(horizontal = 7.dp, vertical = 2.dp),
+            )
+        }
+    }
+}
+
+@Composable
+private fun Composer(state: ChatState, level: Float, actions: ChatActions) {
+    val canSend = state.draft.isNotBlank() && !state.sending
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(start = Gutter - 4.dp, end = Gutter - 4.dp, top = 6.dp),
+        verticalAlignment = Alignment.Bottom,
+    ) {
+        BasicTextField(
+            value = state.draft,
+            onValueChange = actions.setDraft,
+            maxLines = 4,
+            textStyle = MaterialTheme.typography.bodyLarge.copy(color = Oyi.OffWhite),
+            cursorBrush = SolidColor(Oyi.Orange),
+            keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Sentences),
+            modifier = Modifier.weight(1f),
+            decorationBox = { inner ->
+                val shape = RoundedCornerShape(24.dp)
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .heightIn(min = 48.dp)
+                        .clip(shape)
+                        .background(Oyi.Raised)
+                        .border(1.dp, Oyi.Hairline, shape)
+                        .padding(horizontal = 18.dp, vertical = 13.dp),
+                    contentAlignment = Alignment.CenterStart,
+                ) {
+                    if (state.draft.isEmpty()) {
+                        Text(
+                            if (state.liveActive) "Listening, or type" else "Message OYI",
+                            color = Oyi.Faint,
+                            style = MaterialTheme.typography.bodyLarge,
+                        )
+                    }
+                    inner()
+                }
+            },
+        )
+        Spacer(Modifier.width(8.dp))
+        // One button that changes job: send when there is text, mic otherwise.
+        if (canSend || state.sending) {
+            SendButton(enabled = canSend, sending = state.sending, onClick = actions.send)
+        } else {
+            MicButton(active = state.liveActive, level = level, onClick = actions.toggleMic)
+        }
+    }
+}
+
+@Composable
+private fun SendButton(enabled: Boolean, sending: Boolean, onClick: () -> Unit) {
+    PressMorph(
+        onClick = onClick,
+        enabled = enabled,
+        modifier = Modifier.size(48.dp),
+        pressedPercent = 30f,
+    ) { shape ->
+        Box(
+            Modifier
+                .matchParentSize()
+                .background(if (enabled) Oyi.Orange else Oyi.Control, shape)
+                .semantics { contentDescription = "Send" },
+            contentAlignment = Alignment.Center,
+        ) {
+            if (sending) {
+                MorphingLoader(color = Oyi.Muted, size = 20.dp)
+            } else {
+                Icon(painterResource(R.drawable.ic_arrow_upward), null, tint = Oyi.Ink, modifier = Modifier.size(22.dp))
             }
         }
     }
@@ -319,105 +496,46 @@ fun ChatContent(state: ChatState, level: Float, actions: ChatActions) {
 @Composable
 private fun MicButton(active: Boolean, level: Float, onClick: () -> Unit) {
     val ring by animateFloatAsState(
-        targetValue = if (active) 1f + level.coerceIn(0f, 1f) * 0.45f else 1f,
-        animationSpec = spring(dampingRatio = 0.6f, stiffness = Spring.StiffnessMedium),
+        targetValue = if (active) 1f + level.coerceIn(0f, 1f) * 0.4f else 1f,
+        animationSpec = OyiMotion.fastSpatial(),
         label = "micRing",
     )
-    Box(modifier = Modifier.size(44.dp), contentAlignment = Alignment.Center) {
+    // Expressive toggle: the round button squares off while live.
+    val corner by animateFloatAsState(
+        targetValue = if (active) 30f else 50f,
+        animationSpec = OyiMotion.fastSpatial(),
+        label = "micCorner",
+    )
+    val bg by animateColorAsState(if (active) Oyi.Orange else Oyi.Raised, OyiMotion.defaultEffects(), label = "micBg")
+    Box(modifier = Modifier.size(48.dp), contentAlignment = Alignment.Center) {
         if (active) {
             Box(
                 modifier = Modifier
-                    .size(44.dp)
+                    .size(48.dp)
                     .scale(ring)
                     .clip(CircleShape)
-                    .background(AgentOrangeBubble.copy(alpha = 0.28f)),
+                    .background(Oyi.Orange.copy(alpha = 0.22f)),
             )
         }
-        // Expressive toggle: the round button squares off while live.
-        val corner by animateFloatAsState(
-            targetValue = if (active) 30f else 50f,
-            animationSpec = OyiMotion.fastSpatial(),
-            label = "micCorner",
-        )
-        Box(
-            modifier = Modifier
-                .size(44.dp)
-                .clip(RoundedCornerShape(CornerSize(corner)))
-                .background(if (active) AgentOrangeBubble else Color(0x2EFFFFFF))
-                .clickable(onClick = onClick),
-            contentAlignment = Alignment.Center,
-        ) {
-            if (active) {
-                Box(
-                    Modifier
-                        .size(13.dp)
-                        .clip(RoundedCornerShape(3.dp))
-                        .background(DarkInk),
-                )
-            } else {
+        PressMorph(
+            onClick = onClick,
+            restPercent = corner,
+            pressedPercent = 24f,
+            modifier = Modifier.size(48.dp),
+        ) { shape ->
+            Box(
+                Modifier
+                    .matchParentSize()
+                    .background(bg, shape)
+                    .then(if (active) Modifier else Modifier.border(1.dp, Oyi.Hairline, shape))
+                    .semantics { contentDescription = if (active) "Stop live voice" else "Start live voice" },
+                contentAlignment = Alignment.Center,
+            ) {
                 Icon(
-                    painter = painterResource(R.drawable.ic_island_mic),
-                    contentDescription = "Start live voice",
-                    tint = OffWhite,
-                    modifier = Modifier.size(20.dp),
-                )
-            }
-        }
-    }
-}
-
-@Composable
-private fun MessageBubble(message: ChatMessage) {
-    val mine = message.role == ChatRole.USER
-    val bgBrush = when (message.role) {
-        ChatRole.USER -> CreamBubbleBrush
-        ChatRole.AGENT -> OrangeBubbleBrush
-        ChatRole.SYSTEM -> SmokedGlassBrush
-    }
-    val rimBrush = if (message.role == ChatRole.SYSTEM) DarkGlassRim else WarmGlassRim
-    val textColor = if (message.role == ChatRole.SYSTEM) OffWhite else DarkInk
-    val metaColor = when (message.role) {
-        ChatRole.USER -> CreamMetaInk
-        ChatRole.AGENT -> OrangeMetaInk
-        ChatRole.SYSTEM -> MutedWarmGrey
-    }
-    val roleLabel = when (message.role) {
-        ChatRole.USER -> if (message.pending) "You · speaking" else "You"
-        ChatRole.AGENT -> if (message.pending) "OYI · typing" else "OYI"
-        ChatRole.SYSTEM -> "Notice"
-    }
-    val align: Alignment = if (mine) Alignment.CenterEnd else Alignment.CenterStart
-    val bubbleShape = RoundedCornerShape(
-        topStart = 26.dp,
-        topEnd = 26.dp,
-        bottomStart = if (mine) 26.dp else 8.dp,
-        bottomEnd = if (mine) 8.dp else 26.dp,
-    )
-    Box(modifier = Modifier.fillMaxWidth(), contentAlignment = align) {
-        Surface(
-            color = Color.Transparent,
-            shape = bubbleShape,
-            border = BorderStroke(1.dp, rimBrush),
-            modifier = Modifier
-                .fillMaxWidth(0.86f)
-                .shadow(10.dp, bubbleShape)
-                .clip(bubbleShape)
-                .background(bgBrush),
-        ) {
-            Column(modifier = Modifier.padding(horizontal = 16.dp, vertical = 13.dp)) {
-                Text(
-                    text = roleLabel,
-                    color = metaColor,
-                    fontSize = 11.sp,
-                    fontWeight = FontWeight.Bold,
-                )
-                Spacer(Modifier.height(3.dp))
-                Text(
-                    text = message.text,
-                    fontSize = 14.5.sp,
-                    fontWeight = FontWeight.Medium,
-                    lineHeight = 20.sp,
-                    color = textColor,
+                    painter = painterResource(if (active) R.drawable.ic_stop else R.drawable.ic_mic),
+                    contentDescription = null,
+                    tint = if (active) Oyi.Ink else Oyi.OffWhite,
+                    modifier = Modifier.size(22.dp),
                 )
             }
         }

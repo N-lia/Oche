@@ -144,4 +144,39 @@ class ScreensSnapshotTest {
     fun chatEmpty() = paparazzi.snapshot {
         Frame(tab = 2) { ChatContent(ChatState(), 0f, ChatActions()) }
     }
+
+    @Test
+    fun chatNeedsSetup() = paparazzi.snapshot {
+        Frame(tab = 2, state = space.copy(connection = ConnectionState.DISCONNECTED, gatewayUrl = "")) {
+            ChatContent(ChatState(), 0f, ChatActions(), needsSetup = true)
+        }
+    }
+
+    /** The same failure three times folds into one quiet line, and no error bar repeats it. */
+    @Test
+    fun chatFailures() = paparazzi.snapshot {
+        val failure = "Couldn't reach OYI. Gateway is not configured."
+        Frame(tab = 2) {
+            ChatContent(
+                state = ChatState(
+                    messages = listOf(
+                        ChatMessage(role = ChatRole.USER, text = "hello"),
+                        ChatMessage(role = ChatRole.SYSTEM, text = failure),
+                        ChatMessage(role = ChatRole.USER, text = "hello?"),
+                        ChatMessage(role = ChatRole.SYSTEM, text = failure),
+                        ChatMessage(role = ChatRole.SYSTEM, text = failure),
+                    ),
+                    error = "Gateway is not configured.",
+                ),
+                level = 0f,
+                actions = ChatActions(),
+            )
+        }
+    }
+
+    @Test
+    fun spaceFresh() = paparazzi.snapshot {
+        val fresh = UiState()
+        Frame(tab = 1, state = fresh) { SpaceContent(fresh, SpaceActions()) }
+    }
 }

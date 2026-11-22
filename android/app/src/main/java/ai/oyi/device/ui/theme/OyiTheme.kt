@@ -17,7 +17,11 @@ import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.font.Font
+import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.font.FontVariation
 import androidx.compose.ui.text.font.FontWeight
+import ai.oyi.device.R
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 
@@ -87,23 +91,59 @@ private val BrandScheme = darkColorScheme(
     outline = Color(0xFF38383E),
 )
 
-/** Expressive type: big, heavy headlines and tight, confident labels. */
+private fun flex(weight: Int, round: Float, opticalSize: Float): Font =
+    Font(
+        resId = R.font.oyi_sans,
+        weight = FontWeight(weight),
+        variationSettings = FontVariation.Settings(
+            FontVariation.weight(weight),
+            FontVariation.Setting("ROND", round),
+            FontVariation.Setting("opsz", opticalSize),
+        ),
+    )
+
+/**
+ * Google Sans Flex, the Material 3 Expressive typeface, bundled as a
+ * variable font (res/font/oyi_sans.ttf, latin subset). Text is cut for
+ * reading sizes and slightly rounded; display is cut for big sizes and
+ * fully rounded, which is what gives headlines their soft, friendly shape.
+ */
+val OyiSans = FontFamily(
+    flex(400, round = 30f, opticalSize = 16f),
+    flex(500, round = 30f, opticalSize = 16f),
+    flex(600, round = 30f, opticalSize = 16f),
+    flex(700, round = 40f, opticalSize = 16f),
+    flex(800, round = 40f, opticalSize = 16f),
+)
+
+val OyiDisplay = FontFamily(
+    flex(500, round = 100f, opticalSize = 48f),
+    flex(600, round = 100f, opticalSize = 48f),
+    flex(700, round = 100f, opticalSize = 48f),
+    flex(800, round = 100f, opticalSize = 48f),
+    flex(900, round = 100f, opticalSize = 48f),
+)
+
+/** Digits that do not jiggle as a timer counts. */
+const val TabularNumbers = "tnum"
+
+/** Expressive type: big, heavy, round headlines and tight, confident labels. */
 val OyiTypography = Typography(
-    displayLarge = TextStyle(fontSize = 57.sp, lineHeight = 60.sp, fontWeight = FontWeight.Black, letterSpacing = (-1.2).sp),
-    displayMedium = TextStyle(fontSize = 44.sp, lineHeight = 48.sp, fontWeight = FontWeight.ExtraBold, letterSpacing = (-0.9).sp),
-    displaySmall = TextStyle(fontSize = 36.sp, lineHeight = 40.sp, fontWeight = FontWeight.ExtraBold, letterSpacing = (-0.6).sp),
-    headlineLarge = TextStyle(fontSize = 32.sp, lineHeight = 36.sp, fontWeight = FontWeight.Bold, letterSpacing = (-0.4).sp),
-    headlineMedium = TextStyle(fontSize = 26.sp, lineHeight = 30.sp, fontWeight = FontWeight.Bold, letterSpacing = (-0.2).sp),
-    headlineSmall = TextStyle(fontSize = 22.sp, lineHeight = 26.sp, fontWeight = FontWeight.Bold),
-    titleLarge = TextStyle(fontSize = 20.sp, lineHeight = 24.sp, fontWeight = FontWeight.Bold),
-    titleMedium = TextStyle(fontSize = 16.sp, lineHeight = 20.sp, fontWeight = FontWeight.SemiBold),
-    titleSmall = TextStyle(fontSize = 14.sp, lineHeight = 18.sp, fontWeight = FontWeight.SemiBold),
-    bodyLarge = TextStyle(fontSize = 16.sp, lineHeight = 22.sp),
-    bodyMedium = TextStyle(fontSize = 14.sp, lineHeight = 20.sp),
-    bodySmall = TextStyle(fontSize = 12.sp, lineHeight = 16.sp),
-    labelLarge = TextStyle(fontSize = 14.sp, lineHeight = 18.sp, fontWeight = FontWeight.Bold),
-    labelMedium = TextStyle(fontSize = 12.sp, lineHeight = 16.sp, fontWeight = FontWeight.Bold),
-    labelSmall = TextStyle(fontSize = 10.5.sp, lineHeight = 14.sp, fontWeight = FontWeight.Bold, letterSpacing = 0.8.sp),
+    displayLarge = TextStyle(fontFamily = OyiDisplay, fontSize = 57.sp, lineHeight = 60.sp, fontWeight = FontWeight.Black, letterSpacing = (-1.2).sp),
+    displayMedium = TextStyle(fontFamily = OyiDisplay, fontSize = 44.sp, lineHeight = 48.sp, fontWeight = FontWeight.ExtraBold, letterSpacing = (-0.9).sp),
+    displaySmall = TextStyle(fontFamily = OyiDisplay, fontSize = 36.sp, lineHeight = 40.sp, fontWeight = FontWeight.ExtraBold, letterSpacing = (-0.6).sp),
+    headlineLarge = TextStyle(fontFamily = OyiDisplay, fontSize = 32.sp, lineHeight = 36.sp, fontWeight = FontWeight.Bold, letterSpacing = (-0.4).sp),
+    headlineMedium = TextStyle(fontFamily = OyiDisplay, fontSize = 26.sp, lineHeight = 30.sp, fontWeight = FontWeight.Bold, letterSpacing = (-0.2).sp),
+    headlineSmall = TextStyle(fontFamily = OyiDisplay, fontSize = 22.sp, lineHeight = 26.sp, fontWeight = FontWeight.Bold),
+    titleLarge = TextStyle(fontFamily = OyiSans, fontSize = 20.sp, lineHeight = 24.sp, fontWeight = FontWeight.Bold),
+    titleMedium = TextStyle(fontFamily = OyiSans, fontSize = 16.sp, lineHeight = 20.sp, fontWeight = FontWeight.SemiBold),
+    titleSmall = TextStyle(fontFamily = OyiSans, fontSize = 14.sp, lineHeight = 18.sp, fontWeight = FontWeight.SemiBold),
+    bodyLarge = TextStyle(fontFamily = OyiSans, fontSize = 16.sp, lineHeight = 22.sp),
+    bodyMedium = TextStyle(fontFamily = OyiSans, fontSize = 14.sp, lineHeight = 20.sp),
+    bodySmall = TextStyle(fontFamily = OyiSans, fontSize = 12.sp, lineHeight = 16.sp),
+    labelLarge = TextStyle(fontFamily = OyiSans, fontSize = 14.sp, lineHeight = 18.sp, fontWeight = FontWeight.Bold),
+    labelMedium = TextStyle(fontFamily = OyiSans, fontSize = 12.sp, lineHeight = 16.sp, fontWeight = FontWeight.Bold),
+    labelSmall = TextStyle(fontFamily = OyiSans, fontSize = 10.5.sp, lineHeight = 14.sp, fontWeight = FontWeight.Bold, letterSpacing = 0.8.sp),
 )
 
 /** The expressive shape scale: soft cards, very round containers. */

@@ -1,62 +1,6 @@
 package ai.oyi.device.ui
 
-import android.content.Intent
-import android.net.Uri
-import android.provider.Settings
-import androidx.compose.animation.animateColorAsState
-import androidx.compose.animation.core.animateDpAsState
-import androidx.compose.foundation.background
-import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.BoxWithConstraints
-import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.fillMaxHeight
-import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.offset
-import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.OutlinedTextFieldDefaults
-import androidx.compose.material3.Scaffold
-import androidx.compose.material3.Slider
-import androidx.compose.material3.SliderDefaults
-import androidx.compose.material3.Switch
-import androidx.compose.material3.SwitchDefaults
-import androidx.compose.material3.Text
-import androidx.compose.runtime.Composable
-import androidx.compose.runtime.DisposableEffect
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableFloatStateOf
-import androidx.compose.runtime.mutableIntStateOf
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
-import androidx.compose.runtime.setValue
-import androidx.compose.ui.Alignment
-import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Brush
-import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.platform.LocalLifecycleOwner
-import androidx.compose.ui.text.font.FontFamily
-import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.input.PasswordVisualTransformation
-import androidx.compose.ui.text.style.TextOverflow
-import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
-import androidx.lifecycle.Lifecycle
-import androidx.lifecycle.LifecycleEventObserver
-import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import androidx.lifecycle.viewmodel.compose.viewModel
+import ai.oyi.device.R
 import ai.oyi.device.model.ConnectionState
 import ai.oyi.device.model.IslandKind
 import ai.oyi.device.ui.island.DynamicIsland
@@ -66,14 +10,82 @@ import ai.oyi.device.ui.theme.GlassBackdrop
 import ai.oyi.device.ui.theme.LocalGlassBackdrop
 import ai.oyi.device.ui.theme.OyiMotion
 import ai.oyi.device.ui.theme.PressMorph
+import ai.oyi.device.ui.theme.TabularNumbers
+import ai.oyi.device.ui.theme.glassSource
 import ai.oyi.device.ui.theme.liquidGlass
-import kotlin.math.roundToInt
+import android.content.Intent
+import android.net.Uri
+import android.provider.Settings
+import androidx.annotation.DrawableRes
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.Crossfade
+import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.expandHorizontally
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.shrinkHorizontally
+import androidx.compose.foundation.background
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.isImeVisible
+import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.material3.Icon
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.ui.platform.LocalLifecycleOwner
+import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.role
+import androidx.compose.ui.semantics.selected
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.lifecycle.viewmodel.compose.viewModel
 
 @Composable
 fun MainScreen(viewModel: MainViewModel = viewModel()) {
     val state by viewModel.state.collectAsStateWithLifecycle()
     val level by viewModel.voiceLevel.collectAsStateWithLifecycle()
-    var tab by remember { mutableIntStateOf(0) }
+    var tab by rememberSaveable { mutableIntStateOf(0) }
     val context = LocalContext.current
 
     val lifecycleOwner = LocalLifecycleOwner.current
@@ -125,7 +137,7 @@ fun MainScreen(viewModel: MainViewModel = viewModel()) {
         when (current) {
             0 -> FocusScreen()
             1 -> SpaceContent(state, space)
-            else -> ChatScreen()
+            else -> ChatScreen(onOpenSetup = { tab = 1 })
         }
     }
 }
@@ -145,7 +157,19 @@ class SpaceActions(
     val saveGateway: (String, String) -> Unit = { _, _ -> },
 )
 
-/** The app's frame: backdrop, the island, the tabs and the current tab. */
+private class NavItem(val label: String, @DrawableRes val icon: Int, @DrawableRes val selectedIcon: Int)
+
+private val NavItems = listOf(
+    NavItem("Focus", R.drawable.ic_center_focus_strong, R.drawable.ic_center_focus_strong_fill),
+    NavItem("Space", R.drawable.ic_grid_view, R.drawable.ic_grid_view_fill),
+    NavItem("Chat", R.drawable.ic_forum, R.drawable.ic_forum_fill),
+)
+
+/**
+ * The app's frame: true black, the island under the camera, the current
+ * tab, and a floating liquid-glass nav that the content scrolls under.
+ */
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun MainShell(
     state: UiState,
@@ -156,100 +180,118 @@ fun MainShell(
     content: @Composable (tab: Int) -> Unit,
 ) {
     GlassBackdrop {
-        Scaffold(containerColor = Color.Transparent) { padding ->
-            Column(
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(Oyi.Black)
+                .glassSource(),
+        ) {
+            Box(
                 modifier = Modifier
-                    .fillMaxSize()
-                    .padding(padding),
+                    .fillMaxWidth()
+                    .statusBarsPadding()
+                    .padding(top = 4.dp, bottom = 2.dp),
+                contentAlignment = Alignment.TopCenter,
             ) {
-                Box(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(top = 6.dp, bottom = 4.dp),
-                    contentAlignment = Alignment.TopCenter,
-                ) {
-                    DynamicIsland(
-                        state = state.island,
-                        idle = IslandIdleInfo(
-                            appLabel = "",
-                            link = state.connection,
-                            linkError = state.connectionError,
-                        ),
-                        level = level,
-                        inApp = true,
-                        secondary = state.islandSecondary,
-                        accent = MaterialTheme.colorScheme.primary,
-                        onAction = onIslandAction,
-                        modifier = Modifier.padding(horizontal = 16.dp),
-                    )
-                }
-
-                ExpressiveTabs(
-                    tabs = listOf("Focus", "Space", "Live Chat"),
-                    selected = tab,
-                    onSelect = onTab,
+                DynamicIsland(
+                    state = state.island,
+                    idle = IslandIdleInfo(
+                        appLabel = "",
+                        link = state.connection,
+                        linkError = state.connectionError,
+                    ),
+                    level = level,
+                    inApp = true,
+                    secondary = state.islandSecondary,
+                    accent = MaterialTheme.colorScheme.primary,
+                    onAction = onIslandAction,
+                    modifier = Modifier.padding(horizontal = 16.dp),
                 )
-
-                content(tab)
             }
+            Crossfade(
+                targetState = tab,
+                animationSpec = tween(durationMillis = 180),
+                modifier = Modifier.weight(1f),
+                label = "tab",
+            ) { current ->
+                Box(Modifier.fillMaxSize()) { content(current) }
+            }
+        }
+
+        if (!WindowInsets.isImeVisible) {
+            FloatingNav(
+                selected = tab,
+                onSelect = onTab,
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .navigationBarsPadding()
+                    .padding(bottom = NavBottomMargin),
+            )
         }
     }
 }
 
 /**
- * A Material 3 Expressive button group on a glass track: the selected tab
- * is a solid pill that slides between the others on a spatial spring.
+ * Material 3 Expressive's short navigation bar, on liquid glass: the
+ * selected destination grows a cream pill with its name; the others are
+ * just their icons.
  */
 @Composable
-private fun ExpressiveTabs(
-    tabs: List<String>,
-    selected: Int,
-    onSelect: (Int) -> Unit,
-) {
-    val trackShape = RoundedCornerShape(50)
-    BoxWithConstraints(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(horizontal = 16.dp, vertical = 8.dp)
-            .height(48.dp)
-            .liquidGlass(trackShape, fill = Oyi.SmokedGlass, backdrop = LocalGlassBackdrop.current, elevation = 8.dp)
-            .padding(4.dp),
+private fun FloatingNav(selected: Int, onSelect: (Int) -> Unit, modifier: Modifier = Modifier) {
+    val haptics = LocalHapticFeedback.current
+    Row(
+        modifier = modifier
+            .height(NavHeight)
+            .liquidGlass(Oyi.Pill, backdrop = LocalGlassBackdrop.current, elevation = 16.dp)
+            .padding(6.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(2.dp),
     ) {
-        val slot = maxWidth / tabs.size
-        val indicatorX by animateDpAsState(
-            targetValue = slot * selected,
-            animationSpec = OyiMotion.defaultSpatial(),
-            label = "tabIndicator",
-        )
-        Box(
-            Modifier
-                .offset(x = indicatorX)
-                .width(slot)
-                .fillMaxHeight()
-                .clip(CircleShape)
-                .background(Brush.verticalGradient(listOf(Color(0xFFFFF8E6), Oyi.Cream))),
-        )
-        Row(Modifier.fillMaxSize()) {
-            tabs.forEachIndexed { index, title ->
-                val isSelected = index == selected
-                val color by animateColorAsState(
-                    targetValue = if (isSelected) Oyi.Ink else Oyi.Muted,
-                    animationSpec = OyiMotion.defaultEffects(),
-                    label = "tabText",
-                )
-                PressMorph(
-                    onClick = { onSelect(index) },
+        NavItems.forEachIndexed { index, item ->
+            val isSelected = index == selected
+            val bg by animateColorAsState(
+                if (isSelected) Oyi.Cream else Oyi.Cream.copy(alpha = 0f),
+                OyiMotion.defaultEffects(),
+                label = "navBg",
+            )
+            val fg by animateColorAsState(
+                if (isSelected) Oyi.Ink else Oyi.Muted,
+                OyiMotion.defaultEffects(),
+                label = "navFg",
+            )
+            PressMorph(
+                onClick = {
+                    if (!isSelected) haptics.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                    onSelect(index)
+                },
+                modifier = Modifier.semantics {
+                    role = Role.Tab
+                    this.selected = isSelected
+                },
+            ) { shape ->
+                Row(
                     modifier = Modifier
-                        .weight(1f)
-                        .fillMaxHeight(),
+                        .height(NavHeight - 12.dp)
+                        .background(bg, shape)
+                        .padding(horizontal = if (isSelected) 18.dp else 20.dp),
+                    verticalAlignment = Alignment.CenterVertically,
                 ) {
-                    Text(
-                        text = title,
-                        color = color,
-                        fontSize = 14.sp,
-                        fontWeight = if (isSelected) FontWeight.ExtraBold else FontWeight.SemiBold,
-                        modifier = Modifier.align(Alignment.Center),
+                    Icon(
+                        painterResource(if (isSelected) item.selectedIcon else item.icon),
+                        contentDescription = item.label,
+                        tint = fg,
+                        modifier = Modifier.size(22.dp),
                     )
+                    AnimatedVisibility(
+                        visible = isSelected,
+                        enter = fadeIn(OyiMotion.defaultEffects()) + expandHorizontally(OyiMotion.fastSpatial()),
+                        exit = fadeOut(OyiMotion.fastEffects()) + shrinkHorizontally(OyiMotion.fastSpatial()),
+                    ) {
+                        Row {
+                            Spacer(Modifier.width(8.dp))
+                            Text(item.label, color = fg, fontSize = 14.sp, fontWeight = FontWeight.Bold, maxLines = 1)
+                        }
+                    }
                 }
             }
         }
@@ -260,176 +302,115 @@ private fun ExpressiveTabs(
 @Composable
 fun SpaceContent(state: UiState, actions: SpaceActions) {
     LazyColumn(
-        modifier = Modifier
-            .fillMaxSize()
-            .padding(horizontal = 16.dp),
-        verticalArrangement = Arrangement.spacedBy(12.dp),
+        modifier = Modifier.fillMaxSize(),
+        contentPadding = PaddingValues(horizontal = Gutter),
+        verticalArrangement = Arrangement.spacedBy(CardGap),
     ) {
         item {
-            Spacer(Modifier.height(6.dp))
-            Text(
-                text = "My\nDevice",
-                style = MaterialTheme.typography.displaySmall,
-                color = Oyi.OffWhite,
-            )
-            Spacer(Modifier.height(4.dp))
+            ScreenTitle(title = "Space", subtitle = "How OYI lives on this phone.")
         }
+        item { AccessCard(state, actions) }
+        item { ScreenTimeCard(state) }
+        item { IslandCard(state, actions) }
+        item { IslandLookCard(state, actions) }
+        item { GatewayCard(state, actions.saveGateway) }
+        item { BottomClearance() }
+    }
+}
 
-        item {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(10.dp),
-            ) {
-                Box(modifier = Modifier.weight(1f)) {
-                    PermissionsBentoCard(
-                        state = state,
-                        onOpenOverlay = actions.openOverlay,
-                        onOpenUsage = actions.openUsage,
-                        onOpenAccessibility = actions.openAccessibility,
-                    )
-                }
-                Box(modifier = Modifier.weight(1f)) {
-                    UsageBentoCard(state = state)
-                }
-            }
-        }
+@Composable
+private fun AccessCard(state: UiState, actions: SpaceActions) {
+    val granted = listOf(state.overlayPermission, state.usagePermission, state.accessibilityEnabled).count { it }
+    OyiCard(padding = PaddingValues(start = 20.dp, end = 16.dp, top = 20.dp, bottom = 10.dp)) {
+        CardHeader(
+            title = "Access",
+            subtitle = if (granted == 3) "All set" else "$granted of 3 on",
+            icon = R.drawable.ic_tune,
+            iconTint = if (granted == 3) Oyi.Good else Oyi.Orange,
+            iconBackground = if (granted == 3) Oyi.Good.copy(alpha = 0.14f) else Oyi.OrangeTint,
+        )
+        Spacer(Modifier.height(8.dp))
+        AccessRow("Draw over apps", "Shows the island everywhere", R.drawable.ic_smartphone, state.overlayPermission, actions.openOverlay)
+        RowDivider()
+        AccessRow("Usage access", "Counts your screen time", R.drawable.ic_timer, state.usagePermission, actions.openUsage)
+        RowDivider()
+        AccessRow("Control access", "Blocks apps and works your phone", R.drawable.ic_visibility, state.accessibilityEnabled, actions.openAccessibility)
+    }
+}
 
-        item {
-            RunCard(
-                enabled = state.overlayEnabled,
-                autoStart = state.autoStart,
-                onToggle = actions.setOverlayEnabled,
-                onAutoStart = actions.setAutoStart,
-                onPreviewIsland = actions.previewIsland,
-                onPreviewStack = actions.previewStack,
-            )
-        }
-
-        item {
-            IslandLookCard(
-                state = state,
-                onWallpaper = actions.setWallpaperColors,
-                onLiveUpdates = actions.setLiveUpdates,
-                onNudge = actions.setIslandNudge,
-            )
-        }
-
-        item {
-            GatewayCard(
-                state = state,
-                onSave = actions.saveGateway,
-            )
-        }
-
-        item {
-            Spacer(Modifier.height(24.dp))
+@Composable
+private fun AccessRow(title: String, detail: String, @DrawableRes icon: Int, granted: Boolean, onOpen: () -> Unit) {
+    ListRow(
+        title = title,
+        subtitle = detail,
+        leading = { IconTile(icon, size = 36.dp) },
+        onClick = if (granted) null else onOpen,
+    ) {
+        if (granted) {
+            Icon(painterResource(R.drawable.ic_check), contentDescription = "On", tint = Oyi.Good, modifier = Modifier.size(22.dp))
+        } else {
+            OyiButton(text = "Allow", onClick = onOpen, kind = ButtonKind.TONAL, small = true)
         }
     }
 }
 
 @Composable
-private fun PermissionsBentoCard(
-    state: UiState,
-    onOpenOverlay: () -> Unit,
-    onOpenUsage: () -> Unit,
-    onOpenAccessibility: () -> Unit,
-) {
-    GlassCard(brush = Oyi.OrangeGlass, modifier = Modifier.fillMaxWidth()) {
-        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            Text(
-                text = "Device\nAccess",
-                style = MaterialTheme.typography.titleLarge,
-                fontWeight = FontWeight.ExtraBold,
-                color = Oyi.Ink,
-            )
-            Spacer(Modifier.height(2.dp))
-            BentoChecklistItem("Island", state.overlayPermission, onOpenOverlay)
-            BentoChecklistItem("Usage", state.usagePermission, onOpenUsage)
-            BentoChecklistItem("Control", state.accessibilityEnabled, onOpenAccessibility)
-        }
-    }
-}
-
-@Composable
-private fun BentoChecklistItem(label: String, granted: Boolean, onClick: () -> Unit) {
-    PressMorph(
-        onClick = { if (!granted) onClick() },
-        modifier = Modifier.fillMaxWidth(),
-        pressedPercent = 30f,
-    ) { shape ->
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .background(Color(0x260A0807), shape)
-                .padding(horizontal = 10.dp, vertical = 8.dp),
-            verticalAlignment = Alignment.CenterVertically,
+private fun ScreenTimeCard(state: UiState) {
+    OyiCard {
+        CardHeader(
+            title = "Screen time",
+            subtitle = state.currentApp?.let { "Now in ${it.label}" } ?: "Today",
+            icon = R.drawable.ic_timer,
         ) {
-            Box(
-                modifier = Modifier
-                    .size(18.dp)
-                    .clip(CircleShape)
-                    .background(if (granted) Oyi.Ink else Color(0x260A0807)),
-                contentAlignment = Alignment.Center,
-            ) {
+            val total = state.topApps.sumOf { it.totalMs }
+            if (total > 0) {
                 Text(
-                    text = if (granted) "✓" else "○",
-                    color = if (granted) Color(0xFFFFF8E7) else Oyi.Ink,
-                    fontSize = 11.sp,
-                    fontWeight = FontWeight.Bold,
+                    formatDuration(total),
+                    style = MaterialTheme.typography.headlineSmall,
+                    color = Oyi.OffWhite,
+                    fontFeatureSettings = TabularNumbers,
                 )
             }
-            Spacer(Modifier.width(8.dp))
-            Text(
-                text = label,
-                color = Oyi.Ink,
-                fontSize = 12.5.sp,
-                fontWeight = FontWeight.ExtraBold,
-            )
         }
-    }
-}
-
-@Composable
-private fun UsageBentoCard(state: UiState) {
-    GlassCard(brush = Oyi.YellowGlass, modifier = Modifier.fillMaxWidth()) {
-        Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-            Text(
-                text = "Screen\nTime",
-                style = MaterialTheme.typography.titleLarge,
-                fontWeight = FontWeight.ExtraBold,
-                color = Oyi.Ink,
-            )
-            Text(
-                text = state.currentApp?.let { "Now · ${it.label}" } ?: "Updated live",
-                fontSize = 11.5.sp,
-                fontWeight = FontWeight.Medium,
-                color = Color(0xFF2E2810),
-            )
-            Spacer(Modifier.height(4.dp))
-            if (state.topApps.isEmpty()) {
-                Text(text = "No usage yet", fontSize = 12.sp, color = Color(0xFF2E2810))
-            } else {
-                state.topApps.take(3).forEach { app ->
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        Text(
-                            text = app.label,
-                            fontSize = 12.sp,
-                            fontWeight = FontWeight.SemiBold,
-                            color = Oyi.Ink,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                            modifier = Modifier.weight(1f),
-                        )
-                        Text(
-                            text = formatDuration(app.totalMs),
-                            fontSize = 11.5.sp,
-                            fontFamily = FontFamily.Monospace,
-                            fontWeight = FontWeight.Bold,
-                            color = Oyi.Ink,
-                        )
+        if (state.topApps.isEmpty()) {
+            Spacer(Modifier.height(12.dp))
+            Hint(if (state.usagePermission) "Nothing counted yet today." else "Allow usage access to see where your time goes.")
+        } else {
+            Spacer(Modifier.height(14.dp))
+            val max = state.topApps.maxOf { it.totalMs }.coerceAtLeast(1L)
+            state.topApps.take(4).forEachIndexed { index, app ->
+                if (index > 0) Spacer(Modifier.height(12.dp))
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    AppIcon(app.packageName, size = 32.dp, label = app.label)
+                    Spacer(Modifier.width(12.dp))
+                    Column(Modifier.weight(1f)) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text(
+                                app.label,
+                                color = Oyi.OffWhite,
+                                fontSize = 14.sp,
+                                fontWeight = FontWeight.SemiBold,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                                modifier = Modifier.weight(1f),
+                            )
+                            Text(
+                                formatDuration(app.totalMs),
+                                color = Oyi.Muted,
+                                fontSize = 13.sp,
+                                fontFeatureSettings = TabularNumbers,
+                            )
+                        }
+                        Spacer(Modifier.height(6.dp))
+                        Box(Modifier.fillMaxWidth().height(4.dp).clip(Oyi.Pill).background(Oyi.Control)) {
+                            Box(
+                                Modifier
+                                    .fillMaxWidth((app.totalMs.toFloat() / max).coerceIn(0.03f, 1f))
+                                    .height(4.dp)
+                                    .clip(Oyi.Pill)
+                                    .background(if (index == 0) Oyi.Orange else Oyi.Muted),
+                            )
+                        }
                     }
                 }
             }
@@ -438,253 +419,88 @@ private fun UsageBentoCard(state: UiState) {
 }
 
 @Composable
-private fun creamSwitchColors() = SwitchDefaults.colors(
-    checkedThumbColor = Oyi.Cream,
-    checkedTrackColor = Oyi.Ink,
-    uncheckedThumbColor = Oyi.Ink,
-    uncheckedTrackColor = Color(0xFFDAD0B2),
-)
-
-@Composable
-private fun RunCard(
-    enabled: Boolean,
-    autoStart: Boolean,
-    onToggle: (Boolean) -> Unit,
-    onAutoStart: (Boolean) -> Unit,
-    onPreviewIsland: (IslandKind) -> Unit,
-    onPreviewStack: () -> Unit,
-) {
-    GlassCard(brush = Oyi.CreamGlass) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Column(modifier = Modifier.weight(1f)) {
-                Text(
-                    text = if (enabled) "Active across apps" else "Stopped",
-                    fontSize = 11.5.sp,
-                    fontWeight = FontWeight.Medium,
-                    color = Oyi.InkSoft,
-                )
-                Text(
-                    text = "Dynamic Island",
-                    style = MaterialTheme.typography.titleLarge,
-                    fontWeight = FontWeight.ExtraBold,
-                    color = Oyi.Ink,
-                )
-            }
-            Switch(checked = enabled, onCheckedChange = onToggle, colors = creamSwitchColors())
+private fun IslandCard(state: UiState, actions: SpaceActions) {
+    OyiCard(padding = PaddingValues(start = 20.dp, end = 16.dp, top = 20.dp, bottom = 20.dp)) {
+        CardHeader(
+            title = "Dynamic Island",
+            subtitle = if (state.overlayEnabled) "On across apps" else "Off",
+            icon = R.drawable.ic_bolt,
+            iconTint = if (state.overlayEnabled) Oyi.Orange else Oyi.OffWhite,
+            iconBackground = if (state.overlayEnabled) Oyi.OrangeTint else Oyi.Control,
+        ) {
+            OyiSwitch(state.overlayEnabled, actions.setOverlayEnabled)
         }
-        SwitchRow("Launch on boot", autoStart, onAutoStart)
+        Spacer(Modifier.height(8.dp))
+        RowDivider(inset = 0.dp)
+        ListRow(title = "Start when the phone starts") {
+            OyiSwitch(state.autoStart, actions.setAutoStart)
+        }
+        RowDivider(inset = 0.dp)
+        Spacer(Modifier.height(14.dp))
+        Eyebrow("Try a state")
         Spacer(Modifier.height(10.dp))
-        Text(
-            text = "Preview the island",
-            fontSize = 11.5.sp,
-            fontWeight = FontWeight.Medium,
-            color = Oyi.InkSoft,
-            modifier = Modifier.padding(bottom = 6.dp),
+        val previews = listOf(
+            "Listening" to IslandKind.LISTENING,
+            "Thinking" to IslandKind.THINKING,
+            "Using a tool" to IslandKind.TOOL,
+            "Speaking" to IslandKind.SPEAKING,
+            "Working" to IslandKind.WORKING,
+            "Approval" to IslandKind.APPROVAL_REQUIRED,
+            "Done" to IslandKind.COMPLETED,
+            "Idle" to IslandKind.IDLE,
         )
-        val previewRows = listOf(
-            listOf(
-                "Listen" to IslandKind.LISTENING,
-                "Think" to IslandKind.THINKING,
-                "Tool" to IslandKind.TOOL,
-                "Speak" to IslandKind.SPEAKING,
-            ),
-            listOf(
-                "Idle" to IslandKind.IDLE,
-                "Phone" to IslandKind.WORKING,
-                "Approve" to IslandKind.APPROVAL_REQUIRED,
-                "Done" to IslandKind.COMPLETED,
-            ),
-        )
-        previewRows.forEachIndexed { rowIndex, modes ->
-            if (rowIndex > 0) Spacer(Modifier.height(6.dp))
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(6.dp),
-            ) {
-                modes.forEach { (label, kind) ->
-                    Box(Modifier.weight(1f), contentAlignment = Alignment.Center) {
-                        Pill(text = label, onDark = false) { onPreviewIsland(kind) }
-                    }
-                }
+        Row(
+            modifier = Modifier.horizontalScroll(rememberScrollState()),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            previews.forEach { (label, kind) ->
+                Pill(text = label) { actions.previewIsland(kind) }
             }
+            Pill(text = "Two at once", onClick = actions.previewStack)
         }
-        Spacer(Modifier.height(6.dp))
-        Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
-            Pill(text = "Two at once", selected = true, onDark = false, onClick = onPreviewStack)
-        }
-    }
-}
-
-@Composable
-private fun SwitchRow(label: String, checked: Boolean, onChange: (Boolean) -> Unit, detail: String = "") {
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(top = 6.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Column(Modifier.weight(1f)) {
-            Text(text = label, fontSize = 13.5.sp, fontWeight = FontWeight.SemiBold, color = Oyi.Ink)
-            if (detail.isNotBlank()) {
-                Text(text = detail, fontSize = 11.5.sp, color = Oyi.InkSoft, lineHeight = 15.sp)
-            }
-        }
-        Spacer(Modifier.width(8.dp))
-        Switch(checked = checked, onCheckedChange = onChange, colors = creamSwitchColors())
     }
 }
 
 /** How the island looks and where it sits over the camera. */
 @Composable
-private fun IslandLookCard(
-    state: UiState,
-    onWallpaper: (Boolean) -> Unit,
-    onLiveUpdates: (Boolean) -> Unit,
-    onNudge: (Int, Int) -> Unit,
-) {
-    GlassCard(brush = Oyi.CreamGlass) {
-        Text(
-            text = "Island look",
-            style = MaterialTheme.typography.titleLarge,
-            fontWeight = FontWeight.ExtraBold,
-            color = Oyi.Ink,
-        )
-        SwitchRow(
-            label = "Match wallpaper colours",
-            checked = state.wallpaperColors,
-            onChange = onWallpaper,
-            detail = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.S) {
-                "Material You accent instead of OYI orange."
-            } else {
-                "Needs Android 12 or newer."
-            },
-        )
-        SwitchRow(
-            label = "Live Update when hidden",
-            checked = state.liveUpdates,
-            onChange = onLiveUpdates,
-            detail = "Shows what OYI is doing as a status bar chip (Android 16) when the island is off.",
-        )
-        Spacer(Modifier.height(12.dp))
-        Text(
-            text = "Fit over the camera",
-            fontSize = 13.5.sp,
-            fontWeight = FontWeight.SemiBold,
-            color = Oyi.Ink,
-        )
-        Text(
-            text = "The island centres itself on the camera hole. Nudge it if it is a little off.",
-            fontSize = 11.5.sp,
-            color = Oyi.InkSoft,
-            lineHeight = 15.sp,
-        )
-        var x by remember(state.islandNudgeXDp) { mutableFloatStateOf(state.islandNudgeXDp.toFloat()) }
-        var y by remember(state.islandNudgeYDp) { mutableFloatStateOf(state.islandNudgeYDp.toFloat()) }
-        NudgeSlider("Left · Right", x, onChange = { x = it }) { onNudge(x.roundToInt(), y.roundToInt()) }
-        NudgeSlider("Up · Down", y, onChange = { y = it }) { onNudge(x.roundToInt(), y.roundToInt()) }
-        Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.CenterEnd) {
-            Pill(text = "Reset", onDark = false, enabled = x != 0f || y != 0f) {
-                x = 0f
-                y = 0f
-                onNudge(0, 0)
-            }
-        }
-    }
-}
-
-@Composable
-private fun NudgeSlider(label: String, value: Float, onChange: (Float) -> Unit, onDone: () -> Unit) {
-    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(top = 4.dp)) {
-        Text(
-            text = label,
-            fontSize = 11.5.sp,
-            fontWeight = FontWeight.Bold,
-            color = Oyi.InkSoft,
-            modifier = Modifier.width(84.dp),
-        )
-        Slider(
-            value = value,
-            onValueChange = onChange,
-            onValueChangeFinished = onDone,
-            valueRange = -24f..24f,
-            steps = 47,
-            colors = SliderDefaults.colors(
-                thumbColor = Oyi.Ink,
-                activeTrackColor = Oyi.Ink,
-                inactiveTrackColor = Color(0x330A0807),
-                activeTickColor = Color.Transparent,
-                inactiveTickColor = Color.Transparent,
-            ),
-            modifier = Modifier.weight(1f),
-        )
-        Text(
-            text = "${value.roundToInt()}",
-            fontSize = 11.5.sp,
-            fontFamily = FontFamily.Monospace,
-            color = Oyi.Ink,
-            modifier = Modifier.width(28.dp),
-        )
-    }
-}
-
-@Composable
-private fun GatewayCard(
-    state: UiState,
-    onSave: (String, String) -> Unit,
-) {
-    var url by remember(state.gatewayUrl) { mutableStateOf(state.gatewayUrl) }
-    var token by remember(state.token) { mutableStateOf(state.token) }
-    val fieldColors = OutlinedTextFieldDefaults.colors(
-        focusedBorderColor = Oyi.Cream,
-        unfocusedBorderColor = Color(0x33FFFFFF),
-        focusedLabelColor = Oyi.Cream,
-        cursorColor = Oyi.Cream,
-        focusedContainerColor = Color(0x14FFFFFF),
-        unfocusedContainerColor = Color(0x0AFFFFFF),
-    )
-
-    GlassCard {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Text(
-                "Gateway Link",
-                style = MaterialTheme.typography.titleLarge,
-                color = Oyi.OffWhite,
-                modifier = Modifier.weight(1f),
-            )
-            ConnectionBadge(state.connection, state.connectionError)
-        }
-        Spacer(Modifier.height(10.dp))
-        OutlinedTextField(
-            value = url,
-            onValueChange = { url = it },
-            label = { Text("Gateway URL") },
-            placeholder = { Text("https://oyi.example") },
-            singleLine = true,
-            shape = RoundedCornerShape(20.dp),
-            colors = fieldColors,
-            modifier = Modifier.fillMaxWidth(),
-        )
+private fun IslandLookCard(state: UiState, actions: SpaceActions) {
+    var x by remember(state.islandNudgeXDp) { mutableIntStateOf(state.islandNudgeXDp) }
+    var y by remember(state.islandNudgeYDp) { mutableIntStateOf(state.islandNudgeYDp) }
+    OyiCard(padding = PaddingValues(start = 20.dp, end = 16.dp, top = 20.dp, bottom = 12.dp)) {
+        CardHeader(title = "Look and fit", subtitle = "Colour, Live Updates, camera fit", icon = R.drawable.ic_palette)
         Spacer(Modifier.height(8.dp))
-        OutlinedTextField(
-            value = token,
-            onValueChange = { token = it },
-            label = { Text("Pairing token") },
-            singleLine = true,
-            shape = RoundedCornerShape(20.dp),
-            colors = fieldColors,
-            visualTransformation = PasswordVisualTransformation(),
-            modifier = Modifier.fillMaxWidth(),
-        )
-        Spacer(Modifier.height(12.dp))
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Pill(text = "Save link", selected = true) { onSave(url, token) }
-            Spacer(Modifier.weight(1f))
-            if (state.deviceId.isNotBlank()) {
-                Text(
-                    text = state.deviceId.take(8),
-                    style = MaterialTheme.typography.labelSmall,
-                    fontFamily = FontFamily.Monospace,
-                    color = Oyi.Muted,
+        val dynamicOk = android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.S
+        ListRow(
+            title = "Match wallpaper colours",
+            subtitle = if (dynamicOk) "Your Material You accent instead of OYI orange" else "Needs Android 12 or newer",
+        ) {
+            OyiSwitch(state.wallpaperColors, actions.setWallpaperColors)
+        }
+        RowDivider(inset = 0.dp)
+        ListRow(
+            title = "Live Update when hidden",
+            subtitle = "A status bar chip on Android 16 while the island is off",
+        ) {
+            OyiSwitch(state.liveUpdates, actions.setLiveUpdates)
+        }
+        RowDivider(inset = 0.dp)
+        ListRow(title = "Left or right", subtitle = "Nudge it over the camera") {
+            Stepper(x, { x = it; actions.setIslandNudge(x, y) }, -24..24, unit = "")
+        }
+        ListRow(title = "Up or down") {
+            Stepper(y, { y = it; actions.setIslandNudge(x, y) }, -24..24, unit = "")
+        }
+        AnimatedVisibility(visible = x != 0 || y != 0) {
+            Box(Modifier.fillMaxWidth().padding(top = 4.dp, bottom = 6.dp), contentAlignment = Alignment.CenterEnd) {
+                OyiButton(
+                    text = "Reset position",
+                    kind = ButtonKind.GHOST,
+                    small = true,
+                    onClick = {
+                        x = 0
+                        y = 0
+                        actions.setIslandNudge(0, 0)
+                    },
                 )
             }
         }
@@ -692,27 +508,61 @@ private fun GatewayCard(
 }
 
 @Composable
-private fun ConnectionBadge(connection: ConnectionState, error: String) {
+private fun GatewayCard(state: UiState, onSave: (String, String) -> Unit) {
+    var url by remember(state.gatewayUrl) { mutableStateOf(state.gatewayUrl) }
+    var token by remember(state.token) { mutableStateOf(state.token) }
+    val changed = url != state.gatewayUrl || token != state.token
+
+    OyiCard {
+        CardHeader(
+            title = "Gateway",
+            subtitle = if (state.deviceId.isNotBlank()) "This phone: ${state.deviceId.take(8)}" else "Links OYI to your agent",
+            icon = R.drawable.ic_link,
+        ) {
+            ConnectionLabel(state.connection)
+        }
+        if (state.connectionError.isNotBlank() && state.connection == ConnectionState.ERROR) {
+            Spacer(Modifier.height(12.dp))
+            Text(state.connectionError, color = Oyi.Bad, fontSize = 13.sp, lineHeight = 18.sp, maxLines = 2)
+        }
+        Spacer(Modifier.height(16.dp))
+        OyiTextField(
+            value = url,
+            onValueChange = { url = it.trim() },
+            placeholder = "https://oyi.example.com",
+            icon = R.drawable.ic_language,
+            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri),
+            modifier = Modifier.fillMaxWidth(),
+        )
+        Spacer(Modifier.height(8.dp))
+        OyiTextField(
+            value = token,
+            onValueChange = { token = it.trim() },
+            placeholder = "Pairing token",
+            icon = R.drawable.ic_lock,
+            password = true,
+            modifier = Modifier.fillMaxWidth(),
+        )
+        Spacer(Modifier.height(14.dp))
+        OyiButton(
+            text = if (state.gatewayUrl.isBlank()) "Link OYI" else "Save changes",
+            onClick = { onSave(url, token) },
+            kind = if (changed && url.isNotBlank()) ButtonKind.PRIMARY else ButtonKind.TONAL,
+            enabled = changed && url.isNotBlank(),
+            fullWidth = true,
+        )
+    }
+}
+
+@Composable
+private fun ConnectionLabel(connection: ConnectionState) {
     val (label, color) = when (connection) {
-        ConnectionState.CONNECTED -> "Connected" to Oyi.Cream
-        ConnectionState.CONNECTING -> "Connecting" to Oyi.Yellow
-        ConnectionState.ERROR -> "Error" to Oyi.Orange
-        ConnectionState.DISCONNECTED -> "Offline" to Oyi.Muted
+        ConnectionState.CONNECTED -> "Connected" to Oyi.Good
+        ConnectionState.CONNECTING -> "Connecting" to Oyi.Warn
+        ConnectionState.ERROR -> "Can't connect" to Oyi.Bad
+        ConnectionState.DISCONNECTED -> "Offline" to Oyi.Faint
     }
-    Column(horizontalAlignment = Alignment.End) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Box(Modifier.size(7.dp).clip(CircleShape).background(color))
-            Spacer(Modifier.width(6.dp))
-            Text(label, color = color, style = MaterialTheme.typography.labelLarge)
-        }
-        if (error.isNotBlank()) {
-            Text(
-                text = error.take(40),
-                style = MaterialTheme.typography.labelSmall,
-                color = Oyi.Muted,
-            )
-        }
-    }
+    StatusLabel(label, color)
 }
 
 private fun formatDuration(millis: Long): String {
@@ -720,7 +570,7 @@ private fun formatDuration(millis: Long): String {
     val hours = minutes / 60
     val rest = minutes % 60
     return when {
-        hours > 0 -> "${hours}h ${rest}m"
+        hours > 0 -> if (rest > 0) "${hours}h ${rest}m" else "${hours}h"
         minutes > 0 -> "${minutes}m"
         else -> "<1m"
     }

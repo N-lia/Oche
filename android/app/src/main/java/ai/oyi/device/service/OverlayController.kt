@@ -255,6 +255,8 @@ class OverlayController(
         }
         val hole by cutout
 
+        // The theme gives the island OYI's typeface; it draws nothing itself.
+        ai.oyi.device.ui.theme.OyiTheme(wallpaperColors = prefs.wallpaperColors) {
         DynamicIsland(
             state = island,
             idle = idle,
@@ -273,6 +275,7 @@ class OverlayController(
                 bottom = 14.dp,
             ),
         )
+        }
     }
 
     private fun onAction(action: IslandAction) {
