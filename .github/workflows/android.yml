@@ -155,17 +155,23 @@ jobs:
       # GitHub release named build-<run number> with the APK attached. The
       # app checks the latest release and offers to install it.
       - name: Publish release for in-app updates
-        if: github.event_name == 'push' && (github.ref == 'refs/heads/echo-blocker' || github.ref == 'refs/heads/main')
+        # Also for pull requests from this repo, so a branch under test can be
+        # updated over the air before it is merged.
+        if: >-
+          (github.event_name == 'push' && (github.ref == 'refs/heads/echo-blocker' || github.ref == 'refs/heads/main')) ||
+          (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository)
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: build-${{ github.run_number }}
+          TARGET: ${{ github.event.pull_request.head.sha || github.sha }}
+          NOTES: ${{ github.event.pull_request.title || 'Latest build' }}
         run: |
           set -euo pipefail
           apk=$(ls android/app/build/outputs/apk/debug/*.apk | head -1)
           cp "$apk" "oyi-${TAG}.apk"
           gh release create "$TAG" "oyi-${TAG}.apk" \
             --repo "${{ github.repository }}" \
-            --target "${{ github.sha }}" \
+            --target "$TARGET" \
             --title "OYI ${TAG}" \
-            --notes "$(git log -1 --format=%s ${{ github.sha }})" \
+            --notes "$NOTES" \
             --latest
