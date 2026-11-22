@@ -469,14 +469,15 @@ fun SpaceContent(
 @Composable
 private fun AccessCard(state: UiState, actions: SpaceActions) {
     val granted = listOf(state.overlayPermission, state.usagePermission, state.accessibilityEnabled).count { it }
-    OyiCard(padding = PaddingValues(start = 20.dp, end = 16.dp, top = 20.dp, bottom = 10.dp)) {
-        CardHeader(
-            title = "Access",
-            subtitle = if (granted == 3) "All set" else "$granted of 3 on",
-            icon = R.drawable.ic_tune,
-            iconTint = if (granted == 3) Oyi.Good else Oyi.Orange,
-            iconBackground = if (granted == 3) Oyi.Good.copy(alpha = 0.14f) else Oyi.OrangeTint,
-        )
+    FoldingCard(
+        done = granted == 3,
+        title = "Access",
+        subtitle = if (granted == 3) "All set" else "$granted of 3 on",
+        icon = R.drawable.ic_tune,
+        iconTint = if (granted == 3) Oyi.Good else Oyi.Orange,
+        iconBackground = if (granted == 3) Oyi.Good.copy(alpha = 0.14f) else Oyi.OrangeTint,
+        padding = PaddingValues(start = 20.dp, end = 16.dp, top = 20.dp, bottom = 10.dp),
+    ) {
         Spacer(Modifier.height(8.dp))
         AccessRow("Draw over apps", "Shows the island everywhere", R.drawable.ic_smartphone, state.overlayPermission, actions.openOverlay)
         RowDivider()
@@ -591,14 +592,13 @@ private fun GatewayCard(state: UiState, onSave: (String, String) -> Unit) {
     var token by remember(state.token) { mutableStateOf(state.token) }
     val changed = url != state.gatewayUrl || token != state.token
 
-    OyiCard {
-        CardHeader(
-            title = "Gateway",
-            subtitle = if (state.deviceId.isNotBlank()) "This phone: ${state.deviceId.take(8)}" else "Links OYI to your agent",
-            icon = R.drawable.ic_link,
-        ) {
-            ConnectionLabel(state.connection)
-        }
+    FoldingCard(
+        done = state.connection == ConnectionState.CONNECTED && state.gatewayUrl.isNotBlank(),
+        title = "Gateway",
+        subtitle = if (state.deviceId.isNotBlank()) "This phone: ${state.deviceId.take(8)}" else "Links OYI to your agent",
+        icon = R.drawable.ic_link,
+        trailing = { ConnectionLabel(state.connection) },
+    ) {
         if (state.connectionError.isNotBlank() && state.connection == ConnectionState.ERROR) {
             Spacer(Modifier.height(12.dp))
             Text(state.connectionError, color = Oyi.Bad, fontSize = 13.sp, lineHeight = 18.sp, maxLines = 2)
@@ -649,26 +649,27 @@ private fun UpdateState.isNews(): Boolean =
 
 @Composable
 private fun UpdateCard(update: UpdateState, version: String, actions: SpaceActions) {
-    OyiCard {
-        val news = update.isNews()
-        CardHeader(
-            title = if (news) "Update ready" else "Updates",
-            subtitle = when (update) {
-                is UpdateState.Available -> "Build ${update.release.build} is out"
-                is UpdateState.Downloading -> "Downloading build ${update.release.build}"
-                is UpdateState.Ready -> "Build ${update.release.build} downloaded"
-                else -> version.ifBlank { "OYI" }
-            },
-            icon = R.drawable.ic_system_update,
-            iconTint = if (news) Oyi.Orange else Oyi.OffWhite,
-            iconBackground = if (news) Oyi.OrangeTint else Oyi.Control,
-        ) {
+    val news = update.isNews()
+    FoldingCard(
+        done = update == UpdateState.UpToDate,
+        title = if (news) "Update ready" else "Updates",
+        subtitle = when (update) {
+            is UpdateState.Available -> "Build ${update.release.build} is out"
+            is UpdateState.Downloading -> "Downloading build ${update.release.build}"
+            is UpdateState.Ready -> "Build ${update.release.build} downloaded"
+            else -> version.ifBlank { "OYI" }
+        },
+        icon = R.drawable.ic_system_update,
+        iconTint = if (news) Oyi.Orange else Oyi.OffWhite,
+        iconBackground = if (news) Oyi.OrangeTint else Oyi.Control,
+        trailing = {
             when (update) {
                 UpdateState.Checking -> MorphingLoader(color = Oyi.Muted, size = 20.dp)
                 UpdateState.UpToDate -> StatusLabel("Latest", Oyi.Good)
                 else -> Unit
             }
-        }
+        },
+    ) {
         val notes = when (update) {
             is UpdateState.Available -> update.release.notes
             is UpdateState.Ready -> update.release.notes

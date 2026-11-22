@@ -1,5 +1,14 @@
 package ai.oyi.device.ui
 
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
+import androidx.compose.animation.core.spring
+import androidx.compose.animation.expandVertically
+import androidx.compose.animation.shrinkVertically
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.platform.LocalLayoutDirection
 import ai.oyi.device.R
 import ai.oyi.device.ui.theme.OyiMotion
 import ai.oyi.device.ui.theme.PressMorph
@@ -694,5 +703,85 @@ internal fun formatSpan(millis: Long): String {
         hours > 0 -> if (rest > 0) "${hours}h ${rest}m" else "${hours}h"
         minutes > 0 -> "${minutes}m"
         else -> "under a minute"
+    }
+}
+
+/**
+ * A card whose job is finished folds down to its header, so finished setup
+ * stops taking space from what still needs doing. A chevron says there is
+ * more; tapping the header opens it. It folds again by itself the moment it
+ * becomes done, and opens by itself if it stops being done.
+ */
+@Composable
+internal fun FoldingCard(
+    done: Boolean,
+    title: String,
+    @DrawableRes icon: Int,
+    subtitle: String = "",
+    iconTint: Color = Oyi.OffWhite,
+    iconBackground: Color = Oyi.Control,
+    padding: PaddingValues = PaddingValues(20.dp),
+    trailing: @Composable () -> Unit = {},
+    content: @Composable ColumnScope.() -> Unit,
+) {
+    var open by rememberSaveable(done) { mutableStateOf(!done) }
+    val haptics = LocalHapticFeedback.current
+    val turn by animateFloatAsState(if (open) 90f else 0f, spring(dampingRatio = 0.7f, stiffness = 700f), label = "foldChevron")
+    val layout = LocalLayoutDirection.current
+    // Folded, the header sits evenly in the card; open, the card keeps its own bottom.
+    val bottom by animateDpAsState(
+        if (open) padding.calculateBottomPadding() else padding.calculateTopPadding(),
+        spring(dampingRatio = 0.9f, stiffness = 700f),
+        label = "foldBottom",
+    )
+    OyiCard(
+        padding = PaddingValues(
+            start = padding.calculateStartPadding(layout),
+            end = padding.calculateEndPadding(layout),
+            top = padding.calculateTopPadding(),
+            bottom = bottom,
+        ),
+    ) {
+        Box(
+            Modifier
+                .then(
+                    if (done) {
+                        Modifier
+                            .clip(RoundedCornerShape(14.dp))
+                            .clickable(
+                                interactionSource = remember { MutableInteractionSource() },
+                                indication = null,
+                                onClickLabel = if (open) "Fold" else "Open",
+                            ) {
+                                haptics.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                                open = !open
+                            }
+                    } else {
+                        Modifier
+                    },
+                ),
+        ) {
+            CardHeader(title = title, icon = icon, subtitle = subtitle, iconTint = iconTint, iconBackground = iconBackground) {
+                trailing()
+                if (done) {
+                    Spacer(Modifier.width(6.dp))
+                    Icon(
+                        painterResource(R.drawable.ic_chevron_right),
+                        contentDescription = null,
+                        tint = Oyi.Faint,
+                        modifier = Modifier.size(22.dp).graphicsLayer { rotationZ = turn },
+                    )
+                }
+            }
+        }
+        AnimatedVisibility(
+            visible = open,
+            enter = expandVertically(spring(dampingRatio = 0.8f, stiffness = 520f), expandFrom = Alignment.Top) +
+                fadeIn(tween(160, delayMillis = 40)),
+            exit = shrinkVertically(spring(dampingRatio = 0.95f, stiffness = 900f), shrinkTowards = Alignment.Top) +
+                fadeOut(tween(90)),
+        ) {
+            Column(content = content)
+        }
     }
 }
