@@ -153,7 +153,7 @@ class IslandSnapshotTest {
     )
 
     @Composable
-    private fun Gallery(vararg samples: Pair<String, Sample>) {
+    private fun Gallery(vararg samples: Pair<String, Sample>) = Still {
         Column(
             modifier = Modifier
                 .width(412.dp)

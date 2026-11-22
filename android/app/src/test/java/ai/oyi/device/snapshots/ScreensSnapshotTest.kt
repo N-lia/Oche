@@ -69,8 +69,10 @@ class ScreensSnapshotTest {
 
     @Composable
     private fun Frame(tab: Int, state: UiState = space, content: @Composable () -> Unit) {
-        OyiTheme {
-            MainShell(state = state, level = 0.4f, tab = tab, onTab = {}, onIslandAction = {}) { content() }
+        Still {
+            OyiTheme {
+                MainShell(state = state, level = 0.4f, tab = tab, onTab = {}, onIslandAction = {}) { content() }
+            }
         }
     }
 

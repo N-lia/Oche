@@ -243,7 +243,7 @@ fun FocusContent(
         AppPicker(
             apps = apps.filter { it.packageName !in taken },
             onPick = { entry ->
-                viewModel.setDistraction(entry.packageName, LIMIT_FOCUS_ONLY)
+                actions.setDistraction(entry.packageName, LIMIT_FOCUS_ONLY)
                 showPicker = false
             },
             onDismiss = { showPicker = false },
