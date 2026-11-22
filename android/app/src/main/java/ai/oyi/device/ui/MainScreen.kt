@@ -1,5 +1,13 @@
 package ai.oyi.device.ui
 
+import androidx.compose.animation.core.Animatable
+import androidx.compose.runtime.LaunchedEffect
+import kotlinx.coroutines.launch
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.geometry.CornerRadius
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import ai.oyi.device.R
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.animation.core.spring
@@ -302,11 +310,20 @@ private fun FloatingNav(selected: Int, onSelect: (Int) -> Unit, modifier: Modifi
     val haptics = LocalHapticFeedback.current
     val slot = NavSlot
     val inset = 6.dp
-    val pillX by animateDpAsState(
-        targetValue = slot * selected,
-        animationSpec = spring(dampingRatio = 0.78f, stiffness = 1500f),
-        label = "navPill",
-    )
+    // The pill is a drop of water: its leading edge leaves the instant you
+    // touch, the trailing edge follows a beat later, so it stretches, thins
+    // a little in the middle of the move, and wobbles as it settles.
+    val slotPx = with(LocalDensity.current) { slot.toPx() }
+    val left = remember { Animatable(slotPx * selected) }
+    val right = remember { Animatable(slotPx * (selected + 1)) }
+    LaunchedEffect(selected, slotPx) {
+        val toLeft = slotPx * selected
+        val goingRight = toLeft > left.value
+        val lead = spring<Float>(dampingRatio = 0.58f, stiffness = 1100f)
+        val trail = spring<Float>(dampingRatio = 0.68f, stiffness = 380f)
+        launch { left.animateTo(toLeft, if (goingRight) trail else lead) }
+        launch { right.animateTo(toLeft + slotPx, if (goingRight) lead else trail) }
+    }
     Box(
         modifier = modifier
             .height(NavHeight)
@@ -314,14 +331,22 @@ private fun FloatingNav(selected: Int, onSelect: (Int) -> Unit, modifier: Modifi
             .liquidGlass(Oyi.Pill, fill = SolidColor(Color(0xE0161618)), backdrop = LocalGlassBackdrop.current, elevation = 16.dp)
             .padding(inset),
     ) {
-        // The one moving part.
+        // Read only while drawing: the move never recomposes or relays out.
         Box(
             Modifier
-                .offset(x = pillX)
-                .width(slot)
-                .fillMaxHeight()
-                .clip(Oyi.Pill)
-                .background(Oyi.Cream),
+                .fillMaxSize()
+                .drawBehind {
+                    val l = left.value
+                    val w = (right.value - l).coerceAtLeast(slotPx * 0.6f)
+                    val stretch = ((w - slotPx) / slotPx).coerceIn(0f, 1f)
+                    val h = size.height * (1f - 0.16f * stretch)
+                    drawRoundRect(
+                        color = Oyi.Cream,
+                        topLeft = Offset(l, (size.height - h) / 2f),
+                        size = Size(w, h),
+                        cornerRadius = CornerRadius(h / 2f, h / 2f),
+                    )
+                },
         )
         Row(Modifier.fillMaxSize()) {
             NavItems.forEachIndexed { index, item ->
@@ -398,9 +423,18 @@ private fun NavSlotItem(item: NavItem, selected: Boolean, badge: Boolean, modifi
                 )
             }
         }
-        if (selected) {
-            Spacer(Modifier.width(7.dp))
-            Text(item.label, color = fg, fontSize = 14.sp, fontWeight = FontWeight.Bold, maxLines = 1)
+        // The label pours in beside the icon, inside the slot's fixed width.
+        AnimatedVisibility(
+            visible = selected,
+            enter = expandHorizontally(spring(dampingRatio = 0.7f, stiffness = 900f), expandFrom = Alignment.Start) +
+                fadeIn(tween(120, delayMillis = 30)),
+            exit = shrinkHorizontally(spring(dampingRatio = 0.9f, stiffness = 1400f), shrinkTowards = Alignment.Start) +
+                fadeOut(tween(70)),
+        ) {
+            Row {
+                Spacer(Modifier.width(7.dp))
+                Text(item.label, color = fg, fontSize = 14.sp, fontWeight = FontWeight.Bold, maxLines = 1, softWrap = false)
+            }
         }
     }
 }

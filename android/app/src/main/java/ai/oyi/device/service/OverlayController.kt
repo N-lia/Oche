@@ -378,7 +378,11 @@ class OverlayController(
         val flags = WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
             WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL or
             WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
-            WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS
+            WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS or
+            // A window added from a service draws in software unless asked:
+            // software clipping is not anti-aliased, so the island's curves
+            // came out stair-stepped.
+            WindowManager.LayoutParams.FLAG_HARDWARE_ACCELERATED
         return WindowManager.LayoutParams(
             WindowManager.LayoutParams.WRAP_CONTENT,
             WindowManager.LayoutParams.WRAP_CONTENT,
