@@ -286,7 +286,10 @@ internal fun CenterSlider(
                 drawRoundRect(Oyi.Orange, Offset(from, cy - trackH / 2), Size(kotlin.math.abs(at - zero), trackH), CornerRadius(4.dp.toPx()))
             }
             // The centre mark.
-            drawCircle(if (value == 0) Oyi.Ink else Oyi.Muted, radius = 2.dp.toPx(), center = Offset(zero, cy))
+            // Hidden near the handle, where it would read as a stray dot.
+            if (value == 0 || kotlin.math.abs(at - zero) > 14.dp.toPx()) {
+                drawCircle(if (value == 0) Oyi.Ink else Oyi.Muted, radius = 2.dp.toPx(), center = Offset(zero, cy))
+            }
             // The handle, with a gap cut either side.
             val handleW = 5.dp.toPx()
             val handleH = 40.dp.toPx()
