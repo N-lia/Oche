@@ -632,18 +632,29 @@ internal fun FocusRing(
     }
 }
 
-/** An installed app's own icon, with a quiet letter tile when it has none. */
+/** Decoded app icons, shared by every list, so each is loaded once. */
+private val IconCache = android.util.LruCache<String, androidx.compose.ui.graphics.ImageBitmap>(64)
+
+/**
+ * An installed app's own icon, with a quiet letter tile when it has none.
+ * Icons load off the main thread (decoding them there made tab switches
+ * stutter); the letter tile shows for the first frame or two.
+ */
 @Composable
 internal fun AppIcon(packageName: String, size: Dp = 40.dp, label: String = "") {
     val context = LocalContext.current
-    val bitmap = remember(packageName) {
-        runCatching {
-            context.packageManager.getApplicationIcon(packageName).toBitmap(128, 128).asImageBitmap()
-        }.getOrNull()
+    val bitmap by androidx.compose.runtime.produceState(IconCache.get(packageName), packageName) {
+        if (value != null) return@produceState
+        value = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+            runCatching {
+                context.packageManager.getApplicationIcon(packageName).toBitmap(128, 128).asImageBitmap()
+            }.getOrNull()
+        }?.also { IconCache.put(packageName, it) }
     }
     val shape = RoundedCornerShape(size * 0.3f)
-    if (bitmap != null) {
-        Image(bitmap = bitmap, contentDescription = null, modifier = Modifier.size(size).clip(shape))
+    val icon = bitmap
+    if (icon != null) {
+        Image(bitmap = icon, contentDescription = null, modifier = Modifier.size(size).clip(shape))
     } else {
         Box(
             modifier = Modifier.size(size).clip(shape).background(Oyi.Control),

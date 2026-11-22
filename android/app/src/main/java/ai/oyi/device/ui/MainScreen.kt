@@ -24,7 +24,12 @@ import android.net.Uri
 import android.provider.Settings
 import androidx.annotation.DrawableRes
 import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.animation.Crossfade
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.snap
+import androidx.compose.runtime.key
+import androidx.compose.runtime.mutableStateListOf
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.layout.layout
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.expandHorizontally
@@ -234,13 +239,28 @@ fun MainShell(
                     modifier = Modifier.padding(horizontal = 16.dp),
                 )
             }
-            Crossfade(
-                targetState = tab,
-                animationSpec = tween(durationMillis = 180),
-                modifier = Modifier.weight(1f),
-                label = "tab",
-            ) { current ->
-                Box(Modifier.fillMaxSize()) { content(current) }
+            // Tabs stay alive once opened and switch instantly: the hidden
+            // ones are neither measured, drawn nor touchable, but keep their
+            // state (scroll, drafts), so coming back costs nothing. The new
+            // tab fades up quickly; nothing waits for the old one to leave.
+            val opened = remember { mutableStateListOf(tab) }
+            if (tab !in opened) opened += tab
+            Box(Modifier.weight(1f).fillMaxWidth()) {
+                opened.forEach { page ->
+                    key(page) {
+                        val shown = page == tab
+                        val alpha by animateFloatAsState(
+                            targetValue = if (shown) 1f else 0f,
+                            animationSpec = if (shown) tween(120) else snap(),
+                            label = "tabAlpha",
+                        )
+                        Box(
+                            Modifier
+                                .then(if (shown) Modifier.fillMaxSize() else Modifier.dormant())
+                                .graphicsLayer { this.alpha = alpha },
+                        ) { content(page) }
+                    }
+                }
             }
         }
 
@@ -640,3 +660,6 @@ private fun UpdateCard(update: UpdateState, version: String, actions: SpaceActio
         }
     }
 }
+
+/** Laid out as nothing: not measured, drawn or hit-tested, yet still composed. */
+private fun Modifier.dormant(): Modifier = layout { _, _ -> layout(0, 0) {} }
