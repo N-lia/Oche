@@ -127,6 +127,9 @@ val OyiDisplay = FontFamily(
 /** Digits that do not jiggle as a timer counts. */
 const val TabularNumbers = "tnum"
 
+/** Merge into a text style for timers and counts: `style.merge(Tabular)`. */
+val Tabular = TextStyle(fontFeatureSettings = TabularNumbers)
+
 /** Expressive type: big, heavy, round headlines and tight, confident labels. */
 val OyiTypography = Typography(
     displayLarge = TextStyle(fontFamily = OyiDisplay, fontSize = 57.sp, lineHeight = 60.sp, fontWeight = FontWeight.Black, letterSpacing = (-1.2).sp),

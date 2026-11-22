@@ -6,7 +6,8 @@ import ai.oyi.device.model.IslandState
 import ai.oyi.device.ui.theme.MorphingLoader
 import ai.oyi.device.ui.theme.OyiMotion
 import ai.oyi.device.ui.theme.PressMorph
-import ai.oyi.device.ui.theme.TabularNumbers
+import ai.oyi.device.ui.theme.Tabular
+import androidx.compose.material3.LocalTextStyle
 import ai.oyi.device.ui.theme.liquidGlass
 import androidx.annotation.DrawableRes
 import androidx.compose.animation.AnimatedContent
@@ -465,7 +466,7 @@ private fun RestPill(spec: IslandSpec, idle: IslandIdleInfo, tone: Color, cutout
                 text = formatDuration(idle.sessionMs),
                 color = IslandColors.Cream,
                 fontSize = 11.5.sp,
-                fontFeatureSettings = TabularNumbers,
+                style = LocalTextStyle.current.merge(Tabular),
                 maxLines = 1,
             )
         }
@@ -853,7 +854,7 @@ private fun MonoText(text: String) {
         text = text,
         color = IslandColors.Dim,
         fontSize = 12.sp,
-        fontFeatureSettings = TabularNumbers,
+        style = LocalTextStyle.current.merge(Tabular),
         maxLines = 1,
     )
 }

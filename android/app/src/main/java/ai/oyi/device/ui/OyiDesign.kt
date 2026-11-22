@@ -3,7 +3,8 @@ package ai.oyi.device.ui
 import ai.oyi.device.R
 import ai.oyi.device.ui.theme.OyiMotion
 import ai.oyi.device.ui.theme.PressMorph
-import ai.oyi.device.ui.theme.TabularNumbers
+import ai.oyi.device.ui.theme.Tabular
+import androidx.compose.material3.LocalTextStyle
 import androidx.annotation.DrawableRes
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.animateColorAsState
@@ -350,7 +351,7 @@ internal fun SegmentedButtons(
                     color = if (isSelected) Oyi.Ink else Oyi.OffWhite,
                     fontSize = 14.sp,
                     fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium,
-                    fontFeatureSettings = TabularNumbers,
+                    style = LocalTextStyle.current.merge(Tabular),
                 )
             }
         }
@@ -563,7 +564,7 @@ internal fun Stepper(value: Int, onChange: (Int) -> Unit, range: IntRange, unit:
             color = if (value == 0) Oyi.Muted else Oyi.OffWhite,
             fontSize = 14.sp,
             fontWeight = FontWeight.SemiBold,
-            fontFeatureSettings = TabularNumbers,
+            style = LocalTextStyle.current.merge(Tabular),
             modifier = Modifier.width(52.dp),
             textAlign = androidx.compose.ui.text.style.TextAlign.Center,
         )

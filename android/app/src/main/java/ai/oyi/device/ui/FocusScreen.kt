@@ -3,7 +3,8 @@ package ai.oyi.device.ui
 import ai.oyi.device.R
 import ai.oyi.device.ui.theme.MorphingLoader
 import ai.oyi.device.ui.theme.OyiMotion
-import ai.oyi.device.ui.theme.TabularNumbers
+import ai.oyi.device.ui.theme.Tabular
+import androidx.compose.material3.LocalTextStyle
 import android.content.Intent
 import android.provider.Settings
 import androidx.compose.animation.AnimatedVisibility
@@ -354,17 +355,16 @@ private fun ActiveBlockCard(session: FocusSession, live: FocusLive, onDone: () -
                 Column(horizontalAlignment = Alignment.CenterHorizontally) {
                     Text(
                         text = formatClock(remaining),
-                        style = MaterialTheme.typography.displayMedium,
+                        style = MaterialTheme.typography.displayMedium.merge(Tabular),
                         fontSize = 48.sp,
                         fontWeight = FontWeight.SemiBold,
                         color = Oyi.OffWhite,
-                        fontFeatureSettings = TabularNumbers,
                     )
                     Text(
                         "of ${total / 60_000L} min",
                         color = Oyi.Muted,
                         fontSize = 13.sp,
-                        fontFeatureSettings = TabularNumbers,
+                        style = LocalTextStyle.current.merge(Tabular),
                     )
                 }
             }

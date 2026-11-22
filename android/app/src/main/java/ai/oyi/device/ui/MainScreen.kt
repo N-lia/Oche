@@ -10,7 +10,8 @@ import ai.oyi.device.ui.theme.GlassBackdrop
 import ai.oyi.device.ui.theme.LocalGlassBackdrop
 import ai.oyi.device.ui.theme.OyiMotion
 import ai.oyi.device.ui.theme.PressMorph
-import ai.oyi.device.ui.theme.TabularNumbers
+import ai.oyi.device.ui.theme.Tabular
+import androidx.compose.material3.LocalTextStyle
 import ai.oyi.device.ui.theme.glassSource
 import ai.oyi.device.ui.theme.liquidGlass
 import android.content.Intent
@@ -366,9 +367,8 @@ private fun ScreenTimeCard(state: UiState) {
             if (total > 0) {
                 Text(
                     formatDuration(total),
-                    style = MaterialTheme.typography.headlineSmall,
+                    style = MaterialTheme.typography.headlineSmall.merge(Tabular),
                     color = Oyi.OffWhite,
-                    fontFeatureSettings = TabularNumbers,
                 )
             }
         }
@@ -398,7 +398,7 @@ private fun ScreenTimeCard(state: UiState) {
                                 formatDuration(app.totalMs),
                                 color = Oyi.Muted,
                                 fontSize = 13.sp,
-                                fontFeatureSettings = TabularNumbers,
+                                style = LocalTextStyle.current.merge(Tabular),
                             )
                         }
                         Spacer(Modifier.height(6.dp))

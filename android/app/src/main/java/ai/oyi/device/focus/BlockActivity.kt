@@ -35,7 +35,8 @@ import ai.oyi.device.OyiApplication
 import ai.oyi.device.R
 import ai.oyi.device.ui.ButtonKind
 import ai.oyi.device.ui.OyiButton
-import ai.oyi.device.ui.theme.TabularNumbers
+import ai.oyi.device.ui.theme.Tabular
+import androidx.compose.material3.LocalTextStyle
 import androidx.compose.foundation.Image
 import androidx.compose.ui.res.painterResource
 import ai.oyi.device.ui.Eyebrow
@@ -188,7 +189,7 @@ private fun BlockScreen(
                             "${formatClock(remaining)} left",
                             color = Oyi.Muted,
                             fontSize = 13.sp,
-                            fontFeatureSettings = TabularNumbers,
+                            style = LocalTextStyle.current.merge(Tabular),
                         )
                     }
                 }
