@@ -1,6 +1,14 @@
 package ai.oyi.device.ui.island
 
 import ai.oyi.device.R
+import androidx.compose.ui.unit.LayoutDirection
+import androidx.compose.ui.unit.Density
+import androidx.compose.ui.graphics.Shape
+import androidx.compose.ui.geometry.RoundRect
+import androidx.compose.ui.geometry.Rect
+import androidx.compose.runtime.SideEffect
+import androidx.compose.animation.core.spring
+import androidx.compose.animation.core.FiniteAnimationSpec
 import ai.oyi.device.model.IslandKind
 import ai.oyi.device.model.IslandState
 import ai.oyi.device.ui.theme.MorphingLoader
@@ -165,6 +173,8 @@ fun DynamicIsland(
     cutout: DpSize = DpSize.Zero,
     /** The accent for ACCENT states: brand orange, or the wallpaper's colour. */
     accent: Color = IslandColors.BrandAccent,
+    /** Called as the island starts to change size (the overlay makes room first). */
+    onMorph: () -> Unit = {},
 ) {
     val bubbleSlot by animateDpAsState(
         targetValue = if (secondary != null) BubbleSize + BubbleGap else 0.dp,
@@ -179,7 +189,7 @@ fun DynamicIsland(
     // slot is mirrored by an empty one on the other side.
     Row(modifier, verticalAlignment = Alignment.Top) {
         Spacer(Modifier.width(bubbleSlot))
-        Island(state, idle, level, onAction, onLongPress, inApp, faces, initiallyExpanded, secondary != null, cutout, accent)
+        Island(state, idle, level, onAction, onLongPress, inApp, faces, initiallyExpanded, secondary != null, cutout, accent, onMorph)
         BubbleSlot(
             width = bubbleSlot,
             visible = secondary != null,
@@ -216,6 +226,24 @@ private fun BubbleSlot(
     }
 }
 
+/** The island's own springs: a little more bounce than the rest of the app. */
+internal object IslandSpring {
+    fun <T> size(): FiniteAnimationSpec<T> = spring(dampingRatio = 0.62f, stiffness = 340f)
+    fun <T> content(): FiniteAnimationSpec<T> = spring(dampingRatio = 0.55f, stiffness = 500f)
+}
+
+/**
+ * A capsule while it is short, a rounded card once it is tall: the radius
+ * is half the current height, capped at [maxRadius]. Because it reads the
+ * live size, every frame of a morph has a matching outline.
+ */
+private class IslandShape(private val maxRadius: Dp) : Shape {
+    override fun createOutline(size: Size, layoutDirection: LayoutDirection, density: Density): Outline {
+        val r = minOf(size.height / 2f, size.width / 2f, with(density) { maxRadius.toPx() })
+        return Outline.Rounded(RoundRect(Rect(Offset.Zero, size), CornerRadius(r, r)))
+    }
+}
+
 private val BubbleSize = 38.dp
 private val BubbleGap = 6.dp
 
@@ -235,6 +263,7 @@ private fun Island(
     canSwap: Boolean,
     cutout: DpSize,
     accent: Color,
+    onMorph: () -> Unit,
 ) {
     var expanded by remember { mutableStateOf(initiallyExpanded) }
     val haptics = LocalHapticFeedback.current
@@ -263,12 +292,15 @@ private fun Island(
         animationSpec = OyiMotion.defaultEffects(),
         label = "tone",
     )
-    val corner by animateDpAsState(
-        targetValue = if (spec.size == IslandSize.EXPANDED) 32.dp else compactHeight(cutout) / 2,
-        animationSpec = OyiMotion.defaultSpatial(),
-        label = "corner",
-    )
-    val shape = RoundedCornerShape(corner)
+    // The corners follow the island's live height, so the outline and the
+    // size can never disagree mid-morph (that mismatch read as a snap).
+    val shape = remember(cutout) { IslandShape(maxRadius = 32.dp) }
+    // Tell the host before the size starts moving, so a window can make room.
+    val lastSize = remember { arrayOf(spec.size) }
+    if (lastSize[0] != spec.size) {
+        lastSize[0] = spec.size
+        SideEffect { onMorph() }
+    }
     val elevation by animateDpAsState(
         targetValue = if (spec.size == IslandSize.REST) 8.dp else 20.dp,
         animationSpec = OyiMotion.defaultEffects(),
@@ -374,10 +406,12 @@ private fun Island(
             contentKey = { Triple(it.size, it.lead, it.actions) },
             transitionSpec = {
                 // Shape first, content second.
-                (fadeIn(tween(200, delayMillis = 120)) +
-                    scaleIn(OyiMotion.fastSpatial(), initialScale = 0.9f))
-                    .togetherWith(fadeOut(OyiMotion.fastEffects()) + scaleOut(OyiMotion.fastEffects(), targetScale = 0.96f))
-                    .using(SizeTransform(clip = true) { _, _ -> OyiMotion.defaultSpatial() })
+                // A springy, slightly overshooting morph: the new content
+                // grows in with the shell instead of popping in after it.
+                (fadeIn(tween(220, delayMillis = 60)) +
+                    scaleIn(IslandSpring.content(), initialScale = 0.86f))
+                    .togetherWith(fadeOut(tween(90)) + scaleOut(tween(120), targetScale = 0.92f))
+                    .using(SizeTransform(clip = true) { _, _ -> IslandSpring.size() })
             },
             label = "island",
         ) { target ->

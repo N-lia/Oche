@@ -7,6 +7,11 @@ import ai.oyi.device.ui.island.DynamicIsland
 import ai.oyi.device.ui.island.IslandAction
 import ai.oyi.device.ui.island.IslandIdleInfo
 import ai.oyi.device.ui.theme.GlassBackdrop
+import ai.oyi.device.ui.theme.MorphingLoader
+import ai.oyi.device.update.Release
+import ai.oyi.device.update.UpdateState
+import androidx.compose.foundation.layout.offset
+import androidx.compose.foundation.shape.CircleShape
 import ai.oyi.device.ui.theme.LocalGlassBackdrop
 import ai.oyi.device.ui.theme.OyiMotion
 import ai.oyi.device.ui.theme.PressMorph
@@ -91,6 +96,7 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 fun MainScreen(viewModel: MainViewModel = viewModel()) {
     val state by viewModel.state.collectAsStateWithLifecycle()
     val level by viewModel.voiceLevel.collectAsStateWithLifecycle()
+    val update by viewModel.updates.collectAsStateWithLifecycle()
     var tab by rememberSaveable { mutableIntStateOf(0) }
     val context = LocalContext.current
 
@@ -119,6 +125,10 @@ fun MainScreen(viewModel: MainViewModel = viewModel()) {
             setWallpaperColors = viewModel::setWallpaperColors,
             setLiveUpdates = viewModel::setLiveUpdates,
             setIslandNudge = viewModel::setIslandNudge,
+            openIslandFit = { context.startActivity(Intent(context, IslandFitActivity::class.java)) },
+            checkUpdate = viewModel::checkForUpdate,
+            downloadUpdate = viewModel::downloadUpdate,
+            installUpdate = viewModel::installUpdate,
             saveGateway = viewModel::saveGateway,
         )
     }
@@ -128,6 +138,7 @@ fun MainScreen(viewModel: MainViewModel = viewModel()) {
         level = level,
         tab = tab,
         onTab = { tab = it },
+        badgeTab = if (update.isNews()) 2 else null,
         onIslandAction = { action ->
             when (action) {
                 IslandAction.APPROVE -> viewModel.approveIsland()
@@ -141,9 +152,12 @@ fun MainScreen(viewModel: MainViewModel = viewModel()) {
         },
     ) { current ->
         when (current) {
-            0 -> FocusScreen()
-            1 -> SpaceContent(state, space)
-            else -> ChatScreen(onOpenSetup = { tab = 1 })
+            0 -> ChatScreen(onOpenSetup = { tab = 2 })
+            1 -> FocusScreen(
+                screenTime = ScreenTime(state.topApps, state.currentApp, state.usagePermission),
+                onAllowUsage = space.openUsage,
+            )
+            else -> SpaceContent(state, space, update, viewModel.appVersion)
         }
     }
 }
@@ -160,15 +174,20 @@ class SpaceActions(
     val setWallpaperColors: (Boolean) -> Unit = {},
     val setLiveUpdates: (Boolean) -> Unit = {},
     val setIslandNudge: (Int, Int) -> Unit = { _, _ -> },
+    val openIslandFit: () -> Unit = {},
+    val checkUpdate: () -> Unit = {},
+    val downloadUpdate: (Release) -> Unit = {},
+    val installUpdate: (Release) -> Unit = {},
     val saveGateway: (String, String) -> Unit = { _, _ -> },
 )
 
 private class NavItem(val label: String, @DrawableRes val icon: Int, @DrawableRes val selectedIcon: Int)
 
+// Chat first: it is what OYI is for. Space (settings) last.
 private val NavItems = listOf(
+    NavItem("Chat", R.drawable.ic_forum, R.drawable.ic_forum_fill),
     NavItem("Focus", R.drawable.ic_center_focus_strong, R.drawable.ic_center_focus_strong_fill),
     NavItem("Space", R.drawable.ic_grid_view, R.drawable.ic_grid_view_fill),
-    NavItem("Chat", R.drawable.ic_forum, R.drawable.ic_forum_fill),
 )
 
 /**
@@ -183,6 +202,7 @@ fun MainShell(
     tab: Int,
     onTab: (Int) -> Unit,
     onIslandAction: (IslandAction) -> Unit,
+    badgeTab: Int? = null,
     content: @Composable (tab: Int) -> Unit,
 ) {
     GlassBackdrop {
@@ -244,6 +264,7 @@ fun MainShell(
             FloatingNav(
                 selected = tab,
                 onSelect = onTab,
+                badge = badgeTab,
                 modifier = Modifier
                     .align(Alignment.BottomCenter)
                     .navigationBarsPadding()
@@ -259,7 +280,7 @@ fun MainShell(
  * just their icons.
  */
 @Composable
-private fun FloatingNav(selected: Int, onSelect: (Int) -> Unit, modifier: Modifier = Modifier) {
+private fun FloatingNav(selected: Int, onSelect: (Int) -> Unit, modifier: Modifier = Modifier, badge: Int? = null) {
     val haptics = LocalHapticFeedback.current
     Row(
         modifier = modifier
@@ -298,12 +319,25 @@ private fun FloatingNav(selected: Int, onSelect: (Int) -> Unit, modifier: Modifi
                         .padding(horizontal = if (isSelected) 18.dp else 20.dp),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
-                    Icon(
-                        painterResource(if (isSelected) item.selectedIcon else item.icon),
-                        contentDescription = item.label,
-                        tint = fg,
-                        modifier = Modifier.size(22.dp),
-                    )
+                    Box {
+                        Icon(
+                            painterResource(if (isSelected) item.selectedIcon else item.icon),
+                            contentDescription = item.label,
+                            tint = fg,
+                            modifier = Modifier.size(22.dp),
+                        )
+                        // Something new waits there (an update).
+                        if (badge == index && !isSelected) {
+                            Box(
+                                Modifier
+                                    .align(Alignment.TopEnd)
+                                    .offset(x = 3.dp, y = (-2).dp)
+                                    .size(8.dp)
+                                    .clip(CircleShape)
+                                    .background(Oyi.Orange),
+                            )
+                        }
+                    }
                     AnimatedVisibility(
                         visible = isSelected,
                         enter = fadeIn(OyiMotion.defaultEffects()) + expandHorizontally(OyiMotion.fastSpatial()),
@@ -322,7 +356,12 @@ private fun FloatingNav(selected: Int, onSelect: (Int) -> Unit, modifier: Modifi
 
 /** The Space tab: access, screen time, the island and the gateway link. */
 @Composable
-fun SpaceContent(state: UiState, actions: SpaceActions) {
+fun SpaceContent(
+    state: UiState,
+    actions: SpaceActions,
+    update: UpdateState = UpdateState.Idle,
+    version: String = "",
+) {
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
         contentPadding = PaddingValues(horizontal = Gutter),
@@ -331,11 +370,13 @@ fun SpaceContent(state: UiState, actions: SpaceActions) {
         item {
             ScreenTitle(title = "Space", subtitle = "How OYI lives on this phone.")
         }
+        // A waiting update goes first; otherwise it lives at the bottom.
+        if (update.isNews()) item { UpdateCard(update, version, actions) }
         item { AccessCard(state, actions) }
-        item { ScreenTimeCard(state) }
         item { IslandCard(state, actions) }
         item { IslandLookCard(state, actions) }
         item { GatewayCard(state, actions.saveGateway) }
+        if (!update.isNews()) item { UpdateCard(update, version, actions) }
         item { BottomClearance() }
     }
 }
@@ -372,69 +413,6 @@ private fun AccessRow(title: String, detail: String, @DrawableRes icon: Int, gra
             Icon(painterResource(R.drawable.ic_check), contentDescription = "On", tint = Oyi.Good, modifier = Modifier.size(22.dp))
         } else {
             OyiButton(text = "Allow", onClick = onOpen, kind = ButtonKind.TONAL, small = true)
-        }
-    }
-}
-
-@Composable
-private fun ScreenTimeCard(state: UiState) {
-    OyiCard {
-        CardHeader(
-            title = "Screen time",
-            subtitle = state.currentApp?.let { "Now in ${it.label}" } ?: "Today",
-            icon = R.drawable.ic_timer,
-        ) {
-            val total = state.topApps.sumOf { it.totalMs }
-            if (total > 0) {
-                Text(
-                    formatDuration(total),
-                    style = MaterialTheme.typography.headlineSmall.merge(Tabular),
-                    color = Oyi.OffWhite,
-                )
-            }
-        }
-        if (state.topApps.isEmpty()) {
-            Spacer(Modifier.height(12.dp))
-            Hint(if (state.usagePermission) "Nothing counted yet today." else "Allow usage access to see where your time goes.")
-        } else {
-            Spacer(Modifier.height(14.dp))
-            val max = state.topApps.maxOf { it.totalMs }.coerceAtLeast(1L)
-            state.topApps.take(4).forEachIndexed { index, app ->
-                if (index > 0) Spacer(Modifier.height(12.dp))
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    AppIcon(app.packageName, size = 32.dp, label = app.label)
-                    Spacer(Modifier.width(12.dp))
-                    Column(Modifier.weight(1f)) {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Text(
-                                app.label,
-                                color = Oyi.OffWhite,
-                                fontSize = 14.sp,
-                                fontWeight = FontWeight.SemiBold,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis,
-                                modifier = Modifier.weight(1f),
-                            )
-                            Text(
-                                formatDuration(app.totalMs),
-                                color = Oyi.Muted,
-                                fontSize = 13.sp,
-                                style = LocalTextStyle.current.merge(Tabular),
-                            )
-                        }
-                        Spacer(Modifier.height(6.dp))
-                        Box(Modifier.fillMaxWidth().height(4.dp).clip(Oyi.Pill).background(Oyi.Control)) {
-                            Box(
-                                Modifier
-                                    .fillMaxWidth((app.totalMs.toFloat() / max).coerceIn(0.03f, 1f))
-                                    .height(4.dp)
-                                    .clip(Oyi.Pill)
-                                    .background(if (index == 0) Oyi.Orange else Oyi.Muted),
-                            )
-                        }
-                    }
-                }
-            }
         }
     }
 }
@@ -485,8 +463,6 @@ private fun IslandCard(state: UiState, actions: SpaceActions) {
 /** How the island looks and where it sits over the camera. */
 @Composable
 private fun IslandLookCard(state: UiState, actions: SpaceActions) {
-    var x by remember(state.islandNudgeXDp) { mutableIntStateOf(state.islandNudgeXDp) }
-    var y by remember(state.islandNudgeYDp) { mutableIntStateOf(state.islandNudgeYDp) }
     OyiCard(padding = PaddingValues(start = 20.dp, end = 16.dp, top = 20.dp, bottom = 12.dp)) {
         CardHeader(title = "Look and fit", subtitle = "Colour, Live Updates, camera fit", icon = R.drawable.ic_palette)
         Spacer(Modifier.height(8.dp))
@@ -505,25 +481,21 @@ private fun IslandLookCard(state: UiState, actions: SpaceActions) {
             OyiSwitch(state.liveUpdates, actions.setLiveUpdates)
         }
         RowDivider(inset = 0.dp)
-        ListRow(title = "Left or right", subtitle = "Nudge it over the camera") {
-            Stepper(x, { x = it; actions.setIslandNudge(x, y) }, -24..24, unit = "")
-        }
-        ListRow(title = "Up or down") {
-            Stepper(y, { y = it; actions.setIslandNudge(x, y) }, -24..24, unit = "")
-        }
-        AnimatedVisibility(visible = x != 0 || y != 0) {
-            Box(Modifier.fillMaxWidth().padding(top = 4.dp, bottom = 6.dp), contentAlignment = Alignment.CenterEnd) {
-                OyiButton(
-                    text = "Reset position",
-                    kind = ButtonKind.GHOST,
-                    small = true,
-                    onClick = {
-                        x = 0
-                        y = 0
-                        actions.setIslandNudge(0, 0)
-                    },
-                )
-            }
+        val x = state.islandNudgeXDp
+        val y = state.islandNudgeYDp
+        ListRow(
+            title = "Fit over the camera",
+            subtitle = if (x == 0 && y == 0) {
+                "Centred on the camera"
+            } else {
+                listOfNotNull(
+                    if (x != 0) "${kotlin.math.abs(x)} ${if (x > 0) "right" else "left"}" else null,
+                    if (y != 0) "${kotlin.math.abs(y)} ${if (y > 0) "down" else "up"}" else null,
+                ).joinToString(", ")
+            },
+            onClick = actions.openIslandFit,
+        ) {
+            OyiButton(text = "Adjust", onClick = actions.openIslandFit, kind = ButtonKind.TONAL, small = true)
         }
     }
 }
@@ -586,13 +558,85 @@ private fun ConnectionLabel(connection: ConnectionState) {
     StatusLabel(label, color)
 }
 
-private fun formatDuration(millis: Long): String {
-    val minutes = millis / 60_000
-    val hours = minutes / 60
-    val rest = minutes % 60
-    return when {
-        hours > 0 -> if (rest > 0) "${hours}h ${rest}m" else "${hours}h"
-        minutes > 0 -> "${minutes}m"
-        else -> "<1m"
+/** An update the person should hear about. */
+private fun UpdateState.isNews(): Boolean =
+    this is UpdateState.Available || this is UpdateState.Downloading || this is UpdateState.Ready
+
+@Composable
+private fun UpdateCard(update: UpdateState, version: String, actions: SpaceActions) {
+    OyiCard {
+        val news = update.isNews()
+        CardHeader(
+            title = if (news) "Update ready" else "Updates",
+            subtitle = when (update) {
+                is UpdateState.Available -> "Build ${update.release.build} is out"
+                is UpdateState.Downloading -> "Downloading build ${update.release.build}"
+                is UpdateState.Ready -> "Build ${update.release.build} downloaded"
+                else -> version.ifBlank { "OYI" }
+            },
+            icon = R.drawable.ic_system_update,
+            iconTint = if (news) Oyi.Orange else Oyi.OffWhite,
+            iconBackground = if (news) Oyi.OrangeTint else Oyi.Control,
+        ) {
+            when (update) {
+                UpdateState.Checking -> MorphingLoader(color = Oyi.Muted, size = 20.dp)
+                UpdateState.UpToDate -> StatusLabel("Latest", Oyi.Good)
+                else -> Unit
+            }
+        }
+        val notes = when (update) {
+            is UpdateState.Available -> update.release.notes
+            is UpdateState.Ready -> update.release.notes
+            else -> ""
+        }
+        if (notes.isNotBlank()) {
+            Spacer(Modifier.height(12.dp))
+            Text(notes, color = Oyi.Muted, fontSize = 14.sp, lineHeight = 20.sp, maxLines = 4, overflow = TextOverflow.Ellipsis)
+        }
+        if (update is UpdateState.Failed) {
+            Spacer(Modifier.height(12.dp))
+            Text(update.message, color = Oyi.Bad, fontSize = 13.sp, lineHeight = 18.sp)
+        }
+        Spacer(Modifier.height(16.dp))
+        when (update) {
+            is UpdateState.Available -> OyiButton(
+                text = "Download and install",
+                onClick = { actions.downloadUpdate(update.release) },
+                icon = R.drawable.ic_download,
+                fullWidth = true,
+            )
+            is UpdateState.Downloading -> {
+                Box(Modifier.fillMaxWidth().height(8.dp).clip(Oyi.Pill).background(Oyi.Control)) {
+                    Box(
+                        Modifier
+                            .fillMaxWidth(update.progress.coerceIn(0.02f, 1f))
+                            .height(8.dp)
+                            .clip(Oyi.Pill)
+                            .background(Oyi.Orange),
+                    )
+                }
+                Spacer(Modifier.height(8.dp))
+                Text(
+                    "${(update.progress * 100).toInt()}%",
+                    color = Oyi.Muted,
+                    fontSize = 13.sp,
+                    style = LocalTextStyle.current.merge(Tabular),
+                )
+            }
+            is UpdateState.Ready -> OyiButton(
+                text = "Install now",
+                onClick = { actions.installUpdate(update.release) },
+                icon = R.drawable.ic_system_update,
+                fullWidth = true,
+            )
+            UpdateState.Installing -> OyiButton(text = "Installing", onClick = {}, kind = ButtonKind.TONAL, enabled = false, fullWidth = true)
+            UpdateState.Checking -> OyiButton(text = "Checking", onClick = {}, kind = ButtonKind.TONAL, enabled = false, fullWidth = true)
+            else -> OyiButton(
+                text = "Check for updates",
+                onClick = actions.checkUpdate,
+                kind = ButtonKind.TONAL,
+                fullWidth = true,
+            )
+        }
     }
 }

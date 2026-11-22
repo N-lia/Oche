@@ -128,6 +128,9 @@ class SettingsStore(context: Context) {
         const val KEY_LIVE_UPDATES = "live_updates"
 
         /** How far the island can be nudged off the detected camera, in dp. */
-        const val NUDGE_LIMIT = 24
+        const val NUDGE_LIMIT = ISLAND_NUDGE_LIMIT
     }
 }
+
+/** How far the island can be nudged off the detected camera, in dp, either way. */
+const val ISLAND_NUDGE_LIMIT = 70

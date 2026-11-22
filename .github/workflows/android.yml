@@ -73,6 +73,10 @@ jobs:
         id: build
         working-directory: android
         continue-on-error: true
+        env:
+          # The app's versionCode: the in-app updater compares it with the
+          # latest release's build number.
+          OYI_BUILD_NUMBER: ${{ github.run_number }}
         run: |
           set -o pipefail
           ./gradlew testDebugUnitTest assembleDebug --no-daemon --stacktrace 2>&1 | tee /tmp/gradle-build.log
@@ -105,7 +109,7 @@ jobs:
 
       - name: Upload island snapshots
         if: always()
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v6
         with:
           name: island-snapshots
           path: android/app/build/reports/paparazzi/**/*.png
@@ -141,8 +145,27 @@ jobs:
           git push -qf "https://x-access-token:${TOKEN}@github.com/${REPO}.git" "HEAD:refs/heads/$BRANCH"
 
       - name: Upload APK
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v6
         with:
           name: oyi-device-debug-apk
           path: android/app/build/outputs/apk/debug/*.apk
           if-no-files-found: error
+
+      # Over-the-air updates: every green build of the app branches becomes a
+      # GitHub release named build-<run number> with the APK attached. The
+      # app checks the latest release and offers to install it.
+      - name: Publish release for in-app updates
+        if: github.event_name == 'push' && (github.ref == 'refs/heads/echo-blocker' || github.ref == 'refs/heads/main')
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: build-${{ github.run_number }}
+        run: |
+          set -euo pipefail
+          apk=$(ls android/app/build/outputs/apk/debug/*.apk | head -1)
+          cp "$apk" "oyi-${TAG}.apk"
+          gh release create "$TAG" "oyi-${TAG}.apk" \
+            --repo "${{ github.repository }}" \
+            --target "${{ github.sha }}" \
+            --title "OYI ${TAG}" \
+            --notes "$(git log -1 --format=%s ${{ github.sha }})" \
+            --latest

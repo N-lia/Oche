@@ -20,6 +20,12 @@ import ai.oyi.device.ui.ChatRole
 import ai.oyi.device.ui.ChatState
 import ai.oyi.device.ui.FocusActions
 import ai.oyi.device.ui.FocusContent
+import ai.oyi.device.ui.ScreenTime
+import ai.oyi.device.ui.IslandFitContent
+import ai.oyi.device.update.Release
+import ai.oyi.device.update.UpdateState
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.fillMaxSize
 import ai.oyi.device.ui.MainShell
 import ai.oyi.device.ui.SpaceActions
 import ai.oyi.device.ui.SpaceContent
@@ -78,7 +84,7 @@ class ScreensSnapshotTest {
 
     @Test
     fun focusIdle() = paparazzi.snapshot {
-        Frame(tab = 0) {
+        Frame(tab = 1) {
             FocusContent(
                 state = FocusState(
                     distractions = listOf(
@@ -93,13 +99,14 @@ class ScreensSnapshotTest {
                 notice = "",
                 apps = emptyList(),
                 actions = FocusActions(label = { labels[it] ?: it }),
+                screenTime = ScreenTime(space.topApps, space.currentApp),
             )
         }
     }
 
     @Test
     fun focusInSession() = paparazzi.snapshot {
-        Frame(tab = 0, state = space.copy(island = IslandState(kind = IslandKind.THINKING, title = "Thinking…", startedAt = now))) {
+        Frame(tab = 1, state = space.copy(island = IslandState(kind = IslandKind.THINKING, title = "Thinking…", startedAt = now))) {
             FocusContent(
                 state = FocusState(
                     session = FocusSession("Write the essay intro", startedAt = now - 900_000, endsAt = now + 2_100_000),
@@ -115,12 +122,12 @@ class ScreensSnapshotTest {
 
     @Test
     fun space() = paparazzi.snapshot {
-        Frame(tab = 1) { SpaceContent(space, SpaceActions()) }
+        Frame(tab = 2) { SpaceContent(space, SpaceActions()) }
     }
 
     @Test
     fun chat() = paparazzi.snapshot {
-        Frame(tab = 2, state = space.copy(island = IslandState(kind = IslandKind.SPEAKING, title = "Speaking", startedAt = now))) {
+        Frame(tab = 0, state = space.copy(island = IslandState(kind = IslandKind.SPEAKING, title = "Speaking", startedAt = now))) {
             ChatContent(
                 state = ChatState(
                     messages = listOf(
@@ -142,12 +149,12 @@ class ScreensSnapshotTest {
 
     @Test
     fun chatEmpty() = paparazzi.snapshot {
-        Frame(tab = 2) { ChatContent(ChatState(), 0f, ChatActions()) }
+        Frame(tab = 0) { ChatContent(ChatState(), 0f, ChatActions()) }
     }
 
     @Test
     fun chatNeedsSetup() = paparazzi.snapshot {
-        Frame(tab = 2, state = space.copy(connection = ConnectionState.DISCONNECTED, gatewayUrl = "")) {
+        Frame(tab = 0, state = space.copy(connection = ConnectionState.DISCONNECTED, gatewayUrl = "")) {
             ChatContent(ChatState(), 0f, ChatActions(), needsSetup = true)
         }
     }
@@ -156,7 +163,7 @@ class ScreensSnapshotTest {
     @Test
     fun chatFailures() = paparazzi.snapshot {
         val failure = "Couldn't reach OYI. Gateway is not configured."
-        Frame(tab = 2) {
+        Frame(tab = 0) {
             ChatContent(
                 state = ChatState(
                     messages = listOf(
@@ -177,6 +184,30 @@ class ScreensSnapshotTest {
     @Test
     fun spaceFresh() = paparazzi.snapshot {
         val fresh = UiState()
-        Frame(tab = 1, state = fresh) { SpaceContent(fresh, SpaceActions()) }
+        Frame(tab = 2, state = fresh) { SpaceContent(fresh, SpaceActions()) }
+    }
+
+    @Test
+    fun spaceUpdateReady() = paparazzi.snapshot {
+        val update = UpdateState.Available(
+            Release(build = 214, apkUrl = "", sizeBytes = 0, notes = "Bouncier island morphs, live island fitting, screen time in Focus."),
+        )
+        Frame(tab = 2) { SpaceContent(space, SpaceActions(), update, "0.1.210 (build 210)") }
+    }
+
+    /** The live fit screen, over a stand-in for whatever is behind it. */
+    @Test
+    fun islandFit() = paparazzi.snapshot {
+        Still {
+            OyiTheme {
+                androidx.compose.foundation.layout.Box(
+                    androidx.compose.ui.Modifier
+                        .fillMaxSize()
+                        .background(androidx.compose.ui.graphics.Color(0xFF2A2A30)),
+                ) {
+                    IslandFitContent(x = 6, y = -3, live = true, onChange = { _, _ -> }, onTurnOn = {}, onDone = {})
+                }
+            }
+        }
     }
 }

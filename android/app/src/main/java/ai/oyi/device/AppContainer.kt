@@ -25,5 +25,8 @@ class AppContainer(context: Context) {
 
     val focusStore: FocusStore = FocusStore(context, clock)
 
+    /** Over-the-air updates from GitHub releases. */
+    val updater: ai.oyi.device.update.AppUpdater = ai.oyi.device.update.AppUpdater(context)
+
     val focusGuard: FocusGuard = FocusGuard(context, focusStore, clock, runtime, settings)
 }

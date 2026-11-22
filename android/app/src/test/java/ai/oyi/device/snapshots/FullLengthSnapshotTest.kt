@@ -54,7 +54,7 @@ class FullLengthSnapshotTest {
         )
         Still {
             OyiTheme {
-                MainShell(state = state, level = 0f, tab = 1, onTab = {}, onIslandAction = {}) {
+                MainShell(state = state, level = 0f, tab = 2, onTab = {}, onIslandAction = {}) {
                     SpaceContent(state, SpaceActions())
                 }
             }
@@ -66,7 +66,7 @@ class FullLengthSnapshotTest {
         val labels = mapOf("com.instagram.android" to "Instagram", "com.google.android.youtube" to "YouTube")
         Still {
             OyiTheme {
-                MainShell(state = UiState(), level = 0f, tab = 0, onTab = {}, onIslandAction = {}) {
+                MainShell(state = UiState(), level = 0f, tab = 1, onTab = {}, onIslandAction = {}) {
                     FocusContent(
                         state = FocusState(
                             distractions = listOf(

@@ -52,8 +52,10 @@ class MainActivity : ComponentActivity() {
 
     // While OYI is in front, its own header shows the island and the
     // overlay steps aside.
-    override fun onStart() {
-        super.onStart()
+    // onResume, not onStart: coming back from the see-through island-fit
+    // screen resumes this activity without starting it again.
+    override fun onResume() {
+        super.onResume()
         (application as OyiApplication).container.runtime.setAppVisible(true)
     }
 

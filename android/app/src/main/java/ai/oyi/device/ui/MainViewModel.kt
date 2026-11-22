@@ -118,7 +118,28 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     /** Re-reads permissions and usage; called on every resume. */
+    /** Over-the-air updates: checked quietly on resume, on demand from Space. */
+    val updates: StateFlow<ai.oyi.device.update.UpdateState> = container.updater.state
+    val appVersion: String = "${container.updater.currentVersion} (build ${container.updater.currentBuild})"
+
+    fun checkForUpdate() {
+        viewModelScope.launch { container.updater.check() }
+    }
+
+    fun downloadUpdate(release: ai.oyi.device.update.Release) {
+        viewModelScope.launch { container.updater.download(release) }
+    }
+
+    fun installUpdate(release: ai.oyi.device.update.Release) {
+        if (!container.updater.canInstall()) {
+            container.updater.openInstallPermission()
+            return
+        }
+        viewModelScope.launch { container.updater.install(release) }
+    }
+
     fun refresh() {
+        viewModelScope.launch { container.updater.check(quiet = true) }
         viewModelScope.launch {
             val settings = container.settings.settings.value
             val overlayPermission = Settings.canDrawOverlays(context)

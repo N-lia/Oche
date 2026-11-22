@@ -11,6 +11,9 @@ plugins {
 val defaultGatewayUrl: String =
     (project.findProperty("OYI_DEFAULT_GATEWAY_URL") as String?) ?: ""
 
+// The CI run number (see .github/workflows/android.yml), or 1 locally.
+val buildNumber: Int = System.getenv("OYI_BUILD_NUMBER")?.toIntOrNull() ?: 1
+
 android {
     namespace = "ai.oyi.device"
     compileSdk = 35
@@ -19,14 +22,30 @@ android {
         applicationId = "ai.oyi.device"
         minSdk = 26
         targetSdk = 35
-        versionCode = 1
-        versionName = "0.1.0"
+        // CI stamps each build with its run number, so the in-app updater can
+        // tell which build is newer. Local builds are 1.
+        versionCode = buildNumber
+        versionName = "0.1.$buildNumber"
         vectorDrawables { useSupportLibrary = true }
         buildConfigField("String", "DEFAULT_GATEWAY_URL", "\"$defaultGatewayUrl\"")
     }
 
+    // One fixed debug key for every build. Android only installs an update
+    // signed with the same key as the installed app, and CI would otherwise
+    // make a fresh random debug key on every run. Debug-only: never use it
+    // for a Play Store release.
+    signingConfigs {
+        getByName("debug") {
+            storeFile = file("oyi-debug.keystore")
+            storePassword = "android"
+            keyAlias = "androiddebugkey"
+            keyPassword = "android"
+        }
+    }
+
     buildTypes {
         debug {
+            signingConfig = signingConfigs.getByName("debug")
             applicationIdSuffix = ".debug"
             versionNameSuffix = "-debug"
             isMinifyEnabled = false
@@ -85,4 +104,6 @@ dependencies {
     debugImplementation("androidx.compose.ui:ui-tooling")
 
     testImplementation("junit:junit:4.13.2")
+    // The real org.json, so JSON parsing can be unit tested off-device.
+    testImplementation("org.json:json:20240303")
 }

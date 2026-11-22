@@ -126,7 +126,7 @@ internal val CardGap = 12.dp
 
 /** The floating nav: its height and its gap above the system bar. */
 internal val NavHeight = 64.dp
-internal val NavBottomMargin = 12.dp
+internal val NavBottomMargin = 28.dp
 
 /** Room under a scrolling screen so its last card clears the floating nav. */
 internal val NavClearance = NavHeight + NavBottomMargin + 28.dp

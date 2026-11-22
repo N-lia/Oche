@@ -1,5 +1,7 @@
 package ai.oyi.device.service
 
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.foundation.layout.Box
 import android.content.ComponentCallbacks
 import android.content.Context
 import android.content.Intent
@@ -256,8 +258,26 @@ class OverlayController(
         val hole by cutout
 
         // The theme gives the island OYI's typeface; it draws nothing itself.
+        // While the island morphs, the window keeps some empty room around it.
+        // The window follows its content a frame or two late, and without
+        // that room the growing island gets cut at the window edge for those
+        // frames, which reads as a snap. The room goes once it settles.
+        var morphs by remember { mutableIntStateOf(0) }
+        var roomy by remember { mutableStateOf(false) }
+        LaunchedEffect(morphs) {
+            if (morphs > 0) {
+                roomy = true
+                delay(900)
+                roomy = false
+            }
+        }
+        val stacked = secondary != null
+        LaunchedEffect(stacked) { morphs++ }
+        val room = if (roomy) 48.dp else 0.dp
         ai.oyi.device.ui.theme.OyiTheme(wallpaperColors = prefs.wallpaperColors) {
+        Box(Modifier.padding(start = room, end = room, bottom = room * 3)) {
         DynamicIsland(
+            onMorph = { morphs++ },
             state = island,
             idle = idle,
             level = level,
@@ -275,6 +295,7 @@ class OverlayController(
                 bottom = 14.dp,
             ),
         )
+        }
         }
     }
 

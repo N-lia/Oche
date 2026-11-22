@@ -66,6 +66,8 @@ import androidx.compose.ui.window.DialogProperties
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import ai.oyi.device.focus.Distraction
+import ai.oyi.device.model.AppUsage
+import ai.oyi.device.model.ForegroundApp
 import ai.oyi.device.focus.DriftState
 import ai.oyi.device.focus.FocusLive
 import ai.oyi.device.focus.FocusSession
@@ -90,6 +92,13 @@ private fun limitLabel(minutes: Int): String = when {
     else -> "${minutes}m a day"
 }
 
+/** Today's screen time, shown at the top of Focus. */
+data class ScreenTime(
+    val apps: List<AppUsage> = emptyList(),
+    val currentApp: ForegroundApp? = null,
+    val permission: Boolean = true,
+)
+
 /** Everything the Focus screen can ask for. The defaults do nothing, for previews. */
 class FocusActions(
     val label: (String) -> String = { it },
@@ -107,10 +116,15 @@ class FocusActions(
     val cancelEmergencyExit: () -> Unit = {},
     val setVoice: (Voice) -> Unit = {},
     val openAccessibility: () -> Unit = {},
+    val openUsage: () -> Unit = {},
 )
 
 @Composable
-fun FocusScreen(viewModel: FocusViewModel = viewModel()) {
+fun FocusScreen(
+    viewModel: FocusViewModel = viewModel(),
+    screenTime: ScreenTime = ScreenTime(),
+    onAllowUsage: () -> Unit = {},
+) {
     val state by viewModel.state.collectAsStateWithLifecycle()
     val live by viewModel.live.collectAsStateWithLifecycle()
     val accessibilityReady by viewModel.accessibilityReady.collectAsStateWithLifecycle()
@@ -136,9 +150,10 @@ fun FocusScreen(viewModel: FocusViewModel = viewModel()) {
             openAccessibility = {
                 context.startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
             },
+            openUsage = onAllowUsage,
         )
     }
-    FocusContent(state, live, accessibilityReady, notice, apps, actions)
+    FocusContent(state, live, accessibilityReady, notice, apps, actions, screenTime)
 }
 
 /** The Focus screen itself, without a view model (previews and snapshots use it). */
@@ -150,6 +165,7 @@ fun FocusContent(
     notice: String,
     apps: List<AppEntry>,
     actions: FocusActions,
+    screenTime: ScreenTime = ScreenTime(),
 ) {
     var showPicker by remember { mutableStateOf(false) }
 
@@ -228,6 +244,8 @@ fun FocusContent(
                 ActiveBlockCard(session = session, live = live, onDone = actions.finishSession)
             }
         }
+
+        item { ScreenTimeCard(screenTime, actions.openUsage) }
 
         item {
             DistractionsCard(
@@ -798,6 +816,87 @@ private fun AppPicker(
                 }
             }
         }
+    }
+}
+
+@Composable
+private fun ScreenTimeCard(state: ScreenTime, onAllow: () -> Unit) {
+    OyiCard {
+        CardHeader(
+            title = "Screen time",
+            subtitle = state.currentApp?.let { "Now in ${it.label}" } ?: "Today",
+            icon = R.drawable.ic_timer,
+        ) {
+            val total = state.apps.sumOf { it.totalMs }
+            if (total > 0) {
+                Text(
+                    formatDuration(total),
+                    style = MaterialTheme.typography.headlineSmall.merge(Tabular),
+                    color = Oyi.OffWhite,
+                )
+            }
+        }
+        if (state.apps.isEmpty()) {
+            Spacer(Modifier.height(12.dp))
+            if (state.permission) {
+                Hint("Nothing counted yet today.")
+            } else {
+                Hint("Allow usage access to see where your time goes.")
+                Spacer(Modifier.height(12.dp))
+                OyiButton(text = "Allow usage access", onClick = onAllow, kind = ButtonKind.TONAL, small = true)
+            }
+        } else {
+            Spacer(Modifier.height(14.dp))
+            val max = state.apps.maxOf { it.totalMs }.coerceAtLeast(1L)
+            state.apps.take(4).forEachIndexed { index, app ->
+                if (index > 0) Spacer(Modifier.height(12.dp))
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    AppIcon(app.packageName, size = 32.dp, label = app.label)
+                    Spacer(Modifier.width(12.dp))
+                    Column(Modifier.weight(1f)) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text(
+                                app.label,
+                                color = Oyi.OffWhite,
+                                fontSize = 14.sp,
+                                fontWeight = FontWeight.SemiBold,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                                modifier = Modifier.weight(1f),
+                            )
+                            Text(
+                                formatDuration(app.totalMs),
+                                color = Oyi.Muted,
+                                fontSize = 13.sp,
+                                style = LocalTextStyle.current.merge(Tabular),
+                            )
+                        }
+                        Spacer(Modifier.height(6.dp))
+                        Box(Modifier.fillMaxWidth().height(4.dp).clip(Oyi.Pill).background(Oyi.Control)) {
+                            Box(
+                                Modifier
+                                    .fillMaxWidth((app.totalMs.toFloat() / max).coerceIn(0.03f, 1f))
+                                    .height(4.dp)
+                                    .clip(Oyi.Pill)
+                                    .background(if (index == 0) Oyi.Orange else Oyi.Muted),
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+
+private fun formatDuration(millis: Long): String {
+    val minutes = millis / 60_000
+    val hours = minutes / 60
+    val rest = minutes % 60
+    return when {
+        hours > 0 -> if (rest > 0) "${hours}h ${rest}m" else "${hours}h"
+        minutes > 0 -> "${minutes}m"
+        else -> "<1m"
     }
 }
 
