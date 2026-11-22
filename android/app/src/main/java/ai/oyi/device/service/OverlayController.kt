@@ -1,5 +1,7 @@
 package ai.oyi.device.service
 
+import androidx.compose.ui.Alignment
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.foundation.layout.Box
 import android.content.ComponentCallbacks
@@ -86,6 +88,48 @@ class OverlayController(
     private var params: WindowManager.LayoutParams? = null
     private var viaAccessibility = false
 
+    /**
+     * True while the island changes size. A window that wraps its content
+     * is relaid out by the system on every frame of a resize, a frame or two
+     * behind the content, so the island was cut and jumped as it opened and
+     * closed. Instead, for the length of a morph the window takes one fixed,
+     * big-enough size (one relayout), the island animates freely inside it,
+     * and the window wraps it again once it has settled (one more).
+     */
+    private val morphing = mutableStateOf(false)
+    private var morphJob: Job? = null
+
+    private fun beginMorph() {
+        morphJob?.cancel()
+        if (!morphing.value) {
+            morphing.value = true
+            sizeWindow(fixed = true)
+        }
+        morphJob = scope.launch {
+            delay(MORPH_SETTLE_MS)
+            morphing.value = false
+            sizeWindow(fixed = false)
+        }
+    }
+
+    private fun sizeWindow(fixed: Boolean) {
+        val view = root ?: return
+        val layout = params ?: return
+        val manager = windowManager ?: return
+        val metrics = context.resources.displayMetrics
+        if (fixed) {
+            // Centred on the island (gravity centre plus the x offset), and
+            // narrow enough to stay on screen so the system never shifts it.
+            val width = screenWidth(manager, metrics.widthPixels) - 2 * kotlin.math.abs(layout.x)
+            layout.width = width.coerceAtLeast((200 * metrics.density).toInt())
+            layout.height = (MORPH_HEIGHT_DP * metrics.density).toInt()
+        } else {
+            layout.width = WindowManager.LayoutParams.WRAP_CONTENT
+            layout.height = WindowManager.LayoutParams.WRAP_CONTENT
+        }
+        runCatching { manager.updateViewLayout(view, layout) }
+    }
+
     /** The camera hole the island keeps clear of, read by the composable. */
     private val cutout = mutableStateOf(DpSize.Zero)
 
@@ -134,6 +178,14 @@ class OverlayController(
                 root?.visibility = if (appVisible) View.GONE else View.VISIBLE
             }
         }
+        // A new state from the runtime: make room before it recomposes.
+        jobs += scope.launch {
+            runtime.island
+                .map { it.kind }
+                .distinctUntilChanged()
+                .drop(1)
+                .collect { beginMorph() }
+        }
         // Calibration changes move the window at once.
         jobs += scope.launch {
             settings.settings
@@ -155,6 +207,8 @@ class OverlayController(
     }
 
     fun hide() {
+        morphJob?.cancel()
+        morphing.value = false
         val running = jobs.toList()
         jobs.clear()
         running.forEach { it.cancel() }
@@ -258,26 +312,15 @@ class OverlayController(
         val hole by cutout
 
         // The theme gives the island OYI's typeface; it draws nothing itself.
-        // While the island morphs, the window keeps some empty room around it.
-        // The window follows its content a frame or two late, and without
-        // that room the growing island gets cut at the window edge for those
-        // frames, which reads as a snap. The room goes once it settles.
-        var morphs by remember { mutableIntStateOf(0) }
-        var roomy by remember { mutableStateOf(false) }
-        LaunchedEffect(morphs) {
-            if (morphs > 0) {
-                roomy = true
-                delay(900)
-                roomy = false
-            }
-        }
         val stacked = secondary != null
-        LaunchedEffect(stacked) { morphs++ }
-        val room = if (roomy) 48.dp else 0.dp
+        LaunchedEffect(stacked) { beginMorph() }
+        val wide by morphing
         ai.oyi.device.ui.theme.OyiTheme(wallpaperColors = prefs.wallpaperColors) {
-        Box(Modifier.padding(start = room, end = room, bottom = room * 3)) {
+        // While morphing, the window is a fixed size and the island sits at
+        // its top centre, at the same spot on screen as when it wraps it.
+        Box(if (wide) Modifier.fillMaxSize() else Modifier, contentAlignment = Alignment.TopCenter) {
         DynamicIsland(
-            onMorph = { morphs++ },
+            onMorph = ::beginMorph,
             state = island,
             idle = idle,
             level = level,
@@ -358,4 +401,12 @@ class OverlayController(
 
     private fun dp(value: Int): Int =
         (value * context.resources.displayMetrics.density).toInt()
+
+    private companion object {
+        /** Long enough for the island's spring to settle, bounce included. */
+        const val MORPH_SETTLE_MS = 850L
+
+        /** Tall enough for the biggest card (an approval with its buttons). */
+        const val MORPH_HEIGHT_DP = 340
+    }
 }

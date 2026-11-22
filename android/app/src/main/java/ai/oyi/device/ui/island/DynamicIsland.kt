@@ -349,7 +349,11 @@ private fun Island(
                 detectTapGestures(
                     onTap = {
                         when {
-                            spec.expandable -> expanded = !expanded
+                            spec.expandable -> {
+                                // Room first (the overlay window grows), then the morph.
+                                onMorph()
+                                expanded = !expanded
+                            }
                             spec.dismissable -> onAction(IslandAction.DISMISS)
                         }
                     },
@@ -375,9 +379,14 @@ private fun Island(
                     },
                     onDragEnd = {
                         if (dragged < -36f) {
-                            if (expanded) expanded = false
-                            else if (spec.dismissable) onAction(IslandAction.DISMISS)
-                        } else if (dragged > 36f && spec.expandable) {
+                            if (expanded) {
+                                onMorph()
+                                expanded = false
+                            } else if (spec.dismissable) {
+                                onAction(IslandAction.DISMISS)
+                            }
+                        } else if (dragged > 36f && spec.expandable && !expanded) {
+                            onMorph()
                             expanded = true
                         }
                     },
