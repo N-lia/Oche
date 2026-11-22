@@ -5,7 +5,6 @@ import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -20,7 +19,6 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
-import androidx.compose.material3.darkColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -28,16 +26,18 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.graphics.Brush
-import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import ai.oyi.device.OyiApplication
+import ai.oyi.device.R
+import ai.oyi.device.ui.ButtonKind
+import ai.oyi.device.ui.OyiButton
+import ai.oyi.device.ui.theme.TabularNumbers
+import androidx.compose.foundation.Image
+import androidx.compose.ui.res.painterResource
 import ai.oyi.device.ui.Eyebrow
 import ai.oyi.device.ui.FocusRing
 import ai.oyi.device.ui.Oyi
@@ -55,7 +55,7 @@ class BlockActivity : ComponentActivity() {
         read(intent)
         val container = (application as OyiApplication).container
         setContent {
-            MaterialTheme(colorScheme = darkColorScheme(background = Oyi.Black, surface = Oyi.Black)) {
+            ai.oyi.device.ui.theme.OyiTheme {
                 val state by container.focusStore.state.collectAsStateWithLifecycle()
                 val live by container.focusGuard.live.collectAsStateWithLifecycle()
                 BlockScreen(
@@ -115,11 +115,6 @@ private fun BlockScreen(
     onFinishTask: () -> Unit,
 ) {
     val session = state.session
-    val glow = Brush.radialGradient(
-        colors = listOf(Color(0x40F08A65), Color(0x00F08A65)),
-        center = Offset(0f, 0f),
-        radius = 1100f,
-    )
     val detail = when (reason) {
         BlockReason.ALWAYS -> "You set this app to always blocked."
         BlockReason.SITE -> "This site is on your block list."
@@ -137,8 +132,7 @@ private fun BlockScreen(
     Box(
         modifier = Modifier
             .fillMaxSize()
-            .background(Oyi.Black)
-            .background(glow),
+            .background(Oyi.Black),
     ) {
         Column(
             modifier = Modifier
@@ -149,17 +143,21 @@ private fun BlockScreen(
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Box(Modifier.size(8.dp).clip(CircleShape).background(Oyi.Orange))
                 Spacer(Modifier.width(10.dp))
-                Eyebrow(if (label.isBlank()) "Blocked" else "Blocked · $label", color = Oyi.OffWhite)
+                Eyebrow(if (label.isBlank()) "Blocked" else "Blocked · $label", color = Oyi.Muted)
             }
 
             Spacer(Modifier.weight(1f))
 
+            Image(
+                painterResource(R.drawable.oyi_face_cool),
+                contentDescription = null,
+                modifier = Modifier.size(88.dp),
+            )
+            Spacer(Modifier.height(24.dp))
             Text(
                 text = NudgeVoice.blocked(state.voice, reason, session?.task.orEmpty()),
+                style = MaterialTheme.typography.displaySmall,
                 color = Oyi.OffWhite,
-                fontSize = 38.sp,
-                lineHeight = 44.sp,
-                fontWeight = FontWeight.Light,
             )
             Spacer(Modifier.height(14.dp))
             Text(detail, color = Oyi.Muted, fontSize = 15.sp, lineHeight = 21.sp)
@@ -171,8 +169,8 @@ private fun BlockScreen(
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     FocusRing(
                         progress = 1f - remaining.toFloat() / total.toFloat(),
-                        modifier = Modifier.size(58.dp),
-                        strokeWidth = 5.dp,
+                        modifier = Modifier.size(52.dp),
+                        strokeWidth = 6.dp,
                     )
                     Spacer(Modifier.width(16.dp))
                     Column {
@@ -190,7 +188,7 @@ private fun BlockScreen(
                             "${formatClock(remaining)} left",
                             color = Oyi.Muted,
                             fontSize = 13.sp,
-                            fontFamily = FontFamily.Monospace,
+                            fontFeatureSettings = TabularNumbers,
                         )
                     }
                 }
@@ -198,29 +196,16 @@ private fun BlockScreen(
 
             Spacer(Modifier.weight(1f))
 
-            Box(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .clip(Oyi.Pill)
-                    .background(Oyi.CreamGlass)
-                    .clickable(onClick = onLeave)
-                    .padding(vertical = 16.dp),
-                contentAlignment = Alignment.Center,
-            ) {
-                Text("Back to work", color = Oyi.Ink, fontSize = 15.sp, fontWeight = FontWeight.Bold)
-            }
+            OyiButton(text = "Back to work", onClick = onLeave, kind = ButtonKind.CREAM, fullWidth = true)
             if (session != null) {
-                Spacer(Modifier.height(6.dp))
-                Box(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .clip(Oyi.Pill)
-                        .clickable(onClick = onFinishTask)
-                        .padding(vertical = 14.dp),
-                    contentAlignment = Alignment.Center,
-                ) {
-                    Text("I finished the task", color = Oyi.Muted, fontSize = 14.sp, fontWeight = FontWeight.Medium)
-                }
+                Spacer(Modifier.height(8.dp))
+                OyiButton(
+                    text = "I finished the task",
+                    onClick = onFinishTask,
+                    kind = ButtonKind.GHOST,
+                    icon = R.drawable.ic_check,
+                    fullWidth = true,
+                )
             }
         }
     }
