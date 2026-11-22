@@ -77,19 +77,73 @@ private fun limitLabel(minutes: Int): String = when {
     else -> "${minutes}m a day"
 }
 
+/** Everything the Focus screen can ask for. The defaults do nothing, for previews. */
+class FocusActions(
+    val label: (String) -> String = { it },
+    val clearNotice: () -> Unit = {},
+    val loadApps: () -> Unit = {},
+    val startSession: (String, Int) -> Unit = { _, _ -> },
+    val finishSession: () -> Unit = {},
+    val setDistraction: (String, Int) -> Unit = { _, _ -> },
+    val removeDistraction: (String) -> Unit = {},
+    val addSite: (String) -> Boolean = { false },
+    val removeSite: (String) -> Unit = {},
+    val armLock: () -> Unit = {},
+    val disarmLock: () -> Unit = {},
+    val requestEmergencyExit: () -> Unit = {},
+    val cancelEmergencyExit: () -> Unit = {},
+    val setVoice: (Voice) -> Unit = {},
+    val openAccessibility: () -> Unit = {},
+)
+
 @Composable
 fun FocusScreen(viewModel: FocusViewModel = viewModel()) {
     val state by viewModel.state.collectAsStateWithLifecycle()
     val live by viewModel.live.collectAsStateWithLifecycle()
     val accessibilityReady by viewModel.accessibilityReady.collectAsStateWithLifecycle()
     val notice by viewModel.notice.collectAsStateWithLifecycle()
-    var showPicker by remember { mutableStateOf(false) }
+    val apps by viewModel.apps.collectAsStateWithLifecycle()
     val context = LocalContext.current
+    val actions = remember(viewModel) {
+        FocusActions(
+            label = viewModel::label,
+            clearNotice = viewModel::clearNotice,
+            loadApps = viewModel::loadApps,
+            startSession = viewModel::startSession,
+            finishSession = viewModel::finishSession,
+            setDistraction = viewModel::setDistraction,
+            removeDistraction = viewModel::removeDistraction,
+            addSite = viewModel::addSite,
+            removeSite = viewModel::removeSite,
+            armLock = viewModel::armLock,
+            disarmLock = viewModel::disarmLock,
+            requestEmergencyExit = viewModel::requestEmergencyExit,
+            cancelEmergencyExit = viewModel::cancelEmergencyExit,
+            setVoice = viewModel::setVoice,
+            openAccessibility = {
+                context.startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
+            },
+        )
+    }
+    FocusContent(state, live, accessibilityReady, notice, apps, actions)
+}
+
+/** The Focus screen itself, without a view model (previews and snapshots use it). */
+@Composable
+fun FocusContent(
+    state: FocusState,
+    live: FocusLive,
+    accessibilityReady: Boolean,
+    notice: String,
+    apps: List<AppEntry>,
+    actions: FocusActions,
+) {
+    var showPicker by remember { mutableStateOf(false) }
 
     LaunchedEffect(notice) {
         if (notice.isNotEmpty()) {
             delay(3500)
-            viewModel.clearNotice()
+            actions.clearNotice()
         }
     }
 
@@ -129,7 +183,7 @@ fun FocusScreen(viewModel: FocusViewModel = viewModel()) {
                     )
                     Spacer(Modifier.height(12.dp))
                     Pill(text = "Turn on Control access", selected = true, onDark = false) {
-                        context.startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
+                        actions.openAccessibility()
                     }
                 }
             }
@@ -138,9 +192,9 @@ fun FocusScreen(viewModel: FocusViewModel = viewModel()) {
         item {
             val session = state.session
             if (session == null) {
-                StartBlockCard(onStart = viewModel::startSession)
+                StartBlockCard(onStart = actions.startSession)
             } else {
-                ActiveBlockCard(session = session, live = live, onDone = viewModel::finishSession)
+                ActiveBlockCard(session = session, live = live, onDone = actions.finishSession)
             }
         }
 
@@ -148,13 +202,13 @@ fun FocusScreen(viewModel: FocusViewModel = viewModel()) {
             DistractionsCard(
                 state = state,
                 live = live,
-                labelOf = viewModel::label,
+                labelOf = actions.label,
                 onAdd = {
-                    viewModel.loadApps()
+                    actions.loadApps()
                     showPicker = true
                 },
-                onSetLimit = viewModel::setDistraction,
-                onRemove = viewModel::removeDistraction,
+                onSetLimit = actions.setDistraction,
+                onRemove = actions.removeDistraction,
             )
         }
 
@@ -162,8 +216,8 @@ fun FocusScreen(viewModel: FocusViewModel = viewModel()) {
             SitesCard(
                 sites = state.sites,
                 canLoosen = live.lock.canLoosen,
-                onAdd = viewModel::addSite,
-                onRemove = viewModel::removeSite,
+                onAdd = actions.addSite,
+                onRemove = actions.removeSite,
             )
         }
 
@@ -171,21 +225,20 @@ fun FocusScreen(viewModel: FocusViewModel = viewModel()) {
             LockCard(
                 status = live.lock,
                 now = live.now,
-                onArm = viewModel::armLock,
-                onDisarm = viewModel::disarmLock,
-                onEmergency = viewModel::requestEmergencyExit,
-                onCancelEmergency = viewModel::cancelEmergencyExit,
+                onArm = actions.armLock,
+                onDisarm = actions.disarmLock,
+                onEmergency = actions.requestEmergencyExit,
+                onCancelEmergency = actions.cancelEmergencyExit,
             )
         }
 
         item {
-            VoiceCard(voice = state.voice, onPick = viewModel::setVoice)
+            VoiceCard(voice = state.voice, onPick = actions.setVoice)
             Spacer(Modifier.height(28.dp))
         }
     }
 
     if (showPicker) {
-        val apps by viewModel.apps.collectAsStateWithLifecycle()
         val taken = state.distractions.map { it.packageName }.toSet()
         AppPicker(
             apps = apps.filter { it.packageName !in taken },

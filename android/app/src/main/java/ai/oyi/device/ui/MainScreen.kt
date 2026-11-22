@@ -72,7 +72,9 @@ import kotlin.math.roundToInt
 @Composable
 fun MainScreen(viewModel: MainViewModel = viewModel()) {
     val state by viewModel.state.collectAsStateWithLifecycle()
+    val level by viewModel.voiceLevel.collectAsStateWithLifecycle()
     var tab by remember { mutableIntStateOf(0) }
+    val context = LocalContext.current
 
     val lifecycleOwner = LocalLifecycleOwner.current
     DisposableEffect(lifecycleOwner) {
@@ -83,6 +85,76 @@ fun MainScreen(viewModel: MainViewModel = viewModel()) {
         onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
     }
 
+    val space = remember(viewModel) {
+        SpaceActions(
+            openOverlay = {
+                context.startActivity(
+                    Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, Uri.parse("package:${context.packageName}")),
+                )
+            },
+            openUsage = { context.startActivity(Intent(Settings.ACTION_USAGE_ACCESS_SETTINGS)) },
+            openAccessibility = { context.startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)) },
+            setOverlayEnabled = viewModel::setOverlayEnabled,
+            setAutoStart = viewModel::setAutoStart,
+            previewIsland = viewModel::previewIslandState,
+            previewStack = viewModel::previewStack,
+            setWallpaperColors = viewModel::setWallpaperColors,
+            setLiveUpdates = viewModel::setLiveUpdates,
+            setIslandNudge = viewModel::setIslandNudge,
+            saveGateway = viewModel::saveGateway,
+        )
+    }
+
+    MainShell(
+        state = state,
+        level = level,
+        tab = tab,
+        onTab = { tab = it },
+        onIslandAction = { action ->
+            when (action) {
+                IslandAction.APPROVE -> viewModel.approveIsland()
+                IslandAction.DENY -> viewModel.denyIsland()
+                IslandAction.STOP -> viewModel.stopActiveTask()
+                IslandAction.DISMISS -> viewModel.dismissIsland()
+                IslandAction.INTERRUPT -> viewModel.interruptAgent()
+                IslandAction.SWAP -> viewModel.swapIsland()
+                IslandAction.OPEN_APP -> Unit
+            }
+        },
+    ) { current ->
+        when (current) {
+            0 -> FocusScreen()
+            1 -> SpaceContent(state, space)
+            else -> ChatScreen()
+        }
+    }
+}
+
+/** Everything the Space tab can ask for. The defaults do nothing, for previews. */
+class SpaceActions(
+    val openOverlay: () -> Unit = {},
+    val openUsage: () -> Unit = {},
+    val openAccessibility: () -> Unit = {},
+    val setOverlayEnabled: (Boolean) -> Unit = {},
+    val setAutoStart: (Boolean) -> Unit = {},
+    val previewIsland: (IslandKind) -> Unit = {},
+    val previewStack: () -> Unit = {},
+    val setWallpaperColors: (Boolean) -> Unit = {},
+    val setLiveUpdates: (Boolean) -> Unit = {},
+    val setIslandNudge: (Int, Int) -> Unit = { _, _ -> },
+    val saveGateway: (String, String) -> Unit = { _, _ -> },
+)
+
+/** The app's frame: backdrop, the island, the tabs and the current tab. */
+@Composable
+fun MainShell(
+    state: UiState,
+    level: Float,
+    tab: Int,
+    onTab: (Int) -> Unit,
+    onIslandAction: (IslandAction) -> Unit,
+    content: @Composable (tab: Int) -> Unit,
+) {
     GlassBackdrop {
         Scaffold(containerColor = Color.Transparent) { padding ->
             Column(
@@ -90,7 +162,6 @@ fun MainScreen(viewModel: MainViewModel = viewModel()) {
                     .fillMaxSize()
                     .padding(padding),
             ) {
-                val level by viewModel.voiceLevel.collectAsStateWithLifecycle()
                 Box(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -108,17 +179,7 @@ fun MainScreen(viewModel: MainViewModel = viewModel()) {
                         inApp = true,
                         secondary = state.islandSecondary,
                         accent = MaterialTheme.colorScheme.primary,
-                        onAction = { action ->
-                            when (action) {
-                                IslandAction.APPROVE -> viewModel.approveIsland()
-                                IslandAction.DENY -> viewModel.denyIsland()
-                                IslandAction.STOP -> viewModel.stopActiveTask()
-                                IslandAction.DISMISS -> viewModel.dismissIsland()
-                                IslandAction.INTERRUPT -> viewModel.interruptAgent()
-                                IslandAction.SWAP -> viewModel.swapIsland()
-                                IslandAction.OPEN_APP -> Unit
-                            }
-                        },
+                        onAction = onIslandAction,
                         modifier = Modifier.padding(horizontal = 16.dp),
                     )
                 }
@@ -126,14 +187,10 @@ fun MainScreen(viewModel: MainViewModel = viewModel()) {
                 ExpressiveTabs(
                     tabs = listOf("Focus", "Space", "Live Chat"),
                     selected = tab,
-                    onSelect = { tab = it },
+                    onSelect = onTab,
                 )
 
-                when (tab) {
-                    0 -> FocusScreen()
-                    1 -> SetupList(state = state, viewModel = viewModel)
-                    else -> ChatScreen()
-                }
+                content(tab)
             }
         }
     }
@@ -199,9 +256,9 @@ private fun ExpressiveTabs(
     }
 }
 
+/** The Space tab: access, screen time, the island and the gateway link. */
 @Composable
-private fun SetupList(state: UiState, viewModel: MainViewModel) {
-    val context = LocalContext.current
+fun SpaceContent(state: UiState, actions: SpaceActions) {
     LazyColumn(
         modifier = Modifier
             .fillMaxSize()
@@ -226,20 +283,9 @@ private fun SetupList(state: UiState, viewModel: MainViewModel) {
                 Box(modifier = Modifier.weight(1f)) {
                     PermissionsBentoCard(
                         state = state,
-                        onOpenOverlay = {
-                            context.startActivity(
-                                Intent(
-                                    Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
-                                    Uri.parse("package:${context.packageName}"),
-                                ),
-                            )
-                        },
-                        onOpenUsage = {
-                            context.startActivity(Intent(Settings.ACTION_USAGE_ACCESS_SETTINGS))
-                        },
-                        onOpenAccessibility = {
-                            context.startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
-                        },
+                        onOpenOverlay = actions.openOverlay,
+                        onOpenUsage = actions.openUsage,
+                        onOpenAccessibility = actions.openAccessibility,
                     )
                 }
                 Box(modifier = Modifier.weight(1f)) {
@@ -252,26 +298,26 @@ private fun SetupList(state: UiState, viewModel: MainViewModel) {
             RunCard(
                 enabled = state.overlayEnabled,
                 autoStart = state.autoStart,
-                onToggle = { viewModel.setOverlayEnabled(it) },
-                onAutoStart = { viewModel.setAutoStart(it) },
-                onPreviewIsland = { viewModel.previewIslandState(it) },
-                onPreviewStack = { viewModel.previewStack() },
+                onToggle = actions.setOverlayEnabled,
+                onAutoStart = actions.setAutoStart,
+                onPreviewIsland = actions.previewIsland,
+                onPreviewStack = actions.previewStack,
             )
         }
 
         item {
             IslandLookCard(
                 state = state,
-                onWallpaper = { viewModel.setWallpaperColors(it) },
-                onLiveUpdates = { viewModel.setLiveUpdates(it) },
-                onNudge = { x, y -> viewModel.setIslandNudge(x, y) },
+                onWallpaper = actions.setWallpaperColors,
+                onLiveUpdates = actions.setLiveUpdates,
+                onNudge = actions.setIslandNudge,
             )
         }
 
         item {
             GatewayCard(
                 state = state,
-                onSave = { url, token -> viewModel.saveGateway(url, token) },
+                onSave = actions.saveGateway,
             )
         }
 

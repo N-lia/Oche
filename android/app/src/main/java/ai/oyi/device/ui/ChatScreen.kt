@@ -42,6 +42,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -86,18 +87,48 @@ private val SmokedGlassBrush = Brush.linearGradient(
     colors = listOf(Color(0xD926262D), Color(0xCC141418)),
 )
 
+/** Everything the chat screen can ask for. The defaults do nothing, for previews. */
+class ChatActions(
+    val setDraft: (String) -> Unit = {},
+    val send: () -> Unit = {},
+    /** The mic button: starts or stops live voice (asking for the mic first). */
+    val toggleMic: () -> Unit = {},
+)
+
 @Composable
 fun ChatScreen(viewModel: ChatViewModel = viewModel()) {
     val state by viewModel.state.collectAsStateWithLifecycle()
     val level by viewModel.voiceLevel.collectAsStateWithLifecycle()
     val context = LocalContext.current
-    val listState = rememberLazyListState()
 
     val micPermission = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestPermission()
     ) { granted ->
         if (granted) viewModel.toggleLive() else viewModel.clearError()
     }
+    val actions = remember(viewModel) {
+        ChatActions(
+            setDraft = viewModel::setDraft,
+            send = viewModel::send,
+            toggleMic = {
+                if (viewModel.state.value.liveActive ||
+                    ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) ==
+                    PackageManager.PERMISSION_GRANTED
+                ) {
+                    viewModel.toggleLive()
+                } else {
+                    micPermission.launch(Manifest.permission.RECORD_AUDIO)
+                }
+            },
+        )
+    }
+    ChatContent(state, level, actions)
+}
+
+/** The chat screen itself, without a view model (previews and snapshots use it). */
+@Composable
+fun ChatContent(state: ChatState, level: Float, actions: ChatActions) {
+    val listState = rememberLazyListState()
 
     LaunchedEffect(state.messages.size) {
         if (state.messages.isNotEmpty()) {
@@ -137,21 +168,21 @@ fun ChatScreen(viewModel: ChatViewModel = viewModel()) {
                 borderColor = Color(0x3DFFFFFF),
             )
             AssistChip(
-                onClick = { viewModel.setDraft("What is on my screen right now?"); viewModel.send() },
+                onClick = { actions.setDraft("What is on my screen right now?"); actions.send() },
                 label = { Text("On screen", fontSize = 12.sp) },
                 shape = RoundedCornerShape(999.dp),
                 colors = chipColors,
                 border = chipBorder,
             )
             AssistChip(
-                onClick = { viewModel.setDraft("How much time have I used today?"); viewModel.send() },
+                onClick = { actions.setDraft("How much time have I used today?"); actions.send() },
                 label = { Text("Screen time", fontSize = 12.sp) },
                 shape = RoundedCornerShape(999.dp),
                 colors = chipColors,
                 border = chipBorder,
             )
             AssistChip(
-                onClick = { viewModel.setDraft("Open the Settings app on my phone"); viewModel.send() },
+                onClick = { actions.setDraft("Open the Settings app on my phone"); actions.send() },
                 label = { Text("Settings", fontSize = 12.sp) },
                 shape = RoundedCornerShape(999.dp),
                 colors = chipColors,
@@ -240,7 +271,7 @@ fun ChatScreen(viewModel: ChatViewModel = viewModel()) {
             ) {
                 OutlinedTextField(
                     value = state.draft,
-                    onValueChange = viewModel::setDraft,
+                    onValueChange = actions.setDraft,
                     placeholder = { Text("Message OYI…", color = MutedWarmGrey, fontSize = 14.sp) },
                     modifier = Modifier.weight(1f),
                     shape = RoundedCornerShape(999.dp),
@@ -257,24 +288,12 @@ fun ChatScreen(viewModel: ChatViewModel = viewModel()) {
                 MicButton(
                     active = state.liveActive,
                     level = level,
-                    onClick = {
-                        if (state.liveActive) {
-                            viewModel.toggleLive()
-                        } else if (ContextCompat.checkSelfPermission(
-                                context,
-                                Manifest.permission.RECORD_AUDIO,
-                            ) == PackageManager.PERMISSION_GRANTED
-                        ) {
-                            viewModel.toggleLive()
-                        } else {
-                            micPermission.launch(Manifest.permission.RECORD_AUDIO)
-                        }
-                    },
+                    onClick = actions.toggleMic,
                 )
                 Spacer(Modifier.width(6.dp))
                 val canSend = state.draft.isNotBlank() && !state.sending
                 PressMorph(
-                    onClick = viewModel::send,
+                    onClick = actions.send,
                     enabled = canSend,
                     modifier = Modifier.size(44.dp),
                     pressedPercent = 30f,
