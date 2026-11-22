@@ -1,6 +1,9 @@
 package ai.oyi.device.ui
 
 import ai.oyi.device.R
+import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.animation.core.spring
+import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.ui.semantics.onClick
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.ui.input.pointer.pointerInput
@@ -287,107 +290,117 @@ fun MainShell(
 }
 
 /**
- * Material 3 Expressive's short navigation bar, on liquid glass: the
- * selected destination grows a cream pill with its name; the others are
- * just their icons.
+ * Material 3 Expressive's short navigation bar, on liquid glass.
+ *
+ * Built to feel instant: the bar never changes size (a resizing glass bar
+ * re-blurs on every frame, which is what made it lag), each tab has a fixed
+ * slot, it switches on touch-down, and one cream pill glides to the new slot
+ * on a stiff spring, so there is motion without waiting for it.
  */
 @Composable
 private fun FloatingNav(selected: Int, onSelect: (Int) -> Unit, modifier: Modifier = Modifier, badge: Int? = null) {
     val haptics = LocalHapticFeedback.current
-    Row(
+    val slot = NavSlot
+    val inset = 6.dp
+    val pillX by animateDpAsState(
+        targetValue = slot * selected,
+        animationSpec = spring(dampingRatio = 0.78f, stiffness = 1500f),
+        label = "navPill",
+    )
+    Box(
         modifier = modifier
             .height(NavHeight)
+            .width(slot * NavItems.size + inset * 2)
             .liquidGlass(Oyi.Pill, fill = SolidColor(Color(0xE0161618)), backdrop = LocalGlassBackdrop.current, elevation = 16.dp)
-            .padding(6.dp),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(2.dp),
+            .padding(inset),
     ) {
-        NavItems.forEachIndexed { index, item ->
-            val isSelected = index == selected
-            // Effects springs this stiff settle in a frame or two: the colour
-            // change reads as instant, without a hard cut.
-            val bg by animateColorAsState(
-                if (isSelected) Oyi.Cream else Oyi.Cream.copy(alpha = 0f),
-                OyiMotion.fastEffects(),
-                label = "navBg",
-            )
-            val fg by animateColorAsState(
-                if (isSelected) Oyi.Ink else Oyi.Muted,
-                OyiMotion.fastEffects(),
-                label = "navFg",
-            )
-            var pressed by remember { mutableStateOf(false) }
-            val squish by animateFloatAsState(if (pressed) 0.92f else 1f, OyiMotion.fastSpatial(), label = "navSquish")
-            val select: () -> Unit by rememberUpdatedState({
-                if (!isSelected) {
-                    haptics.performHapticFeedback(HapticFeedbackType.TextHandleMove)
-                    onSelect(index)
-                }
-            })
-            val shape = Oyi.Pill
-            Box(
-                modifier = Modifier
-                    .graphicsLayer {
-                        scaleX = squish
-                        scaleY = squish
-                    }
-                    .clip(shape)
-                    // Switch on touch-down, like a hardware key: the tab is
-                    // already there by the time the finger lifts.
-                    .pointerInput(index) {
-                        detectTapGestures(
-                            onPress = {
-                                pressed = true
-                                select()
-                                tryAwaitRelease()
-                                pressed = false
-                            },
-                        )
-                    }
-                    .semantics {
-                        role = Role.Tab
-                        this.selected = isSelected
-                        onClick { select(); true }
+        // The one moving part.
+        Box(
+            Modifier
+                .offset(x = pillX)
+                .width(slot)
+                .fillMaxHeight()
+                .clip(Oyi.Pill)
+                .background(Oyi.Cream),
+        )
+        Row(Modifier.fillMaxSize()) {
+            NavItems.forEachIndexed { index, item ->
+                NavSlotItem(
+                    item = item,
+                    selected = index == selected,
+                    badge = badge == index,
+                    modifier = Modifier.width(slot).fillMaxHeight(),
+                    onPress = {
+                        if (index != selected) {
+                            haptics.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                            onSelect(index)
+                        }
                     },
-            ) {
-                Row(
-                    modifier = Modifier
-                        .height(NavHeight - 12.dp)
-                        .background(bg, shape)
-                        .padding(horizontal = if (isSelected) 18.dp else 20.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    Box {
-                        Icon(
-                            painterResource(if (isSelected) item.selectedIcon else item.icon),
-                            contentDescription = item.label,
-                            tint = fg,
-                            modifier = Modifier.size(22.dp),
-                        )
-                        // Something new waits there (an update).
-                        if (badge == index && !isSelected) {
-                            Box(
-                                Modifier
-                                    .align(Alignment.TopEnd)
-                                    .offset(x = 3.dp, y = (-2).dp)
-                                    .size(8.dp)
-                                    .clip(CircleShape)
-                                    .background(Oyi.Orange),
-                            )
-                        }
-                    }
-                    AnimatedVisibility(
-                        visible = isSelected,
-                        enter = fadeIn(OyiMotion.defaultEffects()) + expandHorizontally(OyiMotion.fastSpatial()),
-                        exit = fadeOut(OyiMotion.fastEffects()) + shrinkHorizontally(OyiMotion.fastSpatial()),
-                    ) {
-                        Row {
-                            Spacer(Modifier.width(8.dp))
-                            Text(item.label, color = fg, fontSize = 14.sp, fontWeight = FontWeight.Bold, maxLines = 1)
-                        }
-                    }
-                }
+                )
             }
+        }
+    }
+}
+
+private val NavSlot = 100.dp
+
+@Composable
+private fun NavSlotItem(item: NavItem, selected: Boolean, badge: Boolean, modifier: Modifier, onPress: () -> Unit) {
+    var pressed by remember { mutableStateOf(false) }
+    // Down fast, back with a little give: the subtle part.
+    val squish by animateFloatAsState(
+        targetValue = if (pressed) 0.9f else 1f,
+        animationSpec = if (pressed) spring(stiffness = 3000f) else spring(dampingRatio = 0.5f, stiffness = 900f),
+        label = "navSquish",
+    )
+    val fg by animateColorAsState(if (selected) Oyi.Ink else Oyi.Muted, tween(90), label = "navFg")
+    val press by rememberUpdatedState(onPress)
+    Row(
+        modifier = modifier
+            .graphicsLayer {
+                scaleX = squish
+                scaleY = squish
+            }
+            .pointerInput(Unit) {
+                detectTapGestures(
+                    onPress = {
+                        pressed = true
+                        press()
+                        tryAwaitRelease()
+                        pressed = false
+                    },
+                )
+            }
+            .semantics {
+                role = Role.Tab
+                this.selected = selected
+                onClick { press(); true }
+            },
+        horizontalArrangement = Arrangement.Center,
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Box {
+            Icon(
+                painterResource(if (selected) item.selectedIcon else item.icon),
+                contentDescription = item.label,
+                tint = fg,
+                modifier = Modifier.size(22.dp),
+            )
+            // Something new waits there (an update).
+            if (badge && !selected) {
+                Box(
+                    Modifier
+                        .align(Alignment.TopEnd)
+                        .offset(x = 3.dp, y = (-2).dp)
+                        .size(8.dp)
+                        .clip(CircleShape)
+                        .background(Oyi.Orange),
+                )
+            }
+        }
+        if (selected) {
+            Spacer(Modifier.width(7.dp))
+            Text(item.label, color = fg, fontSize = 14.sp, fontWeight = FontWeight.Bold, maxLines = 1)
         }
     }
 }
