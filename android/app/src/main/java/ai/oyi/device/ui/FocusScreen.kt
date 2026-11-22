@@ -1,28 +1,42 @@
 package ai.oyi.device.ui
 
+import ai.oyi.device.R
+import ai.oyi.device.ui.theme.MorphingLoader
+import ai.oyi.device.ui.theme.OyiMotion
+import ai.oyi.device.ui.theme.Tabular
+import androidx.compose.material3.LocalTextStyle
 import android.content.Intent
 import android.provider.Settings
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.expandVertically
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.material3.Icon
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -34,14 +48,14 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalFocusManager
-import androidx.compose.ui.text.TextStyle
-import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
@@ -52,6 +66,8 @@ import androidx.compose.ui.window.DialogProperties
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import ai.oyi.device.focus.Distraction
+import ai.oyi.device.model.AppUsage
+import ai.oyi.device.model.ForegroundApp
 import ai.oyi.device.focus.DriftState
 import ai.oyi.device.focus.FocusLive
 import ai.oyi.device.focus.FocusSession
@@ -76,62 +92,146 @@ private fun limitLabel(minutes: Int): String = when {
     else -> "${minutes}m a day"
 }
 
+/** Today's screen time, shown at the top of Focus. */
+data class ScreenTime(
+    val apps: List<AppUsage> = emptyList(),
+    val currentApp: ForegroundApp? = null,
+    val permission: Boolean = true,
+)
+
+/** Everything the Focus screen can ask for. The defaults do nothing, for previews. */
+class FocusActions(
+    val label: (String) -> String = { it },
+    val clearNotice: () -> Unit = {},
+    val loadApps: () -> Unit = {},
+    val startSession: (String, Int) -> Unit = { _, _ -> },
+    val finishSession: () -> Unit = {},
+    val setDistraction: (String, Int) -> Unit = { _, _ -> },
+    val removeDistraction: (String) -> Unit = {},
+    val addSite: (String) -> Boolean = { false },
+    val removeSite: (String) -> Unit = {},
+    val armLock: () -> Unit = {},
+    val disarmLock: () -> Unit = {},
+    val requestEmergencyExit: () -> Unit = {},
+    val cancelEmergencyExit: () -> Unit = {},
+    val setVoice: (Voice) -> Unit = {},
+    val openAccessibility: () -> Unit = {},
+    val openUsage: () -> Unit = {},
+)
+
 @Composable
-fun FocusScreen(viewModel: FocusViewModel = viewModel()) {
+fun FocusScreen(
+    viewModel: FocusViewModel = viewModel(),
+    screenTime: ScreenTime = ScreenTime(),
+    onAllowUsage: () -> Unit = {},
+) {
     val state by viewModel.state.collectAsStateWithLifecycle()
     val live by viewModel.live.collectAsStateWithLifecycle()
     val accessibilityReady by viewModel.accessibilityReady.collectAsStateWithLifecycle()
     val notice by viewModel.notice.collectAsStateWithLifecycle()
-    var showPicker by remember { mutableStateOf(false) }
+    val apps by viewModel.apps.collectAsStateWithLifecycle()
     val context = LocalContext.current
+    val actions = remember(viewModel) {
+        FocusActions(
+            label = viewModel::label,
+            clearNotice = viewModel::clearNotice,
+            loadApps = viewModel::loadApps,
+            startSession = viewModel::startSession,
+            finishSession = viewModel::finishSession,
+            setDistraction = viewModel::setDistraction,
+            removeDistraction = viewModel::removeDistraction,
+            addSite = viewModel::addSite,
+            removeSite = viewModel::removeSite,
+            armLock = viewModel::armLock,
+            disarmLock = viewModel::disarmLock,
+            requestEmergencyExit = viewModel::requestEmergencyExit,
+            cancelEmergencyExit = viewModel::cancelEmergencyExit,
+            setVoice = viewModel::setVoice,
+            openAccessibility = {
+                context.startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
+            },
+            openUsage = onAllowUsage,
+        )
+    }
+    FocusContent(state, live, accessibilityReady, notice, apps, actions, screenTime)
+}
+
+/** The Focus screen itself, without a view model (previews and snapshots use it). */
+@Composable
+fun FocusContent(
+    state: FocusState,
+    live: FocusLive,
+    accessibilityReady: Boolean,
+    notice: String,
+    apps: List<AppEntry>,
+    actions: FocusActions,
+    screenTime: ScreenTime = ScreenTime(),
+) {
+    var showPicker by remember { mutableStateOf(false) }
 
     LaunchedEffect(notice) {
         if (notice.isNotEmpty()) {
             delay(3500)
-            viewModel.clearNotice()
+            actions.clearNotice()
         }
     }
 
     LazyColumn(
-        modifier = Modifier
-            .fillMaxSize()
-            .padding(horizontal = 16.dp),
-        verticalArrangement = Arrangement.spacedBy(12.dp),
+        modifier = Modifier.fillMaxSize(),
+        contentPadding = PaddingValues(horizontal = Gutter),
+        verticalArrangement = Arrangement.spacedBy(CardGap),
     ) {
         item {
-            Spacer(Modifier.height(6.dp))
-            Text(
-                text = if (state.session != null) "In\nFocus" else "Focus",
-                fontSize = 36.sp,
-                lineHeight = 40.sp,
-                color = Oyi.OffWhite,
-                fontWeight = FontWeight.Light,
+            ScreenTitle(
+                title = "Focus",
+                subtitle = when {
+                    state.session != null -> "One task. Everything else waits."
+                    else -> "Pick one task and block the noise."
+                },
             )
-            if (notice.isNotEmpty()) {
-                Spacer(Modifier.height(8.dp))
-                Text(notice, color = Oyi.Orange, fontSize = 13.sp, fontWeight = FontWeight.Medium)
+            AnimatedVisibility(
+                visible = notice.isNotEmpty(),
+                enter = fadeIn(OyiMotion.defaultEffects()) + expandVertically(OyiMotion.defaultSpatial()),
+                exit = fadeOut(OyiMotion.fastEffects()) + shrinkVertically(OyiMotion.defaultSpatial()),
+            ) {
+                Row(
+                    modifier = Modifier
+                        .padding(bottom = 4.dp)
+                        .clip(Oyi.Pill)
+                        .background(Oyi.OrangeTint)
+                        .padding(horizontal = 14.dp, vertical = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Icon(painterResource(R.drawable.ic_bolt), null, tint = Oyi.Orange, modifier = Modifier.size(16.dp))
+                    Spacer(Modifier.width(8.dp))
+                    Text(notice, color = Oyi.Orange, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+                }
             }
         }
 
         if (!accessibilityReady) {
             item {
-                GlassCard(brush = Oyi.OrangeGlass, rim = Oyi.WarmRim) {
-                    Text(
-                        "Blocking is asleep",
-                        color = Oyi.Ink,
-                        fontSize = 17.sp,
-                        fontWeight = FontWeight.Bold,
-                    )
-                    Spacer(Modifier.height(4.dp))
-                    Text(
-                        "OYI needs Control access to see which app is open and cover the ones you block.",
-                        color = Oyi.InkSoft,
-                        fontSize = 13.sp,
+                OyiCard {
+                    CardHeader(
+                        title = "Blocking is asleep",
+                        subtitle = "Needs Control access",
+                        icon = R.drawable.ic_block,
+                        iconTint = Oyi.Orange,
+                        iconBackground = Oyi.OrangeTint,
                     )
                     Spacer(Modifier.height(12.dp))
-                    Pill(text = "Turn on Control access", selected = true, onDark = false) {
-                        context.startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
-                    }
+                    Text(
+                        "OYI uses Control access to see which app is open and to cover the ones you block.",
+                        color = Oyi.Muted,
+                        fontSize = 14.sp,
+                        lineHeight = 20.sp,
+                    )
+                    Spacer(Modifier.height(16.dp))
+                    OyiButton(
+                        text = "Turn on Control access",
+                        onClick = actions.openAccessibility,
+                        fullWidth = true,
+                    )
                 }
             }
         }
@@ -139,23 +239,25 @@ fun FocusScreen(viewModel: FocusViewModel = viewModel()) {
         item {
             val session = state.session
             if (session == null) {
-                StartBlockCard(onStart = viewModel::startSession)
+                StartBlockCard(onStart = actions.startSession)
             } else {
-                ActiveBlockCard(session = session, live = live, onDone = viewModel::finishSession)
+                ActiveBlockCard(session = session, live = live, onDone = actions.finishSession)
             }
         }
+
+        item { ScreenTimeCard(screenTime, actions.openUsage) }
 
         item {
             DistractionsCard(
                 state = state,
                 live = live,
-                labelOf = viewModel::label,
+                labelOf = actions.label,
                 onAdd = {
-                    viewModel.loadApps()
+                    actions.loadApps()
                     showPicker = true
                 },
-                onSetLimit = viewModel::setDistraction,
-                onRemove = viewModel::removeDistraction,
+                onSetLimit = actions.setDistraction,
+                onRemove = actions.removeDistraction,
             )
         }
 
@@ -163,8 +265,8 @@ fun FocusScreen(viewModel: FocusViewModel = viewModel()) {
             SitesCard(
                 sites = state.sites,
                 canLoosen = live.lock.canLoosen,
-                onAdd = viewModel::addSite,
-                onRemove = viewModel::removeSite,
+                onAdd = actions.addSite,
+                onRemove = actions.removeSite,
             )
         }
 
@@ -172,26 +274,24 @@ fun FocusScreen(viewModel: FocusViewModel = viewModel()) {
             LockCard(
                 status = live.lock,
                 now = live.now,
-                onArm = viewModel::armLock,
-                onDisarm = viewModel::disarmLock,
-                onEmergency = viewModel::requestEmergencyExit,
-                onCancelEmergency = viewModel::cancelEmergencyExit,
+                onArm = actions.armLock,
+                onDisarm = actions.disarmLock,
+                onEmergency = actions.requestEmergencyExit,
+                onCancelEmergency = actions.cancelEmergencyExit,
             )
         }
 
-        item {
-            VoiceCard(voice = state.voice, onPick = viewModel::setVoice)
-            Spacer(Modifier.height(28.dp))
-        }
+        item { VoiceCard(voice = state.voice, onPick = actions.setVoice) }
+
+        item { BottomClearance() }
     }
 
     if (showPicker) {
-        val apps by viewModel.apps.collectAsStateWithLifecycle()
         val taken = state.distractions.map { it.packageName }.toSet()
         AppPicker(
             apps = apps.filter { it.packageName !in taken },
             onPick = { entry ->
-                viewModel.setDistraction(entry.packageName, LIMIT_FOCUS_ONLY)
+                actions.setDistraction(entry.packageName, LIMIT_FOCUS_ONLY)
                 showPicker = false
             },
             onDismiss = { showPicker = false },
@@ -205,20 +305,16 @@ private fun StartBlockCard(onStart: (String, Int) -> Unit) {
     var minutes by rememberSaveable { mutableStateOf(SESSION_LENGTHS.first()) }
     val focus = LocalFocusManager.current
 
-    GlassCard {
+    OyiCard(padding = PaddingValues(start = 20.dp, end = 20.dp, top = 18.dp, bottom = 20.dp)) {
         Eyebrow("Next block")
         Spacer(Modifier.height(10.dp))
         BasicTextField(
             value = task,
             onValueChange = { task = it.take(80) },
             singleLine = true,
-            textStyle = TextStyle(
-                color = Oyi.OffWhite,
-                fontSize = 22.sp,
-                fontWeight = FontWeight.Light,
-            ),
+            textStyle = MaterialTheme.typography.headlineSmall.copy(color = Oyi.OffWhite, fontWeight = FontWeight.Medium),
             cursorBrush = SolidColor(Oyi.Orange),
-            keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
+            keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done, capitalization = KeyboardCapitalization.Sentences),
             keyboardActions = KeyboardActions(onDone = { focus.clearFocus() }),
             modifier = Modifier.fillMaxWidth(),
             decorationBox = { inner ->
@@ -226,49 +322,33 @@ private fun StartBlockCard(onStart: (String, Int) -> Unit) {
                     if (task.isEmpty()) {
                         Text(
                             "What will you work on?",
+                            style = MaterialTheme.typography.headlineSmall,
+                            fontWeight = FontWeight.Medium,
                             color = Oyi.Faint,
-                            fontSize = 22.sp,
-                            fontWeight = FontWeight.Light,
                         )
                     }
                     inner()
                 }
             },
         )
-        Spacer(Modifier.height(14.dp))
-        Box(Modifier.fillMaxWidth().height(1.dp).background(Oyi.Hairline))
-        Spacer(Modifier.height(14.dp))
-        Row(
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            SESSION_LENGTHS.forEach { length ->
-                Pill(text = "$length min", selected = minutes == length) { minutes = length }
-            }
-        }
         Spacer(Modifier.height(18.dp))
-        Box(
-            modifier = Modifier
-                .fillMaxWidth()
-                .clip(Oyi.Pill)
-                .background(Oyi.OrangeGlass)
-                .clickable {
-                    focus.clearFocus()
-                    onStart(task, minutes)
-                    task = ""
-                }
-                .padding(vertical = 15.dp),
-            contentAlignment = Alignment.Center,
-        ) {
-            Text("Begin", color = Oyi.Ink, fontSize = 15.sp, fontWeight = FontWeight.Bold)
-        }
-        Spacer(Modifier.height(10.dp))
-        Text(
-            "Drift into a distraction and OYI nudges you, twice. After that it locks them until the block ends.",
-            color = Oyi.Faint,
-            fontSize = 12.sp,
-            lineHeight = 17.sp,
+        SegmentedButtons(
+            options = SESSION_LENGTHS.map { "$it min" },
+            selected = SESSION_LENGTHS.indexOf(minutes).coerceAtLeast(0),
+            onSelect = { minutes = SESSION_LENGTHS[it] },
         )
+        Spacer(Modifier.height(12.dp))
+        OyiButton(
+            text = "Start $minutes-minute block",
+            onClick = {
+                focus.clearFocus()
+                onStart(task, minutes)
+                task = ""
+            },
+            fullWidth = true,
+        )
+        Spacer(Modifier.height(14.dp))
+        Hint("Drift into a distraction and OYI nudges you twice. After that it locks them until the block ends.")
     }
 }
 
@@ -278,49 +358,53 @@ private fun ActiveBlockCard(session: FocusSession, live: FocusLive, onDone: () -
     val remaining = (session.endsAt - live.now).coerceIn(0L, total)
     val progress = 1f - remaining.toFloat() / total.toFloat()
     val (status, statusColor) = when (live.drift.stage) {
-        DriftState.STAGE_LOCKDOWN -> "Locked down" to Oyi.Orange
-        DriftState.STAGE_FIRM -> "Drifting. Last warning." to Oyi.Orange
-        DriftState.STAGE_GENTLE -> "Drifting" to Oyi.Yellow
-        else -> "On track" to Oyi.Cream
+        DriftState.STAGE_LOCKDOWN -> "Locked down" to Oyi.Bad
+        DriftState.STAGE_FIRM -> "Drifting, last warning" to Oyi.Orange
+        DriftState.STAGE_GENTLE -> "Drifting" to Oyi.Warn
+        else -> "On track" to Oyi.Good
     }
 
-    GlassCard {
+    OyiCard(padding = PaddingValues(start = 20.dp, end = 20.dp, top = 28.dp, bottom = 20.dp)) {
         Column(
             modifier = Modifier.fillMaxWidth(),
             horizontalAlignment = Alignment.CenterHorizontally,
         ) {
-            Spacer(Modifier.height(8.dp))
-            FocusRing(progress = progress, modifier = Modifier.size(208.dp)) {
+            FocusRing(progress = progress, modifier = Modifier.size(216.dp), strokeWidth = 10.dp) {
                 Column(horizontalAlignment = Alignment.CenterHorizontally) {
                     Text(
                         text = formatClock(remaining),
+                        style = MaterialTheme.typography.displayMedium.merge(Tabular),
+                        fontSize = 48.sp,
+                        fontWeight = FontWeight.SemiBold,
                         color = Oyi.OffWhite,
-                        fontSize = 44.sp,
-                        fontWeight = FontWeight.ExtraLight,
-                        fontFamily = FontFamily.Monospace,
                     )
-                    Text("left", color = Oyi.Muted, fontSize = 12.sp)
+                    Text(
+                        "of ${total / 60_000L} min",
+                        color = Oyi.Muted,
+                        fontSize = 13.sp,
+                        style = LocalTextStyle.current.merge(Tabular),
+                    )
                 }
             }
-            Spacer(Modifier.height(18.dp))
+            Spacer(Modifier.height(22.dp))
             Text(
-                text = session.task.ifBlank { "Focus" },
+                text = session.task.ifBlank { "Deep work" },
+                style = MaterialTheme.typography.titleLarge,
                 color = Oyi.OffWhite,
-                fontSize = 20.sp,
-                fontWeight = FontWeight.Medium,
                 textAlign = TextAlign.Center,
                 maxLines = 2,
                 overflow = TextOverflow.Ellipsis,
             )
             Spacer(Modifier.height(8.dp))
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Box(Modifier.size(7.dp).clip(CircleShape).background(statusColor))
-                Spacer(Modifier.width(8.dp))
-                Text(status, color = statusColor, fontSize = 13.sp, fontWeight = FontWeight.Medium)
-            }
-            Spacer(Modifier.height(20.dp))
-            Pill(text = "I finished this", selected = true, onClick = onDone)
-            Spacer(Modifier.height(4.dp))
+            StatusLabel(status, statusColor)
+            Spacer(Modifier.height(22.dp))
+            OyiButton(
+                text = "I finished this",
+                onClick = onDone,
+                kind = ButtonKind.CREAM,
+                icon = R.drawable.ic_check,
+                fullWidth = true,
+            )
         }
     }
 }
@@ -335,34 +419,30 @@ private fun DistractionsCard(
     onRemove: (String) -> Unit,
 ) {
     var expanded by remember { mutableStateOf("") }
+    val count = state.distractions.size
 
-    GlassCard {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Column(modifier = Modifier.weight(1f)) {
-                Eyebrow("Distractions")
-                Spacer(Modifier.height(4.dp))
-                Text(
-                    text = if (state.distractions.isEmpty()) "Nothing yet" else "${state.distractions.size} apps",
-                    color = Oyi.OffWhite,
-                    fontSize = 19.sp,
-                    fontWeight = FontWeight.Medium,
-                )
-            }
-            Pill(text = "+ Add app", selected = true, onClick = onAdd)
+    OyiCard {
+        CardHeader(
+            title = "Distractions",
+            subtitle = when (count) {
+                0 -> "None yet"
+                1 -> "1 app"
+                else -> "$count apps"
+            },
+            icon = R.drawable.ic_apps,
+        ) {
+            OyiButton(text = "Add", onClick = onAdd, kind = ButtonKind.TONAL, icon = R.drawable.ic_add, small = true)
         }
 
         if (state.distractions.isEmpty()) {
-            Spacer(Modifier.height(10.dp))
-            Text(
-                "Pick the apps that pull you away. Give each a daily allowance, or block it outright.",
-                color = Oyi.Faint,
-                fontSize = 12.5.sp,
-                lineHeight = 18.sp,
-            )
+            Spacer(Modifier.height(12.dp))
+            Hint("Pick the apps that pull you away. Give each a daily allowance, or block it outright.")
+        } else {
+            Spacer(Modifier.height(8.dp))
         }
 
-        state.distractions.forEach { item ->
-            Spacer(Modifier.height(14.dp))
+        state.distractions.forEachIndexed { index, item ->
+            if (index > 0) RowDivider(inset = 54.dp)
             DistractionRow(
                 item = item,
                 label = labelOf(item.packageName),
@@ -392,45 +472,53 @@ private fun DistractionRow(
 ) {
     val detail = when {
         item.dailyLimitMin == LIMIT_BLOCKED -> "Always blocked"
-        item.dailyLimitMin < 0 -> "Blocked only when you drift in focus"
-        else -> "${usedMs / 60_000L}m of ${item.dailyLimitMin}m used today"
+        item.dailyLimitMin < 0 -> "Blocked when you drift"
+        else -> "${usedMs / 60_000L} of ${item.dailyLimitMin} min today"
     }
+    val chevron by animateFloatAsState(if (open) 90f else 0f, OyiMotion.fastSpatial(), label = "chevron")
     Column {
-        Row(
-            modifier = Modifier.fillMaxWidth().clickable(onClick = onToggle),
-            verticalAlignment = Alignment.CenterVertically,
+        ListRow(
+            title = label,
+            subtitle = detail,
+            leading = { AppIcon(item.packageName, label = label) },
+            onClick = onToggle,
         ) {
-            AppIcon(item.packageName)
-            Spacer(Modifier.width(12.dp))
-            Column(modifier = Modifier.weight(1f)) {
-                Text(
-                    label,
-                    color = Oyi.OffWhite,
-                    fontSize = 15.sp,
-                    fontWeight = FontWeight.Medium,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                )
-                Text(detail, color = Oyi.Muted, fontSize = 12.sp, maxLines = 1)
-            }
-            Text(if (open) "Close" else "Edit", color = Oyi.Faint, fontSize = 12.sp)
+            Icon(
+                painterResource(R.drawable.ic_chevron_right),
+                contentDescription = if (open) "Close" else "Edit",
+                tint = Oyi.Faint,
+                modifier = Modifier.size(22.dp).rotate(chevron),
+            )
         }
-        if (open) {
-            Spacer(Modifier.height(10.dp))
-            Row(
-                modifier = Modifier.horizontalScroll(rememberScrollState()),
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-            ) {
-                LIMIT_OPTIONS.forEach { option ->
-                    val looser = Distraction(item.packageName, option).looseness > item.looseness
-                    Pill(
-                        text = limitLabel(option),
-                        selected = option == item.dailyLimitMin,
-                        enabled = canLoosen || !looser,
-                        onClick = { onSetLimit(option) },
-                    )
+        AnimatedVisibility(
+            visible = open,
+            enter = fadeIn(OyiMotion.defaultEffects()) + expandVertically(OyiMotion.defaultSpatial()),
+            exit = fadeOut(OyiMotion.fastEffects()) + shrinkVertically(OyiMotion.defaultSpatial()),
+        ) {
+            Column(Modifier.padding(start = 54.dp, bottom = 12.dp)) {
+                Row(
+                    modifier = Modifier.horizontalScroll(rememberScrollState()),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    LIMIT_OPTIONS.forEach { option ->
+                        val looser = Distraction(item.packageName, option).looseness > item.looseness
+                        Pill(
+                            text = limitLabel(option),
+                            selected = option == item.dailyLimitMin,
+                            enabled = canLoosen || !looser,
+                            onClick = { onSetLimit(option) },
+                        )
+                    }
                 }
-                Pill(text = "Remove", enabled = canLoosen, onClick = onRemove)
+                Spacer(Modifier.height(10.dp))
+                OyiButton(
+                    text = "Remove",
+                    onClick = onRemove,
+                    kind = ButtonKind.DANGER,
+                    icon = R.drawable.ic_close,
+                    enabled = canLoosen,
+                    small = true,
+                )
             }
         }
     }
@@ -452,41 +540,41 @@ private fun SitesCard(
         }
     }
 
-    GlassCard {
-        Eyebrow("Blocked sites")
-        Spacer(Modifier.height(10.dp))
+    OyiCard {
+        CardHeader(
+            title = "Blocked sites",
+            subtitle = if (sites.isEmpty()) "None yet" else if (sites.size == 1) "1 site" else "${sites.size} sites",
+            icon = R.drawable.ic_language,
+        )
+        Spacer(Modifier.height(16.dp))
         Row(verticalAlignment = Alignment.CenterVertically) {
-            BasicTextField(
+            OyiTextField(
                 value = draft,
                 onValueChange = { draft = it.take(120) },
-                singleLine = true,
-                textStyle = TextStyle(color = Oyi.OffWhite, fontSize = 16.sp),
-                cursorBrush = SolidColor(Oyi.Orange),
+                placeholder = "youtube.com",
+                icon = R.drawable.ic_link,
                 keyboardOptions = KeyboardOptions(
                     keyboardType = KeyboardType.Uri,
                     imeAction = ImeAction.Done,
                 ),
                 keyboardActions = KeyboardActions(onDone = { submit() }),
                 modifier = Modifier.weight(1f),
-                decorationBox = { inner ->
-                    Box {
-                        if (draft.isEmpty()) {
-                            Text("youtube.com", color = Oyi.Faint, fontSize = 16.sp)
-                        }
-                        inner()
-                    }
-                },
             )
-            Spacer(Modifier.width(10.dp))
-            Pill(text = "Block", selected = draft.isNotBlank(), onClick = { submit() })
+            Spacer(Modifier.width(8.dp))
+            OyiButton(
+                text = "Block",
+                onClick = { submit() },
+                kind = if (draft.isNotBlank()) ButtonKind.PRIMARY else ButtonKind.TONAL,
+                enabled = draft.isNotBlank(),
+            )
         }
-        if (sites.isNotEmpty()) {
-            Spacer(Modifier.height(12.dp))
-            Box(Modifier.fillMaxWidth().height(1.dp).background(Oyi.Hairline))
-        }
-        sites.forEach { site ->
-            Spacer(Modifier.height(12.dp))
-            Row(verticalAlignment = Alignment.CenterVertically) {
+        if (sites.isNotEmpty()) Spacer(Modifier.height(6.dp))
+        sites.forEachIndexed { index, site ->
+            if (index > 0) RowDivider(inset = 0.dp)
+            Row(
+                modifier = Modifier.fillMaxWidth().heightIn(min = 52.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
                 Text(
                     site,
                     color = Oyi.OffWhite,
@@ -495,21 +583,16 @@ private fun SitesCard(
                     overflow = TextOverflow.Ellipsis,
                     modifier = Modifier.weight(1f),
                 )
-                Text(
-                    "Remove",
-                    color = if (canLoosen) Oyi.Muted else Oyi.Faint.copy(alpha = 0.5f),
-                    fontSize = 12.sp,
-                    modifier = Modifier.clickable { onRemove(site) }.padding(6.dp),
+                IconButton(
+                    icon = R.drawable.ic_close,
+                    contentDescription = "Unblock $site",
+                    onClick = { onRemove(site) },
+                    enabled = canLoosen,
                 )
             }
         }
-        Spacer(Modifier.height(10.dp))
-        Text(
-            "Works in Chrome, Firefox, Brave, Edge, Opera, Samsung Internet and DuckDuckGo.",
-            color = Oyi.Faint,
-            fontSize = 12.sp,
-            lineHeight = 17.sp,
-        )
+        Spacer(Modifier.height(12.dp))
+        Hint("Works in Chrome, Firefox, Brave, Edge, Opera, Samsung Internet and DuckDuckGo.")
     }
 }
 
@@ -534,26 +617,26 @@ private fun LockCard(
     val left = formatSpan(status.until - now)
     val armed = status.phase != LockPhase.OFF
 
-    GlassCard(
-        brush = if (armed) Oyi.CreamGlass else Oyi.SmokedGlass,
-        rim = if (armed) Oyi.WarmRim else Oyi.DarkRim,
-    ) {
-        val ink = if (armed) Oyi.Ink else Oyi.OffWhite
-        val soft = if (armed) Oyi.InkSoft else Oyi.Muted
-        Eyebrow("Monthly lock", color = soft)
-        Spacer(Modifier.height(6.dp))
-        val headline = when (status.phase) {
-            LockPhase.OFF -> "Off"
-            LockPhase.LOCKED -> "Locked"
-            LockPhase.WINDOW_OPEN -> "Window open"
-            LockPhase.EMERGENCY_WAIT -> "Exit requested"
-            LockPhase.EMERGENCY_OPEN -> "Exit open"
+    OyiCard {
+        val (headline, label, labelColor) = when (status.phase) {
+            LockPhase.OFF -> Triple("Monthly lock", "Off", Oyi.Faint)
+            LockPhase.LOCKED -> Triple("Monthly lock", "Locked", Oyi.Orange)
+            LockPhase.WINDOW_OPEN -> Triple("Monthly lock", "Window open", Oyi.Good)
+            LockPhase.EMERGENCY_WAIT -> Triple("Monthly lock", "Exit requested", Oyi.Warn)
+            LockPhase.EMERGENCY_OPEN -> Triple("Monthly lock", "Exit open", Oyi.Good)
         }
-        Text(headline, color = ink, fontSize = 26.sp, fontWeight = FontWeight.Light)
-        Spacer(Modifier.height(6.dp))
+        CardHeader(
+            title = headline,
+            icon = if (status.phase == LockPhase.LOCKED || status.phase == LockPhase.EMERGENCY_WAIT) R.drawable.ic_lock else R.drawable.ic_lock_open,
+            iconTint = if (armed) Oyi.Orange else Oyi.OffWhite,
+            iconBackground = if (armed) Oyi.OrangeTint else Oyi.Control,
+        ) {
+            StatusLabel(label, labelColor)
+        }
+        Spacer(Modifier.height(12.dp))
         val body = when (status.phase) {
             LockPhase.OFF ->
-                "Turn it on and you can still add blocks, but removing or relaxing them only opens on the 1st of each month."
+                "You can still add blocks, but removing or relaxing them only opens on the 1st of each month."
             LockPhase.LOCKED ->
                 if (status.needsSync) {
                     "Today is the window. Go online once so OYI can check the date."
@@ -564,54 +647,55 @@ private fun LockCard(
             LockPhase.EMERGENCY_WAIT -> "The lock opens for one hour in $left."
             LockPhase.EMERGENCY_OPEN -> "Closes in $left. Change what you must."
         }
-        Text(body, color = soft, fontSize = 13.sp, lineHeight = 19.sp)
+        Text(body, color = Oyi.Muted, fontSize = 14.sp, lineHeight = 20.sp)
 
         if (status.phase == LockPhase.LOCKED && !status.needsSync) {
-            Spacer(Modifier.height(14.dp))
+            Spacer(Modifier.height(16.dp))
             MonthBar(now = now, opens = status.until)
         }
 
         Spacer(Modifier.height(16.dp))
-        Row(
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            when (status.phase) {
-                LockPhase.OFF -> Pill(
-                    text = if (confirmArm) "Tap again to lock" else "Turn on lock",
-                    selected = true,
-                ) {
+        when (status.phase) {
+            LockPhase.OFF -> OyiButton(
+                text = if (confirmArm) "Tap again to lock" else "Turn on lock",
+                kind = if (confirmArm) ButtonKind.PRIMARY else ButtonKind.TONAL,
+                icon = R.drawable.ic_lock,
+                fullWidth = true,
+                onClick = {
                     if (confirmArm) {
                         confirmArm = false
                         onArm()
                     } else {
                         confirmArm = true
                     }
-                }
-                LockPhase.LOCKED -> Pill(
-                    text = if (confirmExit) "Tap again: 24h wait" else "Emergency exit",
-                    onDark = false,
-                ) {
+                },
+            )
+            LockPhase.LOCKED -> OyiButton(
+                text = if (confirmExit) "Tap again: wait 24 hours" else "Emergency exit",
+                kind = if (confirmExit) ButtonKind.DANGER else ButtonKind.GHOST,
+                fullWidth = true,
+                onClick = {
                     if (confirmExit) {
                         confirmExit = false
                         onEmergency()
                     } else {
                         confirmExit = true
                     }
-                }
-                LockPhase.WINDOW_OPEN, LockPhase.EMERGENCY_OPEN -> Pill(
-                    text = "Turn off lock",
-                    selected = true,
-                    onDark = false,
-                    onClick = onDisarm,
-                )
-                LockPhase.EMERGENCY_WAIT -> Pill(
-                    text = "Cancel exit",
-                    selected = true,
-                    onDark = false,
-                    onClick = onCancelEmergency,
-                )
-            }
+                },
+            )
+            LockPhase.WINDOW_OPEN, LockPhase.EMERGENCY_OPEN -> OyiButton(
+                text = "Turn off lock",
+                kind = ButtonKind.TONAL,
+                icon = R.drawable.ic_lock_open,
+                fullWidth = true,
+                onClick = onDisarm,
+            )
+            LockPhase.EMERGENCY_WAIT -> OyiButton(
+                text = "Cancel exit",
+                kind = ButtonKind.TONAL,
+                fullWidth = true,
+                onClick = onCancelEmergency,
+            )
         }
     }
 }
@@ -627,32 +711,29 @@ private fun MonthBar(now: Long, opens: Long) {
     Box(
         modifier = Modifier
             .fillMaxWidth()
-            .height(4.dp)
+            .height(6.dp)
             .clip(Oyi.Pill)
-            .background(Color(0x1F0A0807)),
+            .background(Oyi.Control),
     ) {
         Box(
             modifier = Modifier
                 .fillMaxWidth(fraction)
-                .height(4.dp)
+                .height(6.dp)
                 .clip(Oyi.Pill)
-                .background(Oyi.Ink),
+                .background(Oyi.Orange),
         )
     }
 }
 
 @Composable
 private fun VoiceCard(voice: Voice, onPick: (Voice) -> Unit) {
-    GlassCard {
-        Eyebrow("Voice")
-        Spacer(Modifier.height(4.dp))
-        Text(
-            "How OYI talks when you drift",
-            color = Oyi.OffWhite,
-            fontSize = 15.sp,
-            fontWeight = FontWeight.Medium,
+    OyiCard {
+        CardHeader(
+            title = "Voice",
+            subtitle = "How OYI talks when you drift",
+            icon = R.drawable.ic_graphic_eq,
         )
-        Spacer(Modifier.height(12.dp))
+        Spacer(Modifier.height(16.dp))
         Row(
             modifier = Modifier.horizontalScroll(rememberScrollState()),
             horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -683,66 +764,139 @@ private fun AppPicker(
             modifier = Modifier
                 .fillMaxSize()
                 .background(Oyi.Black)
-                .padding(horizontal = 20.dp, vertical = 24.dp),
+                .statusBarsPadding()
+                .padding(horizontal = Gutter),
         ) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
+            Row(
+                modifier = Modifier.padding(top = 12.dp, bottom = 4.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
                 Text(
-                    "Add a\ndistraction",
+                    "Add a distraction",
+                    style = MaterialTheme.typography.headlineMedium,
                     color = Oyi.OffWhite,
-                    fontSize = 30.sp,
-                    lineHeight = 34.sp,
-                    fontWeight = FontWeight.Light,
                     modifier = Modifier.weight(1f),
                 )
-                Pill(text = "Close", onClick = onDismiss)
+                IconButton(
+                    icon = R.drawable.ic_close,
+                    contentDescription = "Close",
+                    onClick = onDismiss,
+                    tint = Oyi.OffWhite,
+                    background = Oyi.Raised,
+                )
             }
-            Spacer(Modifier.height(18.dp))
-            BasicTextField(
+            Spacer(Modifier.height(12.dp))
+            OyiTextField(
                 value = query,
                 onValueChange = { query = it.take(40) },
-                singleLine = true,
-                textStyle = TextStyle(color = Oyi.OffWhite, fontSize = 17.sp),
-                cursorBrush = SolidColor(Oyi.Orange),
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .clip(Oyi.Pill)
-                    .background(Color(0x14FFFFFF))
-                    .padding(horizontal = 18.dp, vertical = 13.dp),
-                decorationBox = { inner ->
-                    Box {
-                        if (query.isEmpty()) Text("Search apps", color = Oyi.Faint, fontSize = 17.sp)
-                        inner()
-                    }
-                },
+                placeholder = "Search apps",
+                icon = R.drawable.ic_apps,
+                modifier = Modifier.fillMaxWidth(),
             )
-            Spacer(Modifier.height(10.dp))
+            Spacer(Modifier.height(8.dp))
             if (apps.isEmpty()) {
-                Text("Loading your apps…", color = Oyi.Muted, fontSize = 13.sp, modifier = Modifier.padding(8.dp))
+                Row(Modifier.padding(vertical = 24.dp), verticalAlignment = Alignment.CenterVertically) {
+                    MorphingLoader(color = Oyi.Muted, size = 20.dp)
+                    Spacer(Modifier.width(10.dp))
+                    Text("Loading your apps", color = Oyi.Muted, fontSize = 14.sp)
+                }
             }
-            LazyColumn(modifier = Modifier.fillMaxSize()) {
+            LazyColumn(
+                modifier = Modifier.fillMaxSize(),
+                contentPadding = PaddingValues(bottom = 24.dp),
+            ) {
                 items(shown, key = { it.packageName }) { entry ->
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .clickable { onPick(entry) }
-                            .padding(vertical = 10.dp, horizontal = 4.dp),
-                        verticalAlignment = Alignment.CenterVertically,
+                    ListRow(
+                        title = entry.label,
+                        leading = { AppIcon(entry.packageName, label = entry.label) },
+                        onClick = { onPick(entry) },
                     ) {
-                        AppIcon(entry.packageName, size = 40.dp)
-                        Spacer(Modifier.width(14.dp))
-                        Text(
-                            entry.label,
-                            color = Oyi.OffWhite,
-                            fontSize = 16.sp,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                            modifier = Modifier.weight(1f),
-                        )
-                        Text("Add", color = Oyi.Orange, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+                        Icon(painterResource(R.drawable.ic_add), contentDescription = "Add", tint = Oyi.Orange, modifier = Modifier.size(22.dp))
                     }
                 }
             }
         }
+    }
+}
+
+@Composable
+private fun ScreenTimeCard(state: ScreenTime, onAllow: () -> Unit) {
+    OyiCard {
+        CardHeader(
+            title = "Screen time",
+            subtitle = state.currentApp?.let { "Now in ${it.label}" } ?: "Today",
+            icon = R.drawable.ic_timer,
+        ) {
+            val total = state.apps.sumOf { it.totalMs }
+            if (total > 0) {
+                Text(
+                    formatDuration(total),
+                    style = MaterialTheme.typography.headlineSmall.merge(Tabular),
+                    color = Oyi.OffWhite,
+                )
+            }
+        }
+        if (state.apps.isEmpty()) {
+            Spacer(Modifier.height(12.dp))
+            if (state.permission) {
+                Hint("Nothing counted yet today.")
+            } else {
+                Hint("Allow usage access to see where your time goes.")
+                Spacer(Modifier.height(12.dp))
+                OyiButton(text = "Allow usage access", onClick = onAllow, kind = ButtonKind.TONAL, small = true)
+            }
+        } else {
+            Spacer(Modifier.height(14.dp))
+            val max = state.apps.maxOf { it.totalMs }.coerceAtLeast(1L)
+            state.apps.take(4).forEachIndexed { index, app ->
+                if (index > 0) Spacer(Modifier.height(12.dp))
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    AppIcon(app.packageName, size = 32.dp, label = app.label)
+                    Spacer(Modifier.width(12.dp))
+                    Column(Modifier.weight(1f)) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text(
+                                app.label,
+                                color = Oyi.OffWhite,
+                                fontSize = 14.sp,
+                                fontWeight = FontWeight.SemiBold,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                                modifier = Modifier.weight(1f),
+                            )
+                            Text(
+                                formatDuration(app.totalMs),
+                                color = Oyi.Muted,
+                                fontSize = 13.sp,
+                                style = LocalTextStyle.current.merge(Tabular),
+                            )
+                        }
+                        Spacer(Modifier.height(6.dp))
+                        Box(Modifier.fillMaxWidth().height(4.dp).clip(Oyi.Pill).background(Oyi.Control)) {
+                            Box(
+                                Modifier
+                                    .fillMaxWidth((app.totalMs.toFloat() / max).coerceIn(0.03f, 1f))
+                                    .height(4.dp)
+                                    .clip(Oyi.Pill)
+                                    .background(if (index == 0) Oyi.Orange else Oyi.Muted),
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+
+private fun formatDuration(millis: Long): String {
+    val minutes = millis / 60_000
+    val hours = minutes / 60
+    val rest = minutes % 60
+    return when {
+        hours > 0 -> if (rest > 0) "${hours}h ${rest}m" else "${hours}h"
+        minutes > 0 -> "${minutes}m"
+        else -> "<1m"
     }
 }
 

@@ -77,6 +77,24 @@ class SettingsStore(context: Context) {
         refresh()
     }
 
+    fun setIslandNudge(xDp: Int, yDp: Int) {
+        prefs.edit()
+            .putInt(KEY_NUDGE_X, xDp.coerceIn(-NUDGE_LIMIT, NUDGE_LIMIT))
+            .putInt(KEY_NUDGE_Y, yDp.coerceIn(-NUDGE_LIMIT, NUDGE_LIMIT))
+            .apply()
+        refresh()
+    }
+
+    fun setWallpaperColors(enabled: Boolean) {
+        prefs.edit().putBoolean(KEY_WALLPAPER_COLORS, enabled).apply()
+        refresh()
+    }
+
+    fun setLiveUpdates(enabled: Boolean) {
+        prefs.edit().putBoolean(KEY_LIVE_UPDATES, enabled).apply()
+        refresh()
+    }
+
     fun refresh() {
         _settings.value = read()
     }
@@ -91,6 +109,10 @@ class SettingsStore(context: Context) {
             overlayEnabled = prefs.getBoolean(KEY_OVERLAY_ENABLED, false),
             autoStart = prefs.getBoolean(KEY_AUTO_START, false),
             deviceId = securePrefs.getString(KEY_DEVICE_ID, "").orEmpty(),
+            islandNudgeXDp = prefs.getInt(KEY_NUDGE_X, 0),
+            islandNudgeYDp = prefs.getInt(KEY_NUDGE_Y, 0),
+            wallpaperColors = prefs.getBoolean(KEY_WALLPAPER_COLORS, false),
+            liveUpdates = prefs.getBoolean(KEY_LIVE_UPDATES, true),
         )
     }
 
@@ -100,5 +122,15 @@ class SettingsStore(context: Context) {
         const val KEY_DEVICE_ID = "device_id"
         const val KEY_OVERLAY_ENABLED = "overlay_enabled"
         const val KEY_AUTO_START = "auto_start"
+        const val KEY_NUDGE_X = "island_nudge_x"
+        const val KEY_NUDGE_Y = "island_nudge_y"
+        const val KEY_WALLPAPER_COLORS = "wallpaper_colors"
+        const val KEY_LIVE_UPDATES = "live_updates"
+
+        /** How far the island can be nudged off the detected camera, in dp. */
+        const val NUDGE_LIMIT = ISLAND_NUDGE_LIMIT
     }
 }
+
+/** How far the island can be nudged off the detected camera, in dp, either way. */
+const val ISLAND_NUDGE_LIMIT = 70

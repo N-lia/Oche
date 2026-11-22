@@ -1,38 +1,51 @@
 package ai.oyi.device.ui.island
 
 import ai.oyi.device.R
+import androidx.compose.ui.unit.LayoutDirection
+import androidx.compose.ui.unit.Density
+import androidx.compose.ui.graphics.Shape
+import androidx.compose.ui.geometry.RoundRect
+import androidx.compose.ui.geometry.Rect
+import androidx.compose.runtime.SideEffect
+import androidx.compose.animation.core.spring
+import androidx.compose.animation.core.FiniteAnimationSpec
 import ai.oyi.device.model.IslandKind
 import ai.oyi.device.model.IslandState
+import ai.oyi.device.ui.theme.MorphingLoader
+import ai.oyi.device.ui.theme.OyiMotion
+import ai.oyi.device.ui.theme.PressMorph
+import ai.oyi.device.ui.theme.Tabular
+import androidx.compose.material3.LocalTextStyle
+import ai.oyi.device.ui.theme.liquidGlass
 import androidx.annotation.DrawableRes
 import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.SizeTransform
+import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.RepeatMode
-import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.keyframes
 import androidx.compose.animation.core.rememberInfiniteTransition
-import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
+import androidx.compose.animation.expandHorizontally
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.scaleIn
-import androidx.compose.animation.togetherWith
-import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.scaleOut
+import androidx.compose.animation.shrinkHorizontally
+import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
-import androidx.compose.foundation.layout.requiredSize
-import androidx.compose.runtime.CompositionLocalProvider
-import androidx.compose.runtime.staticCompositionLocalOf
-import androidx.compose.ui.graphics.graphicsLayer
-import androidx.compose.ui.platform.LocalInspectionMode
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.gestures.detectVerticalDragGestures
 import androidx.compose.foundation.layout.Arrangement
@@ -43,70 +56,83 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.requiredSize
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.draw.scale
-import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Outline
+import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.PathMeasure
+import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.drawscope.DrawScope
+import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.ui.platform.LocalInspectionMode
 import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.semantics.LiveRegionMode
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.liveRegion
-import androidx.compose.ui.semantics.LiveRegionMode
 import androidx.compose.ui.semantics.semantics
-import androidx.compose.ui.text.font.FontFamily
+
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.DpSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.delay
 import kotlin.math.PI
+import kotlin.math.abs
 import kotlin.math.sin
 
-/** Colours of the island: always black glass, one accent per state. */
+/** Colours of the island: black glass that hides the camera, one accent per state. */
 internal object IslandColors {
-    val Shell = Color(0xFF050506)
-    val Rim = Brush.verticalGradient(listOf(Color(0x40FFFFFF), Color(0x0DFFFFFF)))
+    val Shell = Color(0xFF000000)
     val Ink = Color(0xFFF8F6F1)
     val Dim = Color(0xFF9C978E)
     val Cream = Color(0xFFF7EDD0)
     val InkOnLight = Color(0xFF0A0807)
+    val BrandAccent = Color(0xFFF08A65)
 
-    fun tone(tone: IslandTone): Color = when (tone) {
+    /** A thin, top-lit rim: the glass edge catching light above the camera. */
+    val Rim = Brush.verticalGradient(listOf(Color(0x2EFFFFFF), Color(0x14FFFFFF), Color(0x14FFFFFF)))
+
+    fun tone(tone: IslandTone, accent: Color = BrandAccent): Color = when (tone) {
         IslandTone.NEUTRAL -> Color(0xFF8A867E)
-        IslandTone.ACCENT -> Color(0xFFF08A65)
+        IslandTone.ACCENT -> accent
         IslandTone.LIVE -> Color(0xFF5FD38D)
         IslandTone.OK -> Color(0xFF5FD38D)
         IslandTone.WARN -> Color(0xFFF5B547)
         IslandTone.BAD -> Color(0xFFFF6B6B)
     }
 }
-
-private val IslandSpring = spring<Float>(dampingRatio = 0.72f, stiffness = Spring.StiffnessMediumLow)
 
 /**
  * The OYI Dynamic Island.
@@ -115,8 +141,20 @@ private val IslandSpring = spring<Float>(dampingRatio = 0.72f, stiffness = Sprin
  * apps and the header inside OYI. It morphs between a resting capsule, a
  * compact status pill and an expanded card (see [islandSpec]).
  *
- * Gestures: tap opens or closes the detail (or closes a result), swipe up
- * folds it away, long press opens OYI.
+ * Motion is split in two, Material 3 Expressive style: the shell resizes on
+ * a spatial spring first, then the content fades and scales in on an
+ * effects spring. Each state moves the face its own way ([IslandMotion]),
+ * and a light runs around the rim while work is under way.
+ *
+ * Gestures: tap opens or closes the detail (or closes a result), double tap
+ * interrupts a spoken reply or stops phone control, swipe up folds it away,
+ * swipe sideways (or tap the second bubble) swaps to the other activity,
+ * long press opens OYI.
+ *
+ * [secondary] is an activity running behind the one shown (for example the
+ * agent talking while phone control runs). It sits in a small bubble beside
+ * the island. [cutout] is the size of the camera hole the island is centred
+ * on, so content can keep clear of it; zero inside the app.
  */
 @Composable
 fun DynamicIsland(
@@ -131,9 +169,105 @@ fun DynamicIsland(
     /** Show Caleb's expression stickers instead of plain icons. */
     faces: Boolean = true,
     initiallyExpanded: Boolean = false,
+    secondary: IslandState? = null,
+    cutout: DpSize = DpSize.Zero,
+    /** The accent for ACCENT states: brand orange, or the wallpaper's colour. */
+    accent: Color = IslandColors.BrandAccent,
+    /** Called as the island starts to change size (the overlay makes room first). */
+    onMorph: () -> Unit = {},
+) {
+    val bubbleSlot by animateDpAsState(
+        targetValue = if (secondary != null) BubbleSize + BubbleGap else 0.dp,
+        animationSpec = OyiMotion.defaultSpatial(),
+        label = "bubbleSlot",
+    )
+    // Keep showing the last one while the bubble animates away.
+    val lastSecondaryHolder = remember { arrayOf(secondary ?: IslandState()) }
+    if (secondary != null) lastSecondaryHolder[0] = secondary
+    val lastSecondary = lastSecondaryHolder[0]
+    // The island stays centred (on the camera, in the overlay): the bubble's
+    // slot is mirrored by an empty one on the other side.
+    Row(modifier, verticalAlignment = Alignment.Top) {
+        Spacer(Modifier.width(bubbleSlot))
+        Island(state, idle, level, onAction, onLongPress, inApp, faces, initiallyExpanded, secondary != null, cutout, accent, onMorph)
+        BubbleSlot(
+            width = bubbleSlot,
+            visible = secondary != null,
+            state = lastSecondary,
+            faces = faces,
+            accent = accent,
+            height = compactHeight(cutout),
+            onTap = { onAction(IslandAction.SWAP) },
+        )
+    }
+}
+
+/** The second bubble, kept out of the Row so AnimatedVisibility is the plain one. */
+@Composable
+private fun BubbleSlot(
+    width: Dp,
+    visible: Boolean,
+    state: IslandState,
+    faces: Boolean,
+    accent: Color,
+    height: Dp,
+    onTap: () -> Unit,
+) {
+    Box(Modifier.width(width), contentAlignment = Alignment.CenterEnd) {
+        AnimatedVisibility(
+            visible = visible,
+            enter = scaleIn(OyiMotion.bouncy(), initialScale = 0.2f) + fadeIn(OyiMotion.fastEffects()) +
+                expandHorizontally(OyiMotion.defaultSpatial(), expandFrom = Alignment.Start),
+            exit = scaleOut(OyiMotion.fastEffects(), targetScale = 0.4f) + fadeOut(OyiMotion.fastEffects()) +
+                shrinkHorizontally(OyiMotion.defaultSpatial(), shrinkTowards = Alignment.Start),
+        ) {
+            SecondaryBubble(state, faces, accent, height, onTap)
+        }
+    }
+}
+
+/** The island's own springs: a little more bounce than the rest of the app. */
+internal object IslandSpring {
+    fun <T> size(): FiniteAnimationSpec<T> = spring(dampingRatio = 0.62f, stiffness = 340f)
+    fun <T> content(): FiniteAnimationSpec<T> = spring(dampingRatio = 0.55f, stiffness = 500f)
+}
+
+/**
+ * A capsule while it is short, a rounded card once it is tall: the radius
+ * is half the current height, capped at [maxRadius]. Because it reads the
+ * live size, every frame of a morph has a matching outline.
+ */
+private class IslandShape(private val maxRadius: Dp) : Shape {
+    override fun createOutline(size: Size, layoutDirection: LayoutDirection, density: Density): Outline {
+        val r = minOf(size.height / 2f, size.width / 2f, with(density) { maxRadius.toPx() })
+        return Outline.Rounded(RoundRect(Rect(Offset.Zero, size), CornerRadius(r, r)))
+    }
+}
+
+private val BubbleSize = 38.dp
+private val BubbleGap = 6.dp
+
+private fun compactHeight(cutout: DpSize): Dp =
+    if (cutout.height > 0.dp) maxOf(40.dp, cutout.height + 12.dp) else 40.dp
+
+@Composable
+private fun Island(
+    state: IslandState,
+    idle: IslandIdleInfo,
+    level: Float,
+    onAction: (IslandAction) -> Unit,
+    onLongPress: () -> Unit,
+    inApp: Boolean,
+    faces: Boolean,
+    initiallyExpanded: Boolean,
+    canSwap: Boolean,
+    cutout: DpSize,
+    accent: Color,
+    onMorph: () -> Unit,
 ) {
     var expanded by remember { mutableStateOf(initiallyExpanded) }
     val haptics = LocalHapticFeedback.current
+    val still = LocalInspectionMode.current
 
     // A new state starts folded; a card that needs the user buzzes once.
     LaunchedEffect(state.kind, state.commandId) {
@@ -153,30 +287,80 @@ fun DynamicIsland(
     val spec = islandSpec(state, idle, expanded).let { spec ->
         if (inApp) spec.copy(actions = spec.actions - IslandAction.OPEN_APP) else spec
     }
-    val tone = IslandColors.tone(spec.tone)
-    val corner by animateDpAsState(
-        targetValue = if (spec.size == IslandSize.EXPANDED) 30.dp else 22.dp,
-        animationSpec = spring(dampingRatio = 0.8f, stiffness = Spring.StiffnessMediumLow),
-        label = "corner",
+    val tone by animateColorAsState(
+        targetValue = IslandColors.tone(spec.tone, accent),
+        animationSpec = OyiMotion.defaultEffects(),
+        label = "tone",
     )
-    val shape = RoundedCornerShape(corner)
+    // The corners follow the island's live height, so the outline and the
+    // size can never disagree mid-morph (that mismatch read as a snap).
+    val shape = remember(cutout) { IslandShape(maxRadius = 32.dp) }
+    // Tell the host before the size starts moving, so a window can make room.
+    val lastSize = remember { arrayOf(spec.size) }
+    if (lastSize[0] != spec.size) {
+        lastSize[0] = spec.size
+        SideEffect { onMorph() }
+    }
+    val elevation by animateDpAsState(
+        targetValue = if (spec.size == IslandSize.REST) 8.dp else 20.dp,
+        animationSpec = OyiMotion.defaultEffects(),
+        label = "elevation",
+    )
+
+    // The light that runs around the rim while work is under way.
+    val rimPhase = if (spec.progressRim && !still) {
+        val transition = rememberInfiniteTransition(label = "rim")
+        val value by transition.animateFloat(
+            initialValue = 0f,
+            targetValue = 1f,
+            animationSpec = infiniteRepeatable(tween(1_600, easing = LinearEasing)),
+            label = "rimPhase",
+        )
+        value
+    } else {
+        0.18f
+    }
+    val rimAlpha by animateFloatAsState(
+        targetValue = if (spec.progressRim) 1f else 0f,
+        animationSpec = OyiMotion.slowEffects(),
+        label = "rimAlpha",
+    )
 
     Box(
-        modifier = modifier
+        modifier = Modifier
             .semantics {
                 liveRegion = LiveRegionMode.Polite
                 contentDescription = listOf(spec.title, spec.detail).filter { it.isNotBlank() }.joinToString(". ")
             }
-            .shadow(if (spec.size == IslandSize.REST) 8.dp else 18.dp, shape, clip = false)
-            .clip(shape)
-            .background(IslandColors.Shell)
-            .border(1.dp, IslandColors.Rim, shape)
-            .pointerInput(spec.expandable, spec.dismissable) {
+            .liquidGlass(
+                shape = shape,
+                fill = SolidColor(IslandColors.Shell),
+                backdrop = null,
+                elevation = elevation,
+                rim = IslandColors.Rim,
+            )
+            .drawWithContent {
+                drawContent()
+                if (rimAlpha > 0f) {
+                    drawRimLight(shape.createOutline(size, layoutDirection, this), rimPhase, tone, rimAlpha)
+                }
+            }
+            .pointerInput(spec.expandable, spec.dismissable, spec.doubleTap) {
                 detectTapGestures(
                     onTap = {
                         when {
-                            spec.expandable -> expanded = !expanded
+                            spec.expandable -> {
+                                // Room first (the overlay window grows), then the morph.
+                                onMorph()
+                                expanded = !expanded
+                            }
                             spec.dismissable -> onAction(IslandAction.DISMISS)
+                        }
+                    },
+                    onDoubleTap = spec.doubleTap?.let { action ->
+                        { _: Offset ->
+                            haptics.performHapticFeedback(HapticFeedbackType.LongPress)
+                            onAction(action)
                         }
                     },
                     onLongPress = {
@@ -185,7 +369,7 @@ fun DynamicIsland(
                     },
                 )
             }
-            .pointerInput(spec.dismissable) {
+            .pointerInput(spec.dismissable, spec.expandable) {
                 var dragged = 0f
                 detectVerticalDragGestures(
                     onDragStart = { dragged = 0f },
@@ -195,10 +379,32 @@ fun DynamicIsland(
                     },
                     onDragEnd = {
                         if (dragged < -36f) {
-                            if (expanded) expanded = false
-                            else if (spec.dismissable) onAction(IslandAction.DISMISS)
-                        } else if (dragged > 36f && spec.expandable) {
+                            if (expanded) {
+                                onMorph()
+                                expanded = false
+                            } else if (spec.dismissable) {
+                                onAction(IslandAction.DISMISS)
+                            }
+                        } else if (dragged > 36f && spec.expandable && !expanded) {
+                            onMorph()
                             expanded = true
+                        }
+                    },
+                )
+            }
+            .pointerInput(canSwap) {
+                if (!canSwap) return@pointerInput
+                var dragged = 0f
+                detectHorizontalDragGestures(
+                    onDragStart = { dragged = 0f },
+                    onHorizontalDrag = { change, amount ->
+                        dragged += amount
+                        change.consume()
+                    },
+                    onDragEnd = {
+                        if (abs(dragged) > 48f) {
+                            haptics.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                            onAction(IslandAction.SWAP)
                         }
                     },
                 )
@@ -208,56 +414,127 @@ fun DynamicIsland(
             targetState = spec,
             contentKey = { Triple(it.size, it.lead, it.actions) },
             transitionSpec = {
-                (fadeIn(tween(220, delayMillis = 110)) + scaleIn(tween(260, delayMillis = 80), initialScale = 0.92f))
-                    .togetherWith(fadeOut(tween(90)))
-                    .using(
-                        SizeTransform(clip = true) { _, _ ->
-                            spring(dampingRatio = 0.74f, stiffness = Spring.StiffnessMediumLow)
-                        }
-                    )
+                // Shape first, content second.
+                // A springy, slightly overshooting morph: the new content
+                // grows in with the shell instead of popping in after it.
+                (fadeIn(tween(220, delayMillis = 60)) +
+                    scaleIn(IslandSpring.content(), initialScale = 0.86f))
+                    .togetherWith(fadeOut(tween(90)) + scaleOut(tween(120), targetScale = 0.92f))
+                    .using(SizeTransform(clip = true) { _, _ -> IslandSpring.size() })
             },
             label = "island",
         ) { target ->
             CompositionLocalProvider(LocalIslandFaces provides faces) {
                 when (target.size) {
-                    IslandSize.REST -> RestPill(target, idle, tone)
-                    IslandSize.COMPACT -> CompactPill(target, state, level, tone)
-                    IslandSize.EXPANDED -> ExpandedCard(target, state, level, tone, onAction)
+                    IslandSize.REST -> RestPill(target, idle, tone, cutout)
+                    IslandSize.COMPACT -> CompactPill(target, state, level, tone, cutout)
+                    IslandSize.EXPANDED -> ExpandedCard(target, state, level, tone, cutout, onAction)
                 }
             }
         }
     }
 }
 
+/** A comet of light running around the outline; [phase] goes 0..1. */
+private fun DrawScope.drawRimLight(outline: Outline, phase: Float, color: Color, alpha: Float) {
+    val path = Path().apply {
+        when (outline) {
+            is Outline.Rounded -> addRoundRect(outline.roundRect)
+            is Outline.Rectangle -> addRect(outline.rect)
+            is Outline.Generic -> addPath(outline.path)
+        }
+    }
+    val measure = PathMeasure().apply { setPath(path, true) }
+    val length = measure.length
+    if (length <= 0f) return
+    val stroke = Stroke(width = 2.5.dp.toPx(), cap = StrokeCap.Round)
+    fun segment(from: Float, span: Float, a: Float) {
+        val start = ((from % length) + length) % length
+        val end = start + span
+        val piece = Path()
+        if (end <= length) {
+            measure.getSegment(start, end, piece, true)
+        } else {
+            measure.getSegment(start, length, piece, true)
+            measure.getSegment(0f, end - length, piece, true)
+        }
+        drawPath(piece, color.copy(alpha = a * alpha), style = stroke)
+    }
+    val head = phase * length
+    // A soft tail, then the bright head.
+    segment(head - length * 0.22f, length * 0.16f, 0.22f)
+    segment(head - length * 0.08f, length * 0.08f, 0.9f)
+}
+
 // ------------------------------------------------------------------ sizes
 
+/**
+ * Lays out [start] and [end] on either side of the camera hole. With no
+ * cutout they simply sit next to each other.
+ */
 @Composable
-private fun RestPill(spec: IslandSpec, idle: IslandIdleInfo, tone: Color) {
-    Row(
-        modifier = Modifier
-            .height(34.dp)
-            .widthIn(min = 112.dp, max = 236.dp)
-            .padding(start = if (LocalIslandFaces.current) 6.dp else 14.dp, end = 14.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        if (LocalIslandFaces.current) {
+private fun AroundCamera(
+    cutout: DpSize,
+    height: Dp,
+    modifier: Modifier = Modifier,
+    start: @Composable () -> Unit,
+    end: @Composable () -> Unit,
+) {
+    Row(modifier.height(height), verticalAlignment = Alignment.CenterVertically) {
+        Box(Modifier.weight(1f), contentAlignment = Alignment.CenterStart) { start() }
+        Spacer(Modifier.width(cutout.width + 12.dp))
+        Box(Modifier.weight(1f), contentAlignment = Alignment.CenterEnd) { end() }
+    }
+}
+
+@Composable
+private fun RestPill(spec: IslandSpec, idle: IslandIdleInfo, tone: Color, cutout: DpSize) {
+    val faces = LocalIslandFaces.current
+    val lead: @Composable () -> Unit = {
+        if (faces) {
             // The face, with the link state as a small dot on its shoulder.
-            Box(Modifier.size(26.dp)) {
-                Face(spec.face, size = 26.dp)
-                Box(
-                    Modifier
-                        .align(Alignment.BottomEnd)
-                        .size(9.dp)
-                        .clip(CircleShape)
-                        .background(IslandColors.Shell)
-                        .padding(1.5.dp),
-                ) {
-                    LinkDot(tone, pulsing = spec.tone == IslandTone.WARN, size = 6.dp)
-                }
+            // The face, with the link state as a small dot beside it (never on it).
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Face(spec.face, spec.motion, size = 30.dp)
+                Spacer(Modifier.width(5.dp))
+                LinkDot(tone, pulsing = spec.tone == IslandTone.WARN, size = 6.dp)
             }
         } else {
             LinkDot(tone, pulsing = spec.tone == IslandTone.WARN)
         }
+    }
+    val clock: @Composable () -> Unit = {
+        if (spec.trail == IslandTrail.CLOCK) {
+            Text(
+                text = formatDuration(idle.sessionMs),
+                color = IslandColors.Cream,
+                fontSize = 11.5.sp,
+                style = LocalTextStyle.current.merge(Tabular),
+                maxLines = 1,
+            )
+        }
+    }
+    if (cutout.width > 0.dp) {
+        // Around the camera: face on one side, session clock on the other.
+        AroundCamera(
+            cutout = cutout,
+            height = compactHeight(cutout),
+            modifier = Modifier
+                .width(cutout.width + 128.dp)
+                .padding(horizontal = 6.dp),
+            start = lead,
+            end = clock,
+        )
+        return
+    }
+    Row(
+        modifier = Modifier
+            .height(34.dp)
+            .widthIn(min = 112.dp, max = 236.dp)
+            .padding(start = if (faces) 6.dp else 14.dp, end = 14.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        lead()
         Spacer(Modifier.width(8.dp))
         Text(
             text = spec.title,
@@ -270,19 +547,46 @@ private fun RestPill(spec: IslandSpec, idle: IslandIdleInfo, tone: Color) {
         )
         if (spec.trail == IslandTrail.CLOCK) {
             Spacer(Modifier.width(8.dp))
-            Text(
-                text = formatDuration(idle.sessionMs),
-                color = IslandColors.Cream,
-                fontSize = 11.5.sp,
-                fontFamily = FontFamily.Monospace,
-                maxLines = 1,
-            )
+            clock()
         }
     }
 }
 
 @Composable
-private fun CompactPill(spec: IslandSpec, state: IslandState, level: Float, tone: Color) {
+private fun CompactPill(spec: IslandSpec, state: IslandState, level: Float, tone: Color, cutout: DpSize) {
+    val lead: @Composable () -> Unit = {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Box(Modifier.size(32.dp), contentAlignment = Alignment.Center) {
+                if (LocalIslandFaces.current) {
+                    Face(spec.face, spec.motion, size = 34.dp)
+                } else {
+                    Lead(spec.lead, tone, iconSize = 18.dp)
+                }
+            }
+            Spacer(Modifier.width(10.dp))
+            Text(
+                text = spec.title,
+                color = IslandColors.Ink,
+                fontSize = 14.sp,
+                fontWeight = FontWeight.Bold,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+        }
+    }
+    if (cutout.width > 0.dp) {
+        AroundCamera(
+            cutout = cutout,
+            height = compactHeight(cutout),
+            modifier = Modifier
+                .widthIn(max = 320.dp)
+                .fillMaxWidth()
+                .padding(start = 4.dp, end = 14.dp),
+            start = lead,
+            end = { Trail(spec, state, level, tone) },
+        )
+        return
+    }
     Row(
         modifier = Modifier
             .height(40.dp)
@@ -291,19 +595,7 @@ private fun CompactPill(spec: IslandSpec, state: IslandState, level: Float, tone
             .padding(start = 4.dp, end = 14.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Box(Modifier.size(32.dp), contentAlignment = Alignment.Center) {
-            if (LocalIslandFaces.current) Face(spec.face, size = 34.dp) else Lead(spec.lead, tone, iconSize = 18.dp)
-        }
-        Spacer(Modifier.width(10.dp))
-        Text(
-            text = spec.title,
-            color = IslandColors.Ink,
-            fontSize = 14.sp,
-            fontWeight = FontWeight.SemiBold,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
-            modifier = Modifier.weight(1f),
-        )
+        Box(Modifier.weight(1f)) { lead() }
         Spacer(Modifier.width(10.dp))
         Trail(spec, state, level, tone)
     }
@@ -315,25 +607,32 @@ private fun ExpandedCard(
     state: IslandState,
     level: Float,
     tone: Color,
+    cutout: DpSize,
     onAction: (IslandAction) -> Unit,
 ) {
     Column(
         modifier = Modifier
             .widthIn(max = 352.dp)
             .fillMaxWidth()
-            .padding(start = 14.dp, end = 16.dp, top = 14.dp, bottom = 14.dp),
+            // Keep the first line clear of the camera hole.
+            .padding(start = 14.dp, end = 16.dp, top = 14.dp + if (cutout.height > 0.dp) cutout.height + 4.dp else 0.dp, bottom = 14.dp),
     ) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Box(modifier = Modifier.size(48.dp), contentAlignment = Alignment.Center) {
-                Box(
-                    Modifier
-                        .matchParentSize()
-                        .clip(CircleShape)
-                        .background(tone.copy(alpha = 0.18f)),
-                )
+                // An expressive blob behind the face, morphing while OYI works.
+                if (spec.progressRim) {
+                    MorphingLoader(tone.copy(alpha = 0.22f), size = 50.dp, periodMs = 900)
+                } else {
+                    Box(
+                        Modifier
+                            .matchParentSize()
+                            .clip(CircleShape)
+                            .background(tone.copy(alpha = 0.18f)),
+                    )
+                }
                 if (LocalIslandFaces.current) {
                     // A little bigger than its circle, so it pops out of it.
-                    Face(spec.face, size = 56.dp)
+                    Face(spec.face, spec.motion, size = 56.dp)
                 } else {
                     Lead(spec.lead, tone, iconSize = 22.dp)
                 }
@@ -345,8 +644,8 @@ private fun ExpandedCard(
                         text = spec.badge,
                         color = tone,
                         fontSize = 10.sp,
-                        fontWeight = FontWeight.Bold,
-                        letterSpacing = 0.9.sp,
+                        fontWeight = FontWeight.Black,
+                        letterSpacing = 1.sp,
                         maxLines = 1,
                     )
                     Spacer(Modifier.height(2.dp))
@@ -354,9 +653,9 @@ private fun ExpandedCard(
                 Text(
                     text = spec.title,
                     color = IslandColors.Ink,
-                    fontSize = 15.5.sp,
-                    fontWeight = FontWeight.Bold,
-                    lineHeight = 19.sp,
+                    fontSize = 16.sp,
+                    fontWeight = FontWeight.ExtraBold,
+                    lineHeight = 20.sp,
                     maxLines = 2,
                     overflow = TextOverflow.Ellipsis,
                 )
@@ -374,7 +673,7 @@ private fun ExpandedCard(
                 lineHeight = 18.sp,
                 maxLines = 3,
                 overflow = TextOverflow.Ellipsis,
-                modifier = Modifier.padding(start = 56.dp, top = 6.dp),
+                modifier = Modifier.padding(start = 60.dp, top = 6.dp),
             )
         }
         if (spec.actions.isNotEmpty()) {
@@ -386,6 +685,38 @@ private fun ExpandedCard(
                 spec.actions.forEach { action -> ActionPill(action, tone, onAction) }
             }
         }
+    }
+}
+
+/** The activity running behind the shown one: its face in a small glass bubble. */
+@Composable
+private fun SecondaryBubble(state: IslandState, faces: Boolean, accent: Color, height: Dp, onTap: () -> Unit) {
+    val spec = islandSpec(state, IslandIdleInfo(), expanded = false)
+    val tone = IslandColors.tone(spec.tone, accent)
+    Box(
+        modifier = Modifier
+            .padding(top = (height - BubbleSize) / 2)
+            .size(BubbleSize)
+            .liquidGlass(CircleShape, SolidColor(IslandColors.Shell), backdrop = null, elevation = 10.dp, rim = IslandColors.Rim)
+            .clickable(onClick = onTap)
+            .semantics { contentDescription = "Also running: ${spec.title}. Tap to switch." },
+        contentAlignment = Alignment.Center,
+    ) {
+        CompositionLocalProvider(LocalIslandFaces provides faces) {
+            if (faces) Face(spec.face, spec.motion, size = 32.dp) else Lead(spec.lead, tone, iconSize = 16.dp)
+        }
+        // A tiny tone dot so the bubble says what kind of thing it is.
+        Box(
+            Modifier
+                .align(Alignment.TopEnd)
+                .padding(3.dp)
+                .size(8.dp)
+                .clip(CircleShape)
+                .background(IslandColors.Shell)
+                .padding(1.5.dp)
+                .clip(CircleShape)
+                .background(tone),
+        )
     }
 }
 
@@ -408,26 +739,85 @@ private fun faceRes(face: IslandFace): Int = when (face) {
 
 /**
  * One expression sticker. It pops in with a bouncy spring when it first
- * shows, and swaps with a pop when the state changes.
+ * shows, swaps with a pop when the state changes, and then moves the way
+ * its state does ([IslandMotion]).
  */
 @Composable
-private fun Face(face: IslandFace, size: Dp) {
+private fun Face(face: IslandFace, motion: IslandMotion, size: Dp) {
     val still = LocalInspectionMode.current
     val pop = remember { Animatable(if (still) 1f else 0.35f) }
     LaunchedEffect(Unit) {
-        if (!still) pop.animateTo(1f, spring(dampingRatio = 0.42f, stiffness = Spring.StiffnessMediumLow))
+        if (!still) pop.animateTo(1f, OyiMotion.bouncy())
     }
+
+    // One-shot kicks: a bounce when something lands, a shake when OYI needs you.
+    val kick = remember { Animatable(0f) }
+    LaunchedEffect(motion) {
+        if (still) return@LaunchedEffect
+        when (motion) {
+            IslandMotion.BOUNCE -> {
+                kick.snapTo(1f)
+                kick.animateTo(0f, OyiMotion.bouncy())
+            }
+            IslandMotion.SHAKE -> {
+                kick.snapTo(0f)
+                kick.animateTo(
+                    0f,
+                    keyframes {
+                        durationMillis = 520
+                        -1f at 60
+                        1f at 150
+                        -0.7f at 240
+                        0.5f at 330
+                        -0.25f at 420
+                    },
+                )
+            }
+            else -> kick.snapTo(0f)
+        }
+    }
+
+    // A slow loop for the continuous motions.
+    val loops = motion == IslandMotion.BREATHE || motion == IslandMotion.WOBBLE ||
+        motion == IslandMotion.TYPE || motion == IslandMotion.PULSE
+    val t = if (loops && !still) {
+        val transition = rememberInfiniteTransition(label = "faceLoop")
+        val value by transition.animateFloat(
+            initialValue = 0f,
+            targetValue = 1f,
+            animationSpec = infiniteRepeatable(tween(2_400, easing = LinearEasing)),
+            label = "faceT",
+        )
+        value
+    } else {
+        0f
+    }
+    val wave = (2 * PI * t).toFloat()
+
     AnimatedContent(
         targetState = face,
         transitionSpec = {
-            (scaleIn(spring(dampingRatio = 0.45f, stiffness = Spring.StiffnessMedium), initialScale = 0.3f) +
-                fadeIn(tween(120)))
+            (scaleIn(OyiMotion.bouncy(), initialScale = 0.3f) + fadeIn(tween(120)))
                 .togetherWith(scaleOut(tween(140), targetScale = 0.5f) + fadeOut(tween(110)))
                 .using(SizeTransform(clip = false))
         },
         modifier = Modifier.graphicsLayer {
-            scaleX = pop.value
-            scaleY = pop.value
+            var s = pop.value
+            var rotation = 0f
+            var dy = 0f
+            when (motion) {
+                IslandMotion.BREATHE -> s *= 1f + 0.045f * sin(wave)
+                IslandMotion.WOBBLE -> rotation = 8f * sin(wave * 2)
+                IslandMotion.TYPE -> dy = -1.6f * abs(sin(wave * 6)) * density
+                IslandMotion.PULSE -> s *= 1f + 0.07f * abs(sin(wave * 5))
+                IslandMotion.BOUNCE -> s *= 1f + 0.28f * kick.value
+                IslandMotion.SHAKE -> rotation = 12f * kick.value
+                IslandMotion.STILL -> Unit
+            }
+            scaleX = s
+            scaleY = s
+            rotationZ = rotation
+            translationY = dy
         },
         label = "face",
     ) { current ->
@@ -443,7 +833,7 @@ private fun Face(face: IslandFace, size: Dp) {
 private fun Lead(lead: IslandLead, tone: Color, iconSize: Dp) {
     when (lead) {
         IslandLead.DOT -> LinkDot(tone, pulsing = false, size = 10.dp)
-        IslandLead.SPINNER -> Spinner(tone, size = iconSize - 2.dp)
+        IslandLead.SPINNER -> MorphingLoader(tone, size = iconSize)
         IslandLead.ORB -> Orb(size = iconSize)
         else -> Icon(
             painter = painterResource(iconFor(lead)),
@@ -476,7 +866,7 @@ private fun Trail(spec: IslandSpec, state: IslandState, level: Float, tone: Colo
             tone = tone,
             synthetic = state.kind == IslandKind.SPEAKING,
         )
-        IslandTrail.SPINNER -> Spinner(tone, size = 15.dp)
+        IslandTrail.SPINNER -> MorphingLoader(tone, size = 18.dp)
         IslandTrail.CHECK -> Icon(
             painter = painterResource(R.drawable.ic_island_check),
             contentDescription = null,
@@ -507,7 +897,7 @@ private fun MonoText(text: String) {
         text = text,
         color = IslandColors.Dim,
         fontSize = 12.sp,
-        fontFamily = FontFamily.Monospace,
+        style = LocalTextStyle.current.merge(Tabular),
         maxLines = 1,
     )
 }
@@ -546,17 +936,6 @@ private fun LinkDot(tone: Color, pulsing: Boolean, size: Dp = 8.dp) {
     )
 }
 
-@Composable
-private fun Spinner(tone: Color, size: Dp) {
-    CircularProgressIndicator(
-        modifier = Modifier.size(size),
-        color = tone,
-        strokeWidth = 2.dp,
-        trackColor = tone.copy(alpha = 0.22f),
-        strokeCap = StrokeCap.Round,
-    )
-}
-
 /** OYI's voice: a warm orb that breathes while it talks. */
 @Composable
 private fun Orb(size: Dp) {
@@ -588,7 +967,7 @@ private val BarGains = floatArrayOf(0.55f, 0.85f, 1f, 0.8f, 0.6f)
  */
 @Composable
 private fun SoundBars(level: Float, tone: Color, synthetic: Boolean) {
-    val smoothed by animateFloatAsState(level, animationSpec = IslandSpring, label = "level")
+    val smoothed by animateFloatAsState(level, animationSpec = OyiMotion.fastSpatial(), label = "level")
     val transition = rememberInfiniteTransition(label = "bars")
     val phase by transition.animateFloat(
         initialValue = 0f,
@@ -613,6 +992,7 @@ private fun SoundBars(level: Float, tone: Color, synthetic: Boolean) {
     }
 }
 
+/** A card button with expressive press motion: it squishes and its corners tighten. */
 @Composable
 private fun ActionPill(action: IslandAction, tone: Color, onAction: (IslandAction) -> Unit) {
     val (label, filled) = when (action) {
@@ -621,6 +1001,8 @@ private fun ActionPill(action: IslandAction, tone: Color, onAction: (IslandActio
         IslandAction.STOP -> "Stop" to true
         IslandAction.DISMISS -> "Close" to false
         IslandAction.OPEN_APP -> "Open OYI" to true
+        IslandAction.INTERRUPT -> "Stop talking" to true
+        IslandAction.SWAP -> "Switch" to false
     }
     val background = when {
         !filled -> Color(0x1FFFFFFF)
@@ -628,18 +1010,19 @@ private fun ActionPill(action: IslandAction, tone: Color, onAction: (IslandActio
         action == IslandAction.OPEN_APP -> IslandColors.Cream
         else -> tone
     }
-    Box(
-        modifier = Modifier
-            .clip(RoundedCornerShape(999.dp))
-            .background(background)
-            .clickable { onAction(action) }
-            .padding(horizontal = 16.dp, vertical = 8.dp),
-    ) {
-        Text(
-            text = label,
-            color = if (filled) IslandColors.InkOnLight else IslandColors.Ink,
-            fontSize = 13.sp,
-            fontWeight = FontWeight.Bold,
-        )
+    PressMorph(onClick = { onAction(action) }, pressedPercent = 28f) { shape ->
+        Box(
+            modifier = Modifier
+                .background(background, shape)
+                .border(1.dp, if (filled) Brush.verticalGradient(listOf(Color(0x66FFFFFF), Color(0x00FFFFFF))) else IslandColors.Rim, shape)
+                .padding(horizontal = 18.dp, vertical = 9.dp),
+        ) {
+            Text(
+                text = label,
+                color = if (filled) IslandColors.InkOnLight else IslandColors.Ink,
+                fontSize = 13.sp,
+                fontWeight = FontWeight.ExtraBold,
+            )
+        }
     }
 }

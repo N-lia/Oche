@@ -4,25 +4,33 @@ import android.content.Intent
 import android.os.Bundle
 import android.provider.Settings
 import androidx.activity.ComponentActivity
+import androidx.activity.SystemBarStyle
 import androidx.activity.compose.setContent
+import androidx.activity.enableEdgeToEdge
+import android.graphics.Color as AndroidColor
 import androidx.core.content.ContextCompat
 import ai.oyi.device.service.OyiService
-import androidx.compose.foundation.isSystemInDarkTheme
-import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.darkColorScheme
-import androidx.compose.material3.lightColorScheme
-import androidx.compose.runtime.Composable
-import androidx.compose.ui.graphics.Color
+import androidx.compose.runtime.getValue
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import ai.oyi.device.ui.MainScreen
+import ai.oyi.device.ui.theme.OyiTheme
 
 class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        // Draw under the status and navigation bars: the black runs to the
+        // edges and the island sits right under the camera.
+        enableEdgeToEdge(
+            statusBarStyle = SystemBarStyle.dark(AndroidColor.TRANSPARENT),
+            navigationBarStyle = SystemBarStyle.dark(AndroidColor.TRANSPARENT),
+        )
         applyDebugOverrides(intent)
         ensureOyiServiceRunning()
+        val settings = (application as OyiApplication).container.settings.settings
         setContent {
-            OyiTheme {
+            val prefs by settings.collectAsStateWithLifecycle()
+            OyiTheme(wallpaperColors = prefs.wallpaperColors) {
                 MainScreen()
             }
         }
@@ -44,8 +52,10 @@ class MainActivity : ComponentActivity() {
 
     // While OYI is in front, its own header shows the island and the
     // overlay steps aside.
-    override fun onStart() {
-        super.onStart()
+    // onResume, not onStart: coming back from the see-through island-fit
+    // screen resumes this activity without starting it again.
+    override fun onResume() {
+        super.onResume()
         (application as OyiApplication).container.runtime.setAppVisible(true)
     }
 
@@ -79,32 +89,4 @@ class MainActivity : ComponentActivity() {
         const val EXTRA_GATEWAY_URL = "oyi_gateway_url"
         const val EXTRA_TOKEN = "oyi_token"
     }
-}
-
-@Composable
-private fun OyiTheme(content: @Composable () -> Unit) {
-    val colors = darkColorScheme(
-        primary = Color(0xFFF08A65),
-        onPrimary = Color(0xFF0A0807),
-        primaryContainer = Color(0xFFD9724E),
-        onPrimaryContainer = Color(0xFF0A0807),
-        secondary = Color(0xFFF7EDD0),
-        onSecondary = Color(0xFF0B0A08),
-        secondaryContainer = Color(0xFFE9DCBA),
-        onSecondaryContainer = Color(0xFF0B0A08),
-        tertiary = Color(0xFFF7E27E),
-        onTertiary = Color(0xFF0B0A08),
-        background = Color(0xFF070708),
-        onBackground = Color(0xFFF8F6F1),
-        surface = Color(0xFF151518),
-        onSurface = Color(0xFFF8F6F1),
-        surfaceVariant = Color(0xFF1F1F24),
-        onSurfaceVariant = Color(0xFFA09C94),
-        error = Color(0xFFF08A65),
-        onError = Color(0xFF0A0807),
-        errorContainer = Color(0xFF2E1B14),
-        onErrorContainer = Color(0xFFF7EDD0),
-        outline = Color(0xFF38383E),
-    )
-    MaterialTheme(colorScheme = colors, content = content)
 }

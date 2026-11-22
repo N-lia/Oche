@@ -54,9 +54,20 @@ class DeviceRuntime(context: Context) {
     private val _island = MutableStateFlow(IslandState())
     val island: StateFlow<IslandState> = _island.asStateFlow()
 
+    /**
+     * The layer running behind the one in [island], when both are active
+     * (for example the agent talking while phone control runs). The island
+     * shows it as a small second bubble; [swapIsland] brings it forward.
+     */
+    private val _islandSecondary = MutableStateFlow<IslandState?>(null)
+    val islandSecondary: StateFlow<IslandState?> = _islandSecondary.asStateFlow()
+
     private var task = IslandState()
     private var agent = IslandState()
     private val islandLock = Any()
+
+    /** The user swapped the agent in front of a running task. */
+    private var preferAgent = false
 
     /** Microphone level while live voice is on, 0..1. Drives the island's bars. */
     private val _voiceLevel = MutableStateFlow(0f)
@@ -85,6 +96,10 @@ class DeviceRuntime(context: Context) {
     /** Callback wired by DeviceClient when the user taps Stop on the Dynamic Island. */
     @Volatile
     var onCancelCommand: (() -> Unit)? = null
+
+    /** Callback wired by live voice: a double tap on the island cuts the spoken reply short. */
+    @Volatile
+    var onInterruptAgent: (() -> Unit)? = null
 
     fun onForeground(packageName: String, at: Long = System.currentTimeMillis()) {
         if (packageName.isBlank() || packageName == appContext.packageName) return
@@ -199,6 +214,19 @@ class DeviceRuntime(context: Context) {
             showError("Action Denied", "You rejected the action.", commandId)
         }
         onApprovalDecision?.invoke(commandId, approved)
+    }
+
+    /** Double tap on the island while OYI speaks. */
+    fun interruptAgent() {
+        onInterruptAgent?.invoke()
+    }
+
+    /** Brings the activity in the second bubble to the front, and back. */
+    fun swapIsland() {
+        synchronized(islandLock) {
+            preferAgent = !preferAgent
+            publish()
+        }
     }
 
     fun cancelActiveCommand() {
@@ -338,7 +366,18 @@ class DeviceRuntime(context: Context) {
     }
 
     private fun publish() {
-        _island.value = if (task.kind != IslandKind.IDLE) task else agent
+        val taskOn = task.kind != IslandKind.IDLE
+        val agentOn = agent.kind != IslandKind.IDLE
+        if (!(taskOn && agentOn)) preferAgent = false
+        // An approval always comes to the front: it is waiting on the user.
+        val agentFront = taskOn && agentOn && preferAgent && task.kind != IslandKind.APPROVAL_REQUIRED
+        val front = if (!taskOn || agentFront) agent else task
+        _island.value = front
+        _islandSecondary.value = when {
+            !(taskOn && agentOn) -> null
+            front === agent -> task
+            else -> agent
+        }
     }
 
     fun labelFor(packageName: String): String {

@@ -42,6 +42,12 @@ data class UiState(
     val currentApp: ForegroundApp? = null,
     val topApps: List<AppUsage> = emptyList(),
     val island: IslandState = IslandState(),
+    /** An activity running behind [island], shown as a second bubble. */
+    val islandSecondary: IslandState? = null,
+    val islandNudgeXDp: Int = 0,
+    val islandNudgeYDp: Int = 0,
+    val wallpaperColors: Boolean = false,
+    val liveUpdates: Boolean = true,
 )
 
 class MainViewModel(application: Application) : AndroidViewModel(application) {
@@ -65,6 +71,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         gatewayUrl = settings.gatewayUrl,
                         token = settings.token,
                         deviceId = settings.deviceId,
+                        islandNudgeXDp = settings.islandNudgeXDp,
+                        islandNudgeYDp = settings.islandNudgeYDp,
+                        wallpaperColors = settings.wallpaperColors,
+                        liveUpdates = settings.liveUpdates,
                     )
                 }
             }
@@ -99,11 +109,37 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 _state.update { it.copy(island = island) }
             }
         }
+        viewModelScope.launch {
+            container.runtime.islandSecondary.collect { secondary ->
+                _state.update { it.copy(islandSecondary = secondary) }
+            }
+        }
         refresh()
     }
 
     /** Re-reads permissions and usage; called on every resume. */
+    /** Over-the-air updates: checked quietly on resume, on demand from Space. */
+    val updates: StateFlow<ai.oyi.device.update.UpdateState> = container.updater.state
+    val appVersion: String = "${container.updater.currentVersion} (build ${container.updater.currentBuild})"
+
+    fun checkForUpdate() {
+        viewModelScope.launch { container.updater.check() }
+    }
+
+    fun downloadUpdate(release: ai.oyi.device.update.Release) {
+        viewModelScope.launch { container.updater.download(release) }
+    }
+
+    fun installUpdate(release: ai.oyi.device.update.Release) {
+        if (!container.updater.canInstall()) {
+            container.updater.openInstallPermission()
+            return
+        }
+        viewModelScope.launch { container.updater.install(release) }
+    }
+
     fun refresh() {
+        viewModelScope.launch { container.updater.check(quiet = true) }
         viewModelScope.launch {
             val settings = container.settings.settings.value
             val overlayPermission = Settings.canDrawOverlays(context)
@@ -152,6 +188,37 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun stopActiveTask() {
         container.runtime.cancelActiveCommand()
+    }
+
+    fun interruptAgent() {
+        container.runtime.interruptAgent()
+    }
+
+    fun swapIsland() {
+        container.runtime.swapIsland()
+    }
+
+    fun setIslandNudge(xDp: Int, yDp: Int) {
+        container.settings.setIslandNudge(xDp, yDp)
+    }
+
+    fun setWallpaperColors(enabled: Boolean) {
+        container.settings.setWallpaperColors(enabled)
+    }
+
+    fun setLiveUpdates(enabled: Boolean) {
+        container.settings.setLiveUpdates(enabled)
+    }
+
+    /** Two things at once: phone control in front, OYI talking behind it. */
+    fun previewStack() {
+        previewIslandState(IslandKind.SPEAKING)
+        container.runtime.showWorking(
+            commandId = "preview_cmd",
+            title = "Step 2 · Controlling Settings",
+            subtitle = "Tapping 'Display & Brightness'",
+            step = 2,
+        )
     }
 
     fun previewIslandState(kind: IslandKind) {

@@ -22,6 +22,9 @@ jobs:
     # preinstalled Android SDK layout (and setup-android@v3) no longer works.
     runs-on: ubuntu-24.04
     timeout-minutes: 45
+    # contents: write lets the job publish its snapshots to a side branch.
+    permissions:
+      contents: write
 
     env:
       ANDROID_CMDLINE_TOOLS: commandlinetools-linux-11076708_latest.zip
@@ -70,6 +73,10 @@ jobs:
         id: build
         working-directory: android
         continue-on-error: true
+        env:
+          # The app's versionCode: the in-app updater compares it with the
+          # latest release's build number.
+          OYI_BUILD_NUMBER: ${{ github.run_number }}
         run: |
           set -o pipefail
           ./gradlew testDebugUnitTest assembleDebug --no-daemon --stacktrace 2>&1 | tee /tmp/gradle-build.log
@@ -102,15 +109,69 @@ jobs:
 
       - name: Upload island snapshots
         if: always()
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v6
         with:
           name: island-snapshots
           path: android/app/build/reports/paparazzi/**/*.png
           if-no-files-found: warn
 
+      # Pushes the rendered screens to snapshots/pr-<n> so they can be read
+      # with plain git (the artifact store is not reachable from every
+      # environment). The branch only ever holds the latest images.
+      - name: Publish snapshots to a branch
+        if: always() && github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
+        continue-on-error: true
+        env:
+          BRANCH: snapshots/pr-${{ github.event.pull_request.number }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          shopt -s globstar nullglob
+          files=(android/app/build/reports/paparazzi/**/*.png)
+          if [ ${#files[@]} -eq 0 ]; then echo "No snapshots"; exit 0; fi
+          out=$(mktemp -d)
+          for f in "${files[@]}"; do cp "$f" "$out/"; done
+          # Paparazzi names report images by hash; keep its index so each
+          # image can be matched to its test.
+          cp -r android/app/build/reports/paparazzi/*/runs "$out/" 2>/dev/null || true
+          cd "$out"
+          git init -q -b "$BRANCH"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -qm "Snapshots for $HEAD_SHA"
+          git push -qf "https://x-access-token:${TOKEN}@github.com/${REPO}.git" "HEAD:refs/heads/$BRANCH"
+
       - name: Upload APK
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v6
         with:
           name: oyi-device-debug-apk
           path: android/app/build/outputs/apk/debug/*.apk
           if-no-files-found: error
+
+      # Over-the-air updates: every green build of the app branches becomes a
+      # GitHub release named build-<run number> with the APK attached. The
+      # app checks the latest release and offers to install it.
+      - name: Publish release for in-app updates
+        # Also for pull requests from this repo, so a branch under test can be
+        # updated over the air before it is merged.
+        if: >-
+          (github.event_name == 'push' && (github.ref == 'refs/heads/echo-blocker' || github.ref == 'refs/heads/main')) ||
+          (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository)
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: build-${{ github.run_number }}
+          TARGET: ${{ github.event.pull_request.head.sha || github.sha }}
+          NOTES: ${{ github.event.pull_request.title || 'Latest build' }}
+        run: |
+          set -euo pipefail
+          apk=$(ls android/app/build/outputs/apk/debug/*.apk | head -1)
+          cp "$apk" "oyi-${TAG}.apk"
+          gh release create "$TAG" "oyi-${TAG}.apk" \
+            --repo "${{ github.repository }}" \
+            --target "$TARGET" \
+            --title "OYI ${TAG}" \
+            --notes "$NOTES" \
+            --latest
