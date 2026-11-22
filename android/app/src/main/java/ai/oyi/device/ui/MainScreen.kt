@@ -1,6 +1,10 @@
 package ai.oyi.device.ui
 
 import ai.oyi.device.R
+import androidx.compose.ui.semantics.onClick
+import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.foundation.gestures.detectTapGestures
 import ai.oyi.device.model.ConnectionState
 import ai.oyi.device.model.IslandKind
 import ai.oyi.device.ui.island.DynamicIsland
@@ -239,26 +243,14 @@ fun MainShell(
                     modifier = Modifier.padding(horizontal = 16.dp),
                 )
             }
-            // Tabs stay alive once opened and switch instantly: the hidden
-            // ones are neither measured, drawn nor touchable, but keep their
-            // state (scroll, drafts), so coming back costs nothing. The new
-            // tab fades up quickly; nothing waits for the old one to leave.
-            val opened = remember { mutableStateListOf(tab) }
-            if (tab !in opened) opened += tab
+            // All three tabs are composed up front and stay alive; a switch
+            // only lays out the one now shown, in the same frame as the tap.
+            // No fade: a fade-in starts from black, and that black frame is
+            // what made switching feel like it hesitated.
             Box(Modifier.weight(1f).fillMaxWidth()) {
-                opened.forEach { page ->
+                NavItems.indices.forEach { page ->
                     key(page) {
-                        val shown = page == tab
-                        val alpha by animateFloatAsState(
-                            targetValue = if (shown) 1f else 0f,
-                            animationSpec = if (shown) tween(120) else snap(),
-                            label = "tabAlpha",
-                        )
-                        Box(
-                            Modifier
-                                .then(if (shown) Modifier.fillMaxSize() else Modifier.dormant())
-                                .graphicsLayer { this.alpha = alpha },
-                        ) { content(page) }
+                        Box(if (page == tab) Modifier.fillMaxSize() else Modifier.dormant()) { content(page) }
                     }
                 }
             }
@@ -312,26 +304,52 @@ private fun FloatingNav(selected: Int, onSelect: (Int) -> Unit, modifier: Modifi
     ) {
         NavItems.forEachIndexed { index, item ->
             val isSelected = index == selected
+            // Effects springs this stiff settle in a frame or two: the colour
+            // change reads as instant, without a hard cut.
             val bg by animateColorAsState(
                 if (isSelected) Oyi.Cream else Oyi.Cream.copy(alpha = 0f),
-                OyiMotion.defaultEffects(),
+                OyiMotion.fastEffects(),
                 label = "navBg",
             )
             val fg by animateColorAsState(
                 if (isSelected) Oyi.Ink else Oyi.Muted,
-                OyiMotion.defaultEffects(),
+                OyiMotion.fastEffects(),
                 label = "navFg",
             )
-            PressMorph(
-                onClick = {
-                    if (!isSelected) haptics.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+            var pressed by remember { mutableStateOf(false) }
+            val squish by animateFloatAsState(if (pressed) 0.92f else 1f, OyiMotion.fastSpatial(), label = "navSquish")
+            val select: () -> Unit by rememberUpdatedState({
+                if (!isSelected) {
+                    haptics.performHapticFeedback(HapticFeedbackType.TextHandleMove)
                     onSelect(index)
-                },
-                modifier = Modifier.semantics {
-                    role = Role.Tab
-                    this.selected = isSelected
-                },
-            ) { shape ->
+                }
+            })
+            val shape = Oyi.Pill
+            Box(
+                modifier = Modifier
+                    .graphicsLayer {
+                        scaleX = squish
+                        scaleY = squish
+                    }
+                    .clip(shape)
+                    // Switch on touch-down, like a hardware key: the tab is
+                    // already there by the time the finger lifts.
+                    .pointerInput(index) {
+                        detectTapGestures(
+                            onPress = {
+                                pressed = true
+                                select()
+                                tryAwaitRelease()
+                                pressed = false
+                            },
+                        )
+                    }
+                    .semantics {
+                        role = Role.Tab
+                        this.selected = isSelected
+                        onClick { select(); true }
+                    },
+            ) {
                 Row(
                     modifier = Modifier
                         .height(NavHeight - 12.dp)
