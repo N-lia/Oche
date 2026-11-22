@@ -16,6 +16,7 @@ import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.ExperimentalTextApi
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.Font
 import androidx.compose.ui.text.font.FontFamily
@@ -91,6 +92,7 @@ private val BrandScheme = darkColorScheme(
     outline = Color(0xFF38383E),
 )
 
+@OptIn(ExperimentalTextApi::class)
 private fun flex(weight: Int, round: Float, opticalSize: Float): Font =
     Font(
         resId = R.font.oyi_sans,
