@@ -25,7 +25,7 @@ class FullLengthSnapshotTest {
 
     @get:Rule
     val paparazzi = Paparazzi(
-        deviceConfig = DeviceConfig.PIXEL_5.copy(screenHeight = 4200),
+        deviceConfig = DeviceConfig.PIXEL_5.copy(screenHeight = 5600),
         theme = "android:Theme.Material.NoActionBar",
     )
 

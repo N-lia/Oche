@@ -496,7 +496,7 @@ private fun SendButton(enabled: Boolean, sending: Boolean, onClick: () -> Unit) 
 @Composable
 private fun MicButton(active: Boolean, level: Float, onClick: () -> Unit) {
     val ring by animateFloatAsState(
-        targetValue = if (active) 1f + level.coerceIn(0f, 1f) * 0.4f else 1f,
+        targetValue = if (active) 1f + level.coerceIn(0f, 1f) * 0.22f else 1f,
         animationSpec = OyiMotion.fastSpatial(),
         label = "micRing",
     )

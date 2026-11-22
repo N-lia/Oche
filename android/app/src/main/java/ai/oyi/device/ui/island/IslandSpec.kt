@@ -344,8 +344,14 @@ fun formatDuration(millis: Long): String {
     }
 }
 
-/** "3.4s" for the live timer. */
+/** The live timer: "3.4s", then "42s", then "2:05", then "1h 05m". */
 fun formatTenths(millis: Long): String {
-    val tenths = (millis.coerceAtLeast(0) / 100)
-    return "${tenths / 10}.${tenths % 10}s"
+    val ms = millis.coerceAtLeast(0)
+    val seconds = ms / 1000
+    return when {
+        ms < 10_000 -> "${ms / 1000}.${(ms / 100) % 10}s"
+        seconds < 60 -> "${seconds}s"
+        seconds < 3600 -> "${seconds / 60}:${(seconds % 60).toString().padStart(2, '0')}"
+        else -> formatDuration(ms)
+    }
 }

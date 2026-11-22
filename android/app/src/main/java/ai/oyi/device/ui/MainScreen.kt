@@ -63,6 +63,11 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.foundation.layout.navigationBars
+import androidx.compose.foundation.layout.windowInsetsBottomHeight
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalHapticFeedback
@@ -220,6 +225,22 @@ fun MainShell(
         }
 
         if (!WindowInsets.isImeVisible) {
+            // Content fades into the black under the nav instead of being cut.
+            Box(
+                Modifier
+                    .align(Alignment.BottomCenter)
+                    .fillMaxWidth()
+                    .navigationBarsPadding()
+                    .height(NavHeight + NavBottomMargin)
+                    .background(Brush.verticalGradient(listOf(Color.Transparent, Oyi.Black.copy(alpha = 0.85f)))),
+            )
+            Box(
+                Modifier
+                    .align(Alignment.BottomCenter)
+                    .fillMaxWidth()
+                    .windowInsetsBottomHeight(WindowInsets.navigationBars)
+                    .background(Oyi.Black.copy(alpha = 0.85f)),
+            )
             FloatingNav(
                 selected = tab,
                 onSelect = onTab,
@@ -243,7 +264,7 @@ private fun FloatingNav(selected: Int, onSelect: (Int) -> Unit, modifier: Modifi
     Row(
         modifier = modifier
             .height(NavHeight)
-            .liquidGlass(Oyi.Pill, backdrop = LocalGlassBackdrop.current, elevation = 16.dp)
+            .liquidGlass(Oyi.Pill, fill = SolidColor(Color(0xE0161618)), backdrop = LocalGlassBackdrop.current, elevation = 16.dp)
             .padding(6.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(2.dp),

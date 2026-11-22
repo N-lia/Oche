@@ -128,6 +128,9 @@ class IslandSpecTest {
         assertEquals("4m", formatDuration(245_000))
         assertEquals("1h 05m", formatDuration(3_900_000))
         assertEquals("3.4s", formatTenths(3_460))
+        assertEquals("42s", formatTenths(42_900))
+        assertEquals("2:05", formatTenths(125_000))
+        assertEquals("1h 05m", formatTenths(3_900_000))
     }
 
     @Test

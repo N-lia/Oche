@@ -610,7 +610,7 @@ internal fun FocusRing(
             val arcSize = Size(size.width - stroke, size.height - stroke)
             val topLeft = Offset(inset, inset)
             drawArc(
-                color = Oyi.Raised,
+                color = Color(0xFF26262B),
                 startAngle = 0f,
                 sweepAngle = 360f,
                 useCenter = false,
